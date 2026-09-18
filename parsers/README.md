@@ -179,20 +179,14 @@ anonymous Go function bodies, Rust extern declarations and Ruby block scopes.
 The CLI tests cover explicit selection, failure before indexing and cache
 invalidation when only rule contents change. CI runs both suites.
 
-A migration comparison against `b721163`, using the local corpora:
+Validate parser changes against checked-in fixtures and representative local
+repositories. Compare extracted definitions, calls, ownership, documentation
+and source ranges; investigate every unexpected difference before accepting a
+migration. Parser counts alone are not a recall or accuracy guarantee.
 
-| Corpus | Result |
-|---|---|
-| gin, 99 Go files, 24,099 lines | Exactly the same 1,959 definitions and 9,354 calls; docs and ranges also identical in every file |
-| Glasir `src`, 30 Rust files, 18,918 lines at measurement | Exactly the same 602 definitions and 7,194 calls; docs and ranges also identical |
-| thor, 78 Ruby files, 13,493 lines | Definitions unchanged at 725; calls 6,904 → 7,744 after receiver and block fixes; files flagged with unbalanced scopes 42 → 30 |
-
-Go equivalence proves migration stability, not complete Go syntax coverage.
-Grouped declarations, precise spans for bare declarations and implicit
-semicolon handling still need dedicated work. Ruby remains incomplete: the
-remaining scope errors require further language-specific work, and additional
-calls are not a measured recall score. Do not advertise the count of registered
-extensions as a guarantee of production accuracy for each language.
+Language coverage remains intentionally explicit. Go grouped declarations,
+precise spans for bare declarations and implicit semicolon handling need
+dedicated tests. Ruby scope handling also needs language-specific validation.
 
 The Java baseline fix stops class docs accumulating field and method comments;
 methods continue to collect their own body comments. Both contracts are tested.
