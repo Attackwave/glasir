@@ -720,9 +720,32 @@ impl Request {
     }
 }
 
+fn read_line_retry<R: Read>(
+    stream: &mut BufReader<R>,
+    line: &mut String,
+) -> std::io::Result<usize> {
+    loop {
+        match stream.read_line(line) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A socket read timeout is already configured by `serve`.
+                // Some platforms surface an in-flight TLS record as WouldBlock
+                // before that timeout, so retry rather than rejecting a valid
+                // request that has not finished arriving.
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Request>> {
     let mut start = String::new();
-    if stream.read_line(&mut start)? == 0 {
+    if read_line_retry(stream, &mut start)? == 0 {
         return Ok(None); // client closed
     }
     let mut parts = start.split_whitespace();
@@ -738,7 +761,7 @@ fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Re
             return Err(std::io::Error::other("too many headers"));
         }
         let mut line = String::new();
-        if stream.read_line(&mut line)? == 0 {
+        if read_line_retry(stream, &mut line)? == 0 {
             break;
         }
         if line == "\r\n" || line == "\n" {

@@ -14,6 +14,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Canonical graph paths are root-relative and always use `/`.
+///
+/// Symbol identities, snapshot metadata and contracts are persisted across
+/// operating systems. Keeping this conversion at the ingestion boundary
+/// prevents Windows separators from creating a second identity for a file.
+fn relative_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 /// Maps a qualified symbol name to a node id, minting ids for symbols the base
 /// graph has never seen.
 pub struct SymbolRegistry {
@@ -236,11 +248,7 @@ pub fn ingest_markdown(
     source: &str,
     now: u64,
 ) -> usize {
-    let file = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
+    let file = relative_path(path, root);
     let stem = file
         .rsplit('/')
         .next()
@@ -340,11 +348,7 @@ pub fn ingest_docs_from(
     let Some(facts) = facts else {
         return;
     };
-    let file = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
+    let file = relative_path(path, root);
     for (name, doc) in &facts.docs {
         if let Some(node) = registry.node_of(&qualify(&file, name)) {
             registry.set_doc(node, doc.clone());
@@ -399,11 +403,7 @@ fn prepare_facts(
 ) -> (u32, Vec<(NodeId, Edge)>, Vec<NodeId>) {
     // Relative to the indexed root: an absolute path bloats every symbol name
     // in a served answer and leaks where the tree happens to live.
-    let file = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
+    let file = relative_path(path, root);
 
     // Definitions first, so a call inside the file resolves to the local
     // definition rather than minting a placeholder for it.

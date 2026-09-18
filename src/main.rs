@@ -1833,7 +1833,7 @@ fn impact_of_report(args: &cli::Args, root: &std::path::Path) -> std::io::Result
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(str::to_string)
+        .map(|path| path.replace('\\', "/"))
         .collect();
     if changed.is_empty() {
         report.push_str(&format!("no files changed in {what}"));
@@ -6860,7 +6860,10 @@ fn demo_auth() {
     // that is exactly the case a test must not paper over with a sleep.
     assert_eq!(auth::revoke(&path, "anna").unwrap(), 1);
     let back = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
-    std::fs::File::open(&path)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
         .and_then(|f| f.set_times(std::fs::FileTimes::new().set_modified(back)))
         .unwrap();
     assert_eq!(
