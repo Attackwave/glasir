@@ -1,0 +1,10 @@
+schema_version = 1
+language = "elixir"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "unless", "case", "cond", "with", "fn", "receive", "try", "raise", "quote", "unquote"]

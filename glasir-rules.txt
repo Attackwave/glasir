@@ -1,0 +1,53 @@
+# The architecture contract. `glasir guard` checks it; CI runs that.
+#
+# Rules name paths — a file, or a prefix covering a directory. Not subsystems:
+# a community is *named* after the file most of its symbols live in but holds
+# symbols from other files too, so `src/mcp.rs#name` sits in the one called
+# `lsp`. A rule against subsystems reported an edge from mcp.rs to mcp.rs as a
+# violation of `deny mcp -> lsp`.
+#
+# Same discipline as bench/baseline.txt: if the architecture changed on
+# purpose, change the rule in the same commit and say why here. A contract
+# nobody may edit gets deleted instead of maintained.
+#
+# The default floor is `inferred`, so a name-matched guess cannot break a
+# build. Say `extracted` for a rule that must only trust the compiler.
+
+# No file may depend on itself, however indirectly. Extracted-only because a
+# name-matched edge invents cycles between files that never reference each
+# other — measured at 20 here, all but three of them invented.
+no-cycles extracted
+
+# Storage knows nothing about who reads it. The CSR and its delta are the
+# bottom of the five layers; a dependency upward would make the format follow
+# the query layer, which is what "the .csr file is the graph format, not a
+# cache of one" rules out.
+deny src/csr.rs -> src/mcp.rs
+deny src/csr.rs -> src/physics.rs
+deny src/delta.rs -> src/mcp.rs
+deny src/store.rs -> src/mcp.rs
+
+# Parsing does not reach into retrieval. The cascade produces facts; ranking
+# them is a separate layer, and tier 2 staying purely syntactic is what lets it
+# degrade without failing.
+deny src/parse_ast.rs -> src/physics.rs
+deny src/parse_ast.rs -> src/community.rs
+deny src/parse_ast.rs -> src/search.rs
+
+# The gateway does not drive a language server. `run_watch` owns that
+# lifecycle — one server per language, kept warm, ~5 s to start — and a request
+# path that could start one would pay that cost inside a query.
+#
+# Both at `extracted`, and that is not caution for its own sake: at `inferred`
+# this rule fired on `mcp.rs` using `std::io::stdin()`, because `lsp.rs` has a
+# *field* called `stdin` and tier 2 mints one placeholder for the bare name.
+# The graph does not distinguish a call from a field access — every tier-2 edge
+# is the same kind — so the compiler is the only source that can tell them
+# apart here.
+deny src/mcp.rs -> src/lsp.rs extracted
+deny src/http.rs -> src/lsp.rs extracted
+
+# The transport is a second door to the same protocol code, not a second
+# implementation of it: `mcp::handle` is shared. An edge the other way would
+# mean the protocol layer knows which door a request came through.
+deny src/mcp.rs -> src/http.rs

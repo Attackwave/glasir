@@ -1,0 +1,12 @@
+schema_version = 1
+language = "ruby"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+block_comment = ["=begin", "=end"]
+identifier_suffix_marks = true
+
+[calls]
+exclude = ["if", "unless", "while", "until", "for", "case", "when", "begin", "rescue", "ensure", "return", "yield", "break", "next", "redo", "retry", "defined?", "raise", "end", "do", "class", "module", "def"]

@@ -1,0 +1,20 @@
+// Keeps the running balance for one account.
+/dts-v1/;
+
+/ {
+    charge: charge@1000 {
+        compatible = "ledger,charge";
+        reg = <0x1000 0x100>;
+        refuse-handler = <&refuse>;
+    };
+
+    refuse: refuse@2000 {
+        compatible = "ledger,refuse";
+        reg = <0x2000 0x100>;
+    };
+
+    commit_entry: commit@3000 {
+        compatible = "ledger,commit";
+        target = <&charge>;
+    };
+};

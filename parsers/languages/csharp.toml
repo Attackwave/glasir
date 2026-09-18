@@ -1,0 +1,11 @@
+schema_version = 1
+language = "csharp"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///", "/**"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "return", "yield", "throw", "new", "typeof", "sizeof", "nameof", "checked", "unchecked", "default", "is", "as"]

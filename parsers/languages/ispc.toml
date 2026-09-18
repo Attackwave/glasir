@@ -1,0 +1,11 @@
+schema_version = 1
+language = "ispc"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "for", "foreach", "while", "return", "export", "uniform", "varying", "static", "const"]

@@ -1,0 +1,14 @@
+{{-- Keeps the running balance for one account. --}}
+
+@section('refuse')
+    @include('warnOwner')
+@endsection
+
+@section('commitEntry')
+    @include('writeEntry')
+@endsection
+
+@section('charge')
+    @include('refuse')
+    @include('commitEntry')
+@endsection

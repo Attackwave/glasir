@@ -1,0 +1,16 @@
+// Keeps the running balance for one account.
+package ledger:account@1.0.0;
+
+interface refuse {
+    warn-owner: func(owner: string);
+}
+
+interface commit-entry {
+    write-entry: func(owner: string, amount: u64);
+}
+
+/// Bills the account and returns what is left.
+world charge {
+    import refuse;
+    import commit-entry;
+}

@@ -1,0 +1,24 @@
+schema_version = 1
+language = "protobuf"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["returns", "option", "import", "syntax", "repeated", "optional",
+    "required", "reserved", "oneof", "map", "stream"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "message", scope = "body" },
+    { keyword = "service", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "extend", scope = "body" },
+    { keyword = "rpc", scope = "bare" },
+    { keyword = "package", scope = "bare" },
+]

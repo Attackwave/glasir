@@ -1,0 +1,10 @@
+schema_version = 1
+language = "ada"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+
+[calls]
+exclude = ["if", "then", "else", "elsif", "while", "for", "loop", "case", "when", "begin", "declare", "exception", "raise", "return", "null", "is", "with", "use", "pragma"]

@@ -1,0 +1,11 @@
+schema_version = 1
+language = "d"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///", "/**", "/++"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "foreach", "switch", "case", "default", "catch", "finally", "try", "throw", "return", "new", "delete", "this", "super", "assert", "import", "cast", "typeid", "sizeof", "mixin", "version", "debug"]

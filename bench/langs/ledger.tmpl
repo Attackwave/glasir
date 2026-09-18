@@ -1,0 +1,14 @@
+{{/* Keeps the running balance for one account. */}}
+
+{{define "refuse"}}
+  {{template "warnOwner" .}}
+{{end}}
+
+{{define "commitEntry"}}
+  {{template "writeEntry" .}}
+{{end}}
+
+{{define "charge"}}
+  {{template "refuse" .}}
+  {{template "commitEntry" .}}
+{{end}}

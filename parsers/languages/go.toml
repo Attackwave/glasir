@@ -1,0 +1,22 @@
+schema_version = 1
+language = "go"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "for", "switch", "select", "return", "go", "defer", "range"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "func", scope = "body_after_receiver" },
+    { keyword = "type", scope = "body" },
+    { keyword = "package", scope = "bare" },
+    { keyword = "const", scope = "bare" },
+    { keyword = "var", scope = "bare" },
+]

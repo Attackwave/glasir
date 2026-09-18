@@ -1,0 +1,21 @@
+schema_version = 1
+language = "sway"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["if", "else", "match", "while", "return", "let", "mut", "contract", "script", "predicate", "library", "use", "impl", "trait"]
+
+[generic]
+braces = true
+receivers = ["::", "."]
+definitions = [
+    { keyword = "fn", scope = "body_with_docs" },
+    { keyword = "struct", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "abi", scope = "body" },
+    { keyword = "const", scope = "statement" },
+]

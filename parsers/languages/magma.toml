@@ -1,0 +1,11 @@
+schema_version = 1
+language = "magma"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "then", "for", "while", "return", "let", "const", "function", "end", "var"]

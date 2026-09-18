@@ -1,0 +1,13 @@
+schema_version = 1
+language = "typst"
+revision = 1
+
+[lexical]
+# A Typst name may hold a dash: `commit-entry`. Same flag a Lisp needs.
+identifier_dashes = true
+line_comments = ["//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "for", "while", "return", "let", "set", "show", "import", "include"]

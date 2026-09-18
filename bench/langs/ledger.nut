@@ -1,0 +1,21 @@
+// Keeps the running balance for one account.
+
+const LIMIT = 5000;
+
+function refuse(owner) {
+    warnOwner(owner);
+    return 0;
+}
+
+function commitEntry(owner, amount) {
+    writeEntry(owner, amount);
+    return amount;
+}
+
+/// Bills the account and returns what is left.
+function charge(owner, amount) {
+    if (amount > LIMIT) {
+        return refuse(owner);
+    }
+    return commitEntry(owner, amount);
+}

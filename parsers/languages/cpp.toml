@@ -1,0 +1,11 @@
+schema_version = 1
+language = "cpp"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["/**", "///", "/*!"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "while", "for", "switch", "catch", "return", "sizeof", "decltype", "typeid", "alignof", "dynamic_cast", "static_cast", "reinterpret_cast", "const_cast", "new", "delete", "throw", "requires", "co_await", "co_yield", "co_return"]

@@ -1,0 +1,11 @@
+schema_version = 1
+language = "perl"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+block_comment = ["=pod", "=cut"]
+
+[calls]
+exclude = ["if", "unless", "while", "until", "for", "foreach", "return", "my", "our", "state"]

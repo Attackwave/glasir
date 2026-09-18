@@ -1,0 +1,11 @@
+schema_version = 1
+language = "scala"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["/**", "///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "do", "yield", "match", "case", "try", "catch", "finally", "throw", "return", "new", "this", "super", "class", "trait", "object", "enum", "def", "val", "var", "type", "given", "using", "package", "import", "extends", "with", "derives", "as"]

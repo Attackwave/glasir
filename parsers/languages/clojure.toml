@@ -1,0 +1,11 @@
+schema_version = 1
+language = "clojure"
+revision = 1
+
+[lexical]
+line_comments = [";;;", ";;", ";"]
+doc_comments = [";;;", ";;"]
+identifier_dashes = true
+
+[calls]
+exclude = ["if", "when", "let", "loop", "recur", "do", "fn", "cond", "case", "quote"]

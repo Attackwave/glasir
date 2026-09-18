@@ -1,0 +1,70 @@
+# Retrieval ground truth for a *deep* tree: `bench/deep`.
+#
+# The four sets beside this one all measure `glasir` itself — a flat Rust
+# repository where `src/` is one level and a file name is usually a subsystem
+# name. Three findings the audit could not decide were blocked on exactly that:
+# the path in tokenization (step 4), `B = 0` (step 8c) and the hub exclusion
+# (step 8a) each win on one shape of tree and lose on the other, and there was
+# only one shape to measure against.
+#
+# `bench/deep` is that second shape: layered (api / services / schemas / models
+# / core), two languages, six to eight path segments, and the same handful of
+# verbs — `create`, `get`, `list` — defined three times each across different
+# directories. The proportions are calibrated against a real 409-file
+# SvelteKit/FastAPI monorepo, where `create` is defined in 11 files, `get` in
+# 11 and `list` in 9, and 78% of the search index is path rather than
+# identifier.
+#
+# It reproduces the damage that motivated it. `create contact` ranks
+# `AddressCreate` and `BankAccountCreate` — schema classes that never say
+# "contact" and only inherit it from `schemas/contact.py` — above
+# `api/v1/contacts#create_contact`, with nine hits inside 0.2 BM25 points.
+#
+# Format as in `questions.txt`: the question, then the symbols an answer must
+# reach. Chosen by reading the code, not by running either method.
+
+where does a new contact actually get created?
+  backend/app/api/v1/contacts/__init__.py#create_contact
+  backend/app/services/contacts/contact_service.py#create
+
+what stops a contact from being both a company and a person?
+  backend/app/services/contacts/contact_service.py#_validate_name
+  frontend/src/lib/components/ContactForm.ts#validate
+
+how are document numbers kept gapless?
+  backend/app/core/numbering.py#next_number
+  backend/app/core/numbering.py#current_year
+
+why is an invoice total stored rather than recomputed?
+  backend/app/services/invoices/invoice_service.py#create
+  backend/app/services/invoices/invoice_service.py#totals
+
+how is tax rounded across the lines of an invoice?
+  backend/app/services/invoices/invoice_service.py#totals
+
+what keeps two customers from being sold the last item?
+  backend/app/services/orders/order_service.py#reserve
+  backend/app/services/orders/order_service.py#create
+
+how is a contact removed without breaking the documents pointing at it?
+  backend/app/services/contacts/contact_service.py#archive
+
+how does an invoice get taken back?
+  backend/app/services/invoices/invoice_service.py#cancel
+
+where is the token attached to an outgoing request?
+  frontend/src/lib/api/client.ts#request
+  frontend/src/lib/stores/session.ts#login
+
+how does the browser know whether anyone is signed in?
+  frontend/src/lib/stores/session.ts#isAuthenticated
+  frontend/src/lib/stores/session.ts#TOKEN_KEY
+
+what does a failed backend call turn into for the user?
+  frontend/src/lib/api/client.ts#request
+  backend/app/core/errors.py#NotFound
+  backend/app/core/errors.py#Invalid
+
+which layer decides something and which one only passes it on?
+  backend/app/api/v1/contacts/__init__.py#create_contact
+  backend/app/services/contacts/contact_service.py#create

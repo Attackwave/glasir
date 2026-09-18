@@ -1,0 +1,6 @@
+<!-- Keeps the running balance for one account. -->
+<ledger>
+  <charge id="charge" limit="5000"/>
+  <refuse id="refuse"/>
+  <commitEntry id="commit_entry"/>
+</ledger>

@@ -1,0 +1,13 @@
+# Keeps the running balance for one account.
+
+limit_amount = 5000
+
+refuse = library('refuse', 'refuse.c')
+
+commit_entry = library('commit_entry', 'entry.c')
+
+# Bills the account and returns what is left.
+charge = executable('charge', 'charge.c',
+  link_with : [refuse, commit_entry],
+  dependencies : declare_dependency(link_args : '-lm'),
+)

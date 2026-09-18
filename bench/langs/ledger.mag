@@ -1,0 +1,21 @@
+// Keeps the running balance for one account.
+
+limit := 5000;
+
+refuse := function(owner)
+    warn_owner(owner);
+    return 0;
+end function;
+
+commit_entry := function(owner, amount)
+    write_entry(owner, amount);
+    return amount;
+end function;
+
+// Bills the account and returns what is left.
+charge := function(owner, amount)
+    if amount gt limit then
+        return refuse(owner);
+    end if;
+    return commit_entry(owner, amount);
+end function;

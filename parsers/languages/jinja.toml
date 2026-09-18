@@ -1,0 +1,10 @@
+schema_version = 1
+language = "jinja"
+revision = 1
+
+[lexical]
+line_comments = ["{#"]
+doc_comments = ["{#"]
+
+[calls]
+exclude = ["if", "else", "elseif", "then", "end", "for", "while", "do", "return", "local", "function", "include", "block", "endblock", "section", "endsection", "let"]

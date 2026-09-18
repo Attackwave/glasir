@@ -1,0 +1,14 @@
+{# Keeps the running balance for one account. #}
+
+{% block refuse %}
+  {% include 'warnOwner' %}
+{% endblock %}
+
+{% block commitEntry %}
+  {% include 'writeEntry' %}
+{% endblock %}
+
+{% block charge %}
+  {% include 'refuse' %}
+  {% include 'commitEntry' %}
+{% endblock %}

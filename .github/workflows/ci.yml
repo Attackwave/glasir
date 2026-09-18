@@ -1,0 +1,131 @@
+# Every check that can catch a regression, on every push.
+#
+# The benchmark is here as a guard, not as a report: two silent retrieval
+# regressions slipped through in one session before it was, and both would have
+# been caught by the `--check` step below.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Keyed on the lockfile: a build from cold takes minutes, and the
+      # self-checks and benchmark both need a release build.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: format
+        run: cargo fmt --check
+
+      - name: dependency vulnerabilities
+        run: cargo install cargo-audit --locked && cargo audit
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: build
+        run: cargo build --release --locked
+
+      # 33 tests, ~15 s, each runnable on its own. They wrap the same checks
+      # `selfcheck` runs rather than copying them, so the two cannot drift.
+      - name: tests
+        run: cargo test
+
+      - name: parser tests
+        run: cargo test --locked --manifest-path parsers/Cargo.toml --target-dir target/parser-tests
+
+      # The assert-based checks: 18 of them, ~9 s, covering the pitfalls each
+      # phase was built around. They are deliberately broken and re-run when
+      # written, so a failure here means something real moved.
+      - name: self-checks
+        run: ./target/release/glasir selfcheck
+
+      # Recall against all four ground truths. Falls below a floor in
+      # bench/baseline.txt by more than its tolerance and the build breaks.
+      - name: retrieval benchmark
+        run: ./target/release/glasir benchmark . --check
+
+      # The other half. The benchmark above reads this repository, which is
+      # Rust, so it cannot see a scanner that stopped extracting from Julia.
+      # `bench/langs` is 25 files of our own — a corpus of foreign code would
+      # be 1.8 GB of clones with their licences attached, and one of the ones
+      # these floors were calibrated against is GPL.
+      - name: language extraction
+        run: ./target/release/glasir langcheck bench/langs --check
+
+      # The architecture contract in glasir-rules.txt, the same shape as the
+      # benchmark above: a versioned file of rules, and a build that fails when
+      # the code drifts from them. A report says what the architecture was on
+      # the day someone ran it; this says it still holds.
+      - name: architecture contract
+        run: ./target/release/glasir guard .
+
+  # An SBOM is a procurement requirement, not a nicety: NIS2 makes an
+  # organisation liable for the security of its direct suppliers, so a tool
+  # arriving without a dependency inventory is one the buyer must inventory
+  # themselves. Generated from Cargo.lock, so it cannot drift from what was
+  # actually built.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: generate SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+
+  container:
+    # Build the exact production Dockerfile on every change. It deliberately
+    # does not push: registry publication belongs only to immutable tags.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: glasir:ci
+          platforms: linux/amd64
+      - name: verify non-root runtime image
+        run: |
+          test "$(docker image inspect glasir:ci --format '{{.Config.User}}')" = "65532:65532"
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m glasir:ci --version
+
+  # Every platform someone might install on. A tool that only builds on the
+  # maintainer's machine is not a tool anyone can adopt, and finding out at
+  # release time is finding out too late.
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      # The self-checks, not just the build: the git hooks, the token file
+      # permissions and the path handling are where a platform actually differs.
+      - run: cargo test

@@ -1,0 +1,16 @@
+// Keeps the running balance for one account.
+package ledger
+
+templ refuse(owner string) {
+	<div>{ warnOwner(owner) }</div>
+}
+
+templ commitEntry(owner string) {
+	<div>{ writeEntry(owner) }</div>
+}
+
+// Bills the account and returns what is left.
+templ charge(owner string) {
+	@refuse(owner)
+	@commitEntry(owner)
+}

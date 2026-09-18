@@ -1,0 +1,20 @@
+schema_version = 1
+language = "zig"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//!", "//"]
+doc_comments = ["///", "//!"]
+
+[calls]
+exclude = ["if", "while", "for", "switch", "return", "try", "catch"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "fn", scope = "body" },
+    { keyword = "test", scope = "body" },
+    { keyword = "const", scope = "bare" },
+    { keyword = "var", scope = "bare" },
+]

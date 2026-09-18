@@ -1,0 +1,44 @@
+# The same eight questions as questions-docs.txt, asked in German.
+#
+# Deliberately translations rather than new questions, and with the same
+# expected sections: what is being measured is the *language*, not the phrasing.
+# Two sets that asked different things would confound the two, and the whole
+# point is a clean before/after for C.4.
+#
+# Why this matters beyond this tree: Pawelka and Juergens measured ten industry
+# systems against thirteen open-source ones. Half the industry systems carry
+# 50-90% non-English comments and three carry 28-45% non-English identifiers;
+# the open-source projects carry essentially none. This tree is the same shape —
+# German documentation over English code — so it is a fair small-scale stand-in
+# for the case the roadmap's C.4 is about.
+#
+# The translations keep the vocabulary a German speaker would actually use, not
+# a word-for-word rendering that smuggles the English terms back in. "Schichten"
+# rather than "Layers", "Anfrage" rather than "Request" — otherwise the set
+# would measure nothing, because the English term is what the index already has.
+
+aus welchen fünf Schichten besteht dieses System?
+  docs/architecture.md#Systemübersicht: Die 5 Schichten von Glasir
+  docs/architecture.md#Schicht 1: Agent & Gateway Layer (Model Context Protocol)
+
+warum ist der Basisgraph unveränderlich, und wohin gehen Änderungen stattdessen?
+  docs/architecture.md#Schicht 3: Dynamic Graph Engine & Delta-Buffer Layer
+  src/delta.rs#DeltaStore
+
+wie sollte der Graph gespeichert werden, ohne ihn beim Lesen neu zu zerlegen?
+  docs/plan.md#1.2 Zero-Copy Persistenz & Memory-Mapping
+
+was passiert, wenn ein Build kaputt ist oder eine Werkzeugkette fehlt?
+  docs/plan.md#3.1 Graceful Degradation (Kaskaden-Parser)
+
+wie sollte gefiltert werden, bevor Token erzeugt werden?
+  docs/architecture.md#Schicht 2: Semantic Physics & Retrieval Engine Layer
+
+worüber erreicht ein Agent dieses System überhaupt?
+  docs/architecture.md#Schicht 1: Agent & Gateway Layer (Model Context Protocol)
+
+wie sollte der Index aktuell gehalten werden, während jemand tippt?
+  docs/plan.md#3.2 Live-LSP-Integration
+
+wie läuft eine Anfrage durch das gesamte System, von Anfang bis Ende?
+  docs/architecture.md#Datenfluss im Gesamtsystem (End-to-End Walkthrough)

@@ -1,0 +1,17 @@
+-- Keeps the running balance for one account.
+
+CREATE OR REPLACE PACKAGE BODY ledger IS
+
+  FUNCTION refuse(owner IN VARCHAR2) RETURN NUMBER IS
+  BEGIN
+    warn_owner(owner);
+    RETURN 0;
+  END;
+
+  -- Bills the account and returns what is left.
+  FUNCTION charge(owner IN VARCHAR2, amount IN NUMBER) RETURN NUMBER IS
+  BEGIN
+    RETURN refuse(owner);
+  END;
+
+END ledger;

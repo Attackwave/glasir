@@ -1,0 +1,13 @@
+schema_version = 1
+language = "chialisp"
+revision = 1
+
+[lexical]
+# A Lisp names things `commit-entry`; without this the lexer splits on the
+# dash and `defun-inline` is never seen as one word. Same flag Clojure needs.
+identifier_dashes = true
+line_comments = [";"]
+doc_comments = [";"]
+
+[calls]
+exclude = ["if", "mod", "defun", "defconstant", "defmacro", "list", "quote", "q"]

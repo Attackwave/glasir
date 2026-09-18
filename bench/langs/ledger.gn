@@ -1,0 +1,17 @@
+# Keeps the running balance for one account.
+
+source_set("charge") {
+  sources = [ "charge.cc" ]
+  deps = [
+    ":refuse",
+    ":commit_entry",
+  ]
+}
+
+source_set("refuse") {
+  sources = [ "refuse.cc" ]
+}
+
+source_set("commit_entry") {
+  sources = [ "commit_entry.cc" ]
+}

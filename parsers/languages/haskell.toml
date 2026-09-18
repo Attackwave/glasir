@@ -1,0 +1,11 @@
+schema_version = 1
+language = "haskell"
+revision = 1
+
+[lexical]
+line_comments = ["-- |", "-- ^", "--"]
+doc_comments = ["-- |", "-- ^", "--"]
+block_comment = ["{-", "-}"]
+
+[calls]
+exclude = []

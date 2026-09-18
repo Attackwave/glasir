@@ -1,0 +1,22 @@
+// Keeps the running balance for one account.
+syntax = "proto3";
+
+package bench.ledger;
+
+// One entry against an account.
+message Entry {
+  string owner = 1;
+  int64 amount = 2;
+}
+
+// What a charge returned.
+message Result {
+  int64 remaining = 1;
+  bool refused = 2;
+}
+
+// Bills accounts and reports what is left.
+service Ledger {
+  rpc Charge(Entry) returns (Result);
+  rpc Refuse(Entry) returns (Result);
+}

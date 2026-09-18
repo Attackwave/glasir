@@ -1,0 +1,11 @@
+schema_version = 1
+language = "wit"
+revision = 1
+
+[lexical]
+identifier_dashes = true
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["package", "use", "type", "record", "variant", "enum", "flags", "resource", "func", "import", "export"]

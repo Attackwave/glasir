@@ -1,0 +1,10 @@
+schema_version = 1
+language = "smithy"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["namespace", "use", "apply", "metadata"]

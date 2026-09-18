@@ -1,0 +1,11 @@
+schema_version = 1
+language = "php"
+revision = 1
+
+[lexical]
+line_comments = ["//", "#"]
+doc_comments = ["/**", "///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "elseif", "else", "while", "for", "foreach", "switch", "case", "catch", "return", "echo", "print", "include", "require", "include_once", "require_once", "throw", "new", "match", "isset", "empty", "unset", "list", "array"]

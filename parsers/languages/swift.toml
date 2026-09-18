@@ -1,0 +1,11 @@
+schema_version = 1
+language = "swift"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///", "/**"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "guard", "while", "for", "switch", "case", "catch", "return", "throw", "try", "await", "let", "var"]

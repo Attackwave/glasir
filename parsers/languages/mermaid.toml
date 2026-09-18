@@ -1,0 +1,10 @@
+schema_version = 1
+language = "mermaid"
+revision = 1
+
+[lexical]
+line_comments = ["%%"]
+doc_comments = ["%%"]
+
+[calls]
+exclude = ["graph", "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram", "TD", "TB", "LR", "RL", "BT", "subgraph", "end", "participant", "class"]

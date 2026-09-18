@@ -1,0 +1,6 @@
+%% Keeps the running balance for one account.
+graph TD
+    charge --> refuse
+    charge --> commitEntry
+    refuse --> warnOwner
+    commitEntry --> writeEntry

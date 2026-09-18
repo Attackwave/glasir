@@ -1,0 +1,11 @@
+schema_version = 1
+language = "verilog"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "while", "for", "case", "begin", "end", "initial", "always", "always_comb", "always_ff", "assign"]

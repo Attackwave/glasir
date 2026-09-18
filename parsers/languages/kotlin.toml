@@ -1,0 +1,11 @@
+schema_version = 1
+language = "kotlin"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["/**", "///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "when", "while", "for", "do", "try", "catch", "finally", "throw", "return", "this", "super", "class", "interface", "object", "fun", "val", "var", "typealias", "constructor", "init", "is", "as", "in", "import", "package", "by", "get", "set", "companion", "enum"]

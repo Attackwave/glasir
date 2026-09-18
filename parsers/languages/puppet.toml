@@ -1,0 +1,20 @@
+schema_version = 1
+language = "puppet"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "else", "elsif", "unless", "case", "and", "or", "in", "undef", "true", "false"]
+
+[generic]
+braces = true
+receivers = ["::"]
+definitions = [
+    { keyword = "class", scope = "body_with_docs" },
+    { keyword = "define", scope = "body_with_docs" },
+    { keyword = "node", scope = "body" },
+    { keyword = "function", scope = "body_with_docs" },
+]

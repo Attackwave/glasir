@@ -1,0 +1,10 @@
+schema_version = 1
+language = "bitbake"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "then", "else", "fi", "for", "do", "done", "addtask", "inherit", "require", "export"]

@@ -1,0 +1,10 @@
+schema_version = 1
+language = "mojo"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "elif", "else", "while", "for", "return", "raise", "with", "try", "except", "finally", "var", "let"]

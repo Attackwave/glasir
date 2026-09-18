@@ -1,0 +1,19 @@
+// Keeps the running balance for one account.
+//@version=5
+
+limit = 5000
+
+refuse(owner) =>
+    warn_owner(owner)
+    0
+
+commit_entry(owner, amount) =>
+    write_entry(owner, amount)
+    amount
+
+// Bills the account and returns what is left.
+charge(owner, amount) =>
+    if amount > limit
+        refuse(owner)
+    else
+        commit_entry(owner, amount)

@@ -1,0 +1,56 @@
+# The same twelve questions as questions.txt, phrased in the vocabulary of the
+# code rather than of a person who has not read it.
+#
+# This file exists to isolate one variable. Against the prose questions the
+# graph recalls 8%; against these, 72% — same graph, same expansion, same
+# ground truth. What changes is only whether the question happens to name the
+# identifiers. That gap is the measurement, and it says the weak part is seed
+# discovery, not the filtering.
+
+compaction of the delta store
+  src/graph.rs#compact
+  src/graph.rs#spawn_compaction
+  src/graph.rs#COMPACTION_THRESHOLD
+
+watcher debounce
+  src/watcher.rs#watch
+  src/watcher.rs#DEBOUNCE
+
+scip index staleness
+  src/import_scip.rs#stale_since
+  src/import_scip.rs#rebuild_in_background
+
+origin validation
+  src/http.rs#origin_allowed
+  src/http.rs#addr_for
+
+community detection
+  src/community.rs#detect
+
+resolve unresolved placeholders
+  src/resolve.rs#resolve
+  src/resolve.rs#link_edges
+
+physics expand relevance
+  src/physics.rs#expand
+  src/physics.rs#Physics
+
+search tokenize identifier
+  src/search.rs#tokenize
+  src/search.rs#SearchIndex
+
+snapshot write read
+  src/snapshot.rs#write
+  src/snapshot.rs#read
+  src/snapshot.rs#source_times
+
+deterministic embeddings
+  src/embed.rs#embed
+
+viewport layout
+  src/view.rs#viewport_json
+  src/layout.rs#compute
+
+parse tier 2 ingest
+  src/parse_ast.rs#parse
+  src/ingest.rs#ingest_file

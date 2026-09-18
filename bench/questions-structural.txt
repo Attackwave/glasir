@@ -1,0 +1,231 @@
+# Ground truth for the *structural* tools: `impact` and `shortest_path`.
+#
+# Every other set here measures seed discovery and expansion — the path
+# `query_graph` takes. That is the half where a grep baseline is competitive,
+# and on two of the four sets it wins. The literature says the same
+# (GrepRAG, arXiv 2601.23254), and it says where a graph should be ahead
+# instead: structural questions — who calls this, what breaks if I change it,
+# how does A reach B — which grep can only answer by reading the whole tree.
+#
+# Nothing measured that. `impact` and `shortest_path` had no ground truth at
+# all, so the audit's five repairs to edge construction (steps 2-5) were
+# scored only through their side effect on retrieval.
+#
+# **The expected symbols are read out of the source, not out of the tool.** A
+# truth transcribed from the answer measures nothing but its own stability:
+# every caller listed below was found with grep over `src/*.rs` and attributed
+# to its enclosing function, then checked by reading it.
+#
+# Format: `<tool> <argument...>` on the question line, then the symbols the
+# answer must contain. `impact` takes one symbol, `shortest_path` two.
+# Direct callers only — the tools report several hops, and requiring the
+# transitive closure would pin edge counts that any cascade repair moves.
+
+impact src/graph.rs#publish
+  src/graph.rs#update
+  src/graph.rs#update_batch
+  src/graph.rs#spawn_compaction
+
+impact src/embed.rs#signature
+  src/embed.rs#embed
+
+impact src/snapshot.rs#read_partial
+  src/snapshot.rs#read
+  src/main.rs#analyse
+
+impact src/ingest.rs#qualify
+  src/ingest.rs#prepare_facts
+  src/ingest.rs#ingest_markdown
+  src/ingest.rs#ingest_docs_from
+
+impact src/watcher.rs#ignored_under
+  src/watcher.rs#is_ignored
+  src/watcher.rs#watch
+  src/main.rs#walk
+
+impact src/physics.rs#expand
+  src/mcp.rs#query_graph
+  src/bench.rs#graph_answer
+  src/main.rs#run_why
+
+impact src/delta.rs#replace_file_edges
+  src/ingest.rs#scope_file
+  src/ingest.rs#ingest_markdown
+  src/main.rs#refresh_files
+
+impact src/auth.rs#current
+  src/auth.rs#configured
+  src/auth.rs#identify
+
+shortest_path src/mcp.rs#impact src/graph.rs#reverse
+  src/mcp.rs#impact
+  src/graph.rs#reverse
+
+shortest_path src/main.rs#analyse src/community.rs#detect
+  src/main.rs#analyse
+  src/community.rs#detect
+
+shortest_path src/mcp.rs#query_graph src/search.rs#tokenize
+  src/mcp.rs#query_graph
+  src/mcp.rs#vocabulary
+  src/search.rs#tokenize
+
+shortest_path src/main.rs#run_serve src/auth.rs#current
+  src/main.rs#run_serve
+  src/auth.rs#configured
+  src/auth.rs#current
+
+# The four cases below check what these tools say when the honest answer is not
+# a list. Each is a load-bearing property, and none of the
+# twelve above can fail if one of them breaks.
+#
+# The expected string is matched against the tool's own text, so an answer that
+# merely *contains* the phrase counts — which is right: what must not happen is
+# the tool inventing a list instead of saying this.
+
+# A bare name that also names a definition is ambiguous, and refusing is the
+# contract. `impact compact` used to answer about every `compact` in the tree
+# (22 dependents) while `impact src/graph.rs#compact` answered about one (10),
+# and nothing said which. Measured, 37% of this tree's placeholders also name a
+# real definition.
+#
+# The expectation names the *definition*, not the refusal, so this passes both
+# ways: without an index the tool refuses and prints both candidates — one of
+# which is `src/graph.rs#compact` — and with a compiler index there is only one
+# `compact` in the graph at all, so answering directly is correct. Pinning the
+# refusal would have made the set encode which tier had run.
+#
+# It costs some of the bite and that is deliberate: reverting the three tools
+# to `seeds().first()` scores 96% rather than the 92% a pinned refusal gave.
+# The refusal is still checked — by the self-check in `demo_mcp`, which builds
+# a fixture with a known ambiguity, where it belongs. A benchmark set should
+# measure what the tool does, not which stage of the cascade produced the
+# graph.
+impact compact
+  src/graph.rs#compact
+
+# Nothing depends on the entry point, and saying so is not the same as failing.
+# The sentence has to distinguish "no caller here" from "no caller anywhere",
+# because the graph only covers this tree.
+impact src/main.rs#main
+  nothing in the graph reaches this symbol
+
+# A name the graph does not carry at all. Distinct again from zero dependents.
+# This used to name `edge_range`, which lives inside `impl_csr_accessors!` and
+# was invisible to tree-sitter; the hand-written Rust extractor sees it, so the
+# question was measuring the parser's blind spot rather than the tool's refusal.
+impact src/csr.rs#no_such_accessor
+  unknown symbol
+
+# Two symbols with no route between them. A path invented across unrelated
+# modules would be worse than the refusal, and the confidence floor is named so
+# the caller can widen it.
+shortest_path src/auth.rs#current src/csr.rs#build
+  no path
+
+# `shortest_path` resolves as strictly as `impact` does, and used not to. A bare
+# name is a registry key, so `seeds().first()` took the *placeholder* and
+# answered about it silently — in the one tool that also reports a distance.
+# `compact -> src/delta.rs#added` said 4 hops where `src/graph.rs#compact` says
+# 3, the extra one being `compact -> src/graph.rs#compact`. Measured, 165 of
+# this tree's 190 such placeholders route straight into their own definition
+# (office4u 403 of 623), so the inflated distance is the normal case rather
+# than the exception.
+shortest_path compact src/delta.rs#added
+  src/graph.rs#compact
+
+# But a placeholder that resolves uniquely is still a legitimate endpoint — a
+# cross-file call is routed through one, and 64% of them are unambiguous. The
+# refusal is about ambiguity, not about placeholders.
+shortest_path src/mcp.rs#query_graph unwrap_or
+  unwrap_or
+
+
+# `explain_node` — the last tool without a floor, and the only reader of the
+# embeddings. Step 8b repaired those three times over (a signature seeded from
+# a field nothing writes, a node that became its only target, a sink its caller
+# converged onto) and none of it was measurable here, because no set called
+# this tool.
+#
+# Four sections per answer: the subsystem siblings, what it calls, what calls
+# it, and what is structurally similar. The expected symbols below are read out
+# of the source — `grep` for the callee, the enclosing function for the caller,
+# the module for the siblings.
+
+# Only what the tool reports about *edges*. An earlier version also expected
+# `neighbors` here, which tier 2 mints as a bare placeholder (the receiver in
+# `snap.neighbors(..)` is not resolvable syntactically) and tier 1 resolves
+# properly — so the expectation encoded which tier had run rather than whether
+# the tool works.
+explain_node src/physics.rs#expand
+  src/physics.rs#authority
+  src/physics.rs#temporal_weight
+
+# Callees only, not subsystem siblings: whether a symbol is placed in a
+# community depends on the partition, and with a compiler index `compact` is
+# classed as a connector and placed in none. An expectation that mixed the two
+# would fail for a reason that has nothing to do with what this tool reports.
+explain_node src/graph.rs#compact
+  src/graph.rs#neighbors
+  src/graph.rs#width
+
+# Callers, not siblings, for the same reason: with a compiler index `tokenize`
+# is a connector and belongs to no community.
+explain_node src/search.rs#tokenize
+  src/search.rs#build_with_docs
+  src/search.rs#search
+
+# And it resolves like the other two. Before this, `explain_node compact`
+# answered "no subsystem, 1 call, 4 callers" where `src/graph.rs#compact`
+# answers "3 siblings, 8 calls, 1 caller" — two different questions, and
+# nothing said which had been answered.
+explain_node compact
+  src/graph.rs#compact
+
+# A name that is not in the graph is not the same as a name with nothing around
+# it. Renamed for the reason above: `edge_range` is a real node now.
+explain_node src/csr.rs#no_such_accessor
+  unknown symbol
+
+# The "structurally similar" section, which is the *only* consumer of the
+# embeddings. Step 8b repaired those three times and none of it was measurable
+# here, because the questions above read the first three sections and stop.
+#
+# `auth.rs` is the right symbol to ask about: it is a tight module where
+# `current`, `read` and `revoke` share a neighbourhood, so embeddings that
+# encode structure must put them together. Three of the five slots, not four —
+# a placeholder takes one, which is correct and measured (step 8b: restricting
+# `nearest` to defined symbols is worse on both agreement measures).
+#
+# With the sink damping reverted the same query answers
+# `import_scip.rs#stale_since` and `audit.rs#summary` — unrelated modules, at a
+# lower score. That is what this question exists to catch, and it does: the set
+# scores 97% against a floor of 100.
+#
+# **`SELF_WEIGHT` is deliberately not covered here, and that is a limit worth
+# stating.** Its failure is two nodes collapsing onto *one vector*, not onto
+# the wrong neighbours: `check_view.js#html` and `#viewport` both call only
+# `readFileSync`, and at weight 0 they come out at 1.00 instead of 0.91. The
+# symbols in the answer are the same either way, so a set that matches names
+# cannot see it. Pinning the number instead would break on any change to the
+# graph that has nothing to do with this. The measurement that does see it is
+# in `docs/audit/research.md`, step 8b: out-degree-1 nodes identical to their
+# target, 74 of 118 here before the fix and 0 after.
+# `in: <section> <symbol>` looks inside one section of the answer rather than
+# the whole text — necessary here, because every one of these also appears as a
+# subsystem sibling or a callee, and a plain substring test would pass on an
+# embedding layer that returns nothing useful.
+# One name, and the history is why. The embeddings encode neighbourhood, so
+# every rank below the first moves whenever the graph gains symbols: rank 4
+# held `revoke`, then `identify` when a self-check added one `main.rs` symbol,
+# then `revoke` again with `get_code_snippet`, and the TLS work displaced
+# `read` at rank 3 with `is_fresh`. Four times this floor read as a regression
+# for a change that had nothing to do with embeddings, and three of those times
+# the fix was to swap the pinned name — which only postponed the next one.
+# What the expectation is for is that the layer answers with this symbol's own
+# neighbourhood rather than noise. `configured` is that: it sits at 0.88 while
+# the rest of the list is under 0.55, because `current` and `configured` really
+# do read the same token file. Pinning anything below it measured how many
+# symbols this repository happens to hold.
+explain_node src/auth.rs#current
+  in: structurally_similar src/auth.rs#configured

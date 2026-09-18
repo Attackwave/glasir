@@ -1,0 +1,39 @@
+schema_version = 1
+language = "solidity"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+# Solidity writes much of its grammar as a bare word followed by a parenthesis
+# — `returns (bool)`, `mapping(uint => address)`, `emit E(...)` — which is
+# lexically indistinguishable from a call. Without this list every one of them
+# becomes a graph node nobody searches for.
+exclude = ["if", "for", "while", "return", "returns", "emit", "require", "revert",
+    "new", "mapping", "constructor", "modifier", "memory", "storage", "calldata",
+    "payable", "external", "public", "internal", "private", "view", "pure",
+    "virtual", "override", "immutable", "constant", "assembly", "unchecked",
+    "try", "using", "is", "as", "type", "delete", "function", "receive", "fallback"]
+
+[generic]
+braces = true
+receivers = [".", "::"]
+# `abstract contract C` — the modifier belongs to the definition's byte range,
+# which is what `get_code_snippet` returns. Without it the snippet starts at
+# `contract` and does not compile on its own.
+modifiers = ["abstract"]
+definitions = [
+    { keyword = "contract", scope = "body" },
+    { keyword = "interface", scope = "body" },
+    { keyword = "library", scope = "body" },
+    { keyword = "function", scope = "body_with_docs" },
+    { keyword = "modifier", scope = "body_with_docs" },
+    { keyword = "struct", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "event", scope = "bare" },
+    { keyword = "error", scope = "bare" },
+    { keyword = "type", scope = "bare" },
+]

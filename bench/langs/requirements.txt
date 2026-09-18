@@ -1,0 +1,8 @@
+# Keeps the running balance for one account.
+#
+# No `-r other.txt`: an include at file level has no enclosing declaration, so
+# it belongs to the file — a property of the format, not of the scanner, and
+# what a fixture must not measure.
+charge==1.0.0
+refuse>=2.1
+commit-entry~=3.0

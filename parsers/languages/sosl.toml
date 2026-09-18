@@ -1,0 +1,11 @@
+schema_version = 1
+language = "sosl"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "then", "else", "end", "begin", "return", "is", "as", "select", "from", "where", "find", "returning"]

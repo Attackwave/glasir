@@ -1,0 +1,24 @@
+schema_version = 1
+language = "vimscript"
+revision = 1
+
+[lexical]
+identifier_suffix_marks = true
+line_comments = ['"']
+doc_comments = ['"']
+
+[calls]
+exclude = ["if", "else", "elseif", "endif", "while", "endwhile", "for", "endfor", "return", "let", "call", "echo", "endfunction"]
+
+[generic]
+braces = false
+block_end = ["endfunction"]
+receivers = ["."]
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+    # Real Vimscript writes `function!` far more often than `function`: the
+    # bang means "redefine if it exists", which every plugin needs on reload.
+    # A keyword rather than `identifier_suffix_marks`, which would put the `!`
+    # on every *call* name too.
+    { keyword = "function!", scope = "body_with_docs" },
+]

@@ -1,0 +1,10 @@
+; Keeps the running balance for one account.
+
+2024-01-01 open Assets:Charge
+2024-01-01 open Expenses:Refuse
+2024-01-01 open Liabilities:CommitEntry
+
+; Bills the account and returns what is left.
+2024-01-15 * "charge"
+  Assets:Charge           5000 EUR
+  Liabilities:CommitEntry

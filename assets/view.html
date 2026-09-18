@@ -1,0 +1,701 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+:root {
+  --ground:#0e1a24; --panel:#152634; --rule:#24384a; --ink:#e6eef5;
+  --soft:#9db0c0; --faint:#63798c;
+  --extracted:#4bc0b0; --inferred:#e9c46a; --ambiguous:#d97f45;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--ground);color:var(--ink);
+  font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+#c,#t{position:absolute;inset:0;width:100%;height:100%;display:block}
+#t{pointer-events:none;z-index:1}
+#c{cursor:grab}
+#c.drag{cursor:grabbing}
+aside{position:fixed;top:0;left:0;width:270px;height:100%;background:var(--panel);
+  border-right:1px solid var(--rule);padding:18px;overflow-y:auto;z-index:2}
+h1{font-size:15px;margin:0 0 2px;letter-spacing:-.01em}
+.sub{font-size:12px;color:var(--faint);margin:0 0 18px;
+  font-family:ui-monospace,SFMono-Regular,monospace}
+h2{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);
+  margin:20px 0 8px;font-weight:600}
+button{display:block;width:100%;text-align:left;background:transparent;color:var(--soft);
+  border:1px solid var(--rule);border-radius:3px;padding:7px 10px;margin-bottom:5px;
+  font:inherit;font-size:13px;cursor:pointer}
+button:hover{border-color:var(--faint);color:var(--ink)}
+button[aria-pressed=true]{background:var(--ground);color:var(--ink);border-color:var(--extracted)}
+button:focus-visible{outline:2px solid var(--extracted);outline-offset:1px}
+input{width:100%;background:var(--ground);border:1px solid var(--rule);border-radius:3px;
+  color:var(--ink);padding:7px 10px;font:inherit;font-size:13px}
+input:focus{outline:none;border-color:var(--extracted)}
+ul{list-style:none;margin:0;padding:0}
+li{padding:5px 8px;border-radius:3px;cursor:pointer;font-size:13px;
+  display:flex;justify-content:space-between;gap:8px}
+li:hover{background:var(--ground)}
+li b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+li span{color:var(--faint);font-family:ui-monospace,monospace;font-size:11px;flex:none}
+.key{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--soft);margin-bottom:5px}
+.key i{width:16px;height:2px;flex:none;border-radius:1px}
+#tip{position:fixed;pointer-events:none;background:var(--panel);border:1px solid var(--rule);
+  border-radius:3px;padding:8px 11px;font-size:12px;z-index:3;display:none;max-width:300px;
+  box-shadow:0 4px 16px rgba(0,0,0,.4)}
+#tip b{display:block;margin-bottom:3px}
+#tip code{color:var(--faint);font-size:11px}
+#hint{position:fixed;bottom:14px;left:290px;font-size:11.5px;color:var(--faint);z-index:2}
+</style>
+
+<canvas id="c"></canvas>
+<canvas id="t"></canvas>
+<aside>
+  <h1>__TITLE__</h1>
+  <p class="sub" id="stats"></p>
+
+  <h2>Ansicht</h2>
+  <button data-mode="grouped" aria-pressed="true">Teilsysteme gruppiert</button>
+  <button data-mode="free" aria-pressed="false">Freies Kräftelayout</button>
+
+  <h2>Suche</h2>
+  <input id="q" placeholder="Symbol oder Datei" autocomplete="off">
+  <ul id="hits"></ul>
+
+  <h2>Kanten</h2>
+  <div class="key"><i style="background:var(--extracted)"></i>extracted — Compiler</div>
+  <div class="key"><i style="background:var(--inferred)"></i>inferred — Syntaxbaum</div>
+  <div class="key"><i style="background:var(--ambiguous)"></i>ambiguous — Namensabgleich</div>
+
+  <h2>Teilsysteme</h2>
+  <ul id="comms"></ul>
+</aside>
+<div id="tip"></div>
+<div id="hint">Ziehen zum Verschieben · Scrollen zum Zoomen · Klick auf einen Knoten isoliert ihn</div>
+
+<script>
+// Clumps for the whole graph, sent once: small at any repository size, and
+// they are what is drawn when zoomed out, so they must not wait on a query.
+let OVERVIEW = __OVERVIEW__;
+let BOUNDS = __BOUNDS__;
+// Nodes and edges arrive per viewport and are replaced on each pan.
+let DATA = {nodes: [], edges: [], clipped: false};
+const cv = document.getElementById('c');
+const css = getComputedStyle(document.documentElement);
+const COL = {
+  extracted: css.getPropertyValue('--extracted').trim(),
+  inferred:  css.getPropertyValue('--inferred').trim(),
+  ambiguous: css.getPropertyValue('--ambiguous').trim(),
+};
+let byId = new Map();
+const clumpById = new Map(OVERVIEW.map(c => [c.id, c]));
+let mode = 'grouped', focus = null, hover = null;
+let view = {x:0, y:0, k:1}, rot = 0;
+// Zoom levels at which the two representations swap. Measured by eye on a
+// 600-node graph: below 0.55 the individual points are too dense to read,
+// above 0.95 the clumps hide detail that fits comfortably.
+const LOD_FAR = 0.55, LOD_NEAR = 0.95;
+let index = new Map();
+const clumpOf = new Map(OVERVIEW.map(c =>
+  [c.id, {cx: c.cx, cy: c.cy, label: '', size: c.size}]));
+
+// Filled in by each viewport response: what is on screen, not what exists.
+document.getElementById('stats').textContent =
+  `${OVERVIEW.length} Teilsysteme · lädt…`;
+
+/* ---- Streaming --------------------------------------------------------
+   The page holds no graph. It asks the server what falls inside the current
+   view and draws that, which is what makes the cost independent of repository
+   size: a monorepo and this repository send the same few hundred kilobytes
+   per pan.                                                                */
+let pending = null, generation = 0;
+
+function viewportRect() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = cv.width / dpr, h = cv.height / dpr;
+  // A margin beyond the screen, so panning has something to reveal before the
+  // next request lands.
+  const m = 300 / view.k;
+  return [
+    (-view.x) / view.k - m, (-view.y) / view.k - m,
+    (w - view.x) / view.k + m, (h - view.y) / view.k + m,
+  ];
+}
+
+function fetchViewport() {
+  const [x0, y0, x1, y1] = viewportRect();
+  const gen = ++generation;
+  fetch(`/viewport?mode=${mode}&x0=${x0.toFixed(1)}&y0=${y0.toFixed(1)}&x1=${x1.toFixed(1)}&y1=${y1.toFixed(1)}`)
+    .then(r => r.json())
+    .then(d => {
+      // A slower earlier request must not overwrite a newer view.
+      if (gen !== generation) return;
+      DATA = d;
+      byId = new Map(d.nodes.map(n => [n.id, n]));
+      index = new Map(d.nodes.map((n, i) => [n.id, i]));
+      upload();
+      draw();
+      document.getElementById('stats').textContent =
+        `${d.nodes.length} Knoten sichtbar · ${d.edges.length} Kanten` +
+        (d.clipped ? ' · Ausschnitt gekürzt' : '');
+    })
+    .catch(() => {});
+}
+
+// Requests are coalesced: a pan fires dozens of frames and the server should
+// see one query per rest, not per frame.
+function requestViewport() {
+  clearTimeout(pending);
+  pending = setTimeout(fetchViewport, 90);
+}
+
+/// Frames the whole graph from the server's bounds rather than from whatever
+/// happens to be loaded — the loaded set is one viewport, not the graph.
+function fitAll() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const [x0, y0, x1, y1] = BOUNDS;
+  const vw = cv.width / dpr - 320, vh = cv.height / dpr - 60;
+  view.k = Math.min(vw / ((x1 - x0) + 160), vh / ((y1 - y0) + 160), 1.4);
+  view.x = 290 + vw / 2 - ((x0 + x1) / 2) * view.k;
+  view.y = cv.height / dpr / 2 - ((y0 + y1) / 2) * view.k;
+}
+
+/* ---- WebGL renderer ----------------------------------------------------
+   One draw call for all nodes, one for all edges. The CPU never touches a
+   vertex after upload: pan and zoom are a uniform, and level of detail is a
+   per-vertex attribute the shader fades. That is what lets this hold a graph
+   a canvas cannot draw.
+
+   LOD has two states per node, chosen on the GPU from the current zoom: near
+   the camera a node is itself, far away it is drawn at its community's centre
+   and the individual points fade out. Both positions ship in the same buffer,
+   so switching between them costs no upload.                              */
+// A canvas has exactly one context type for its lifetime, so the 2D fallback
+// gets its own context here and nothing asks for another later.
+//
+// WebGL is the fast path, not a requirement. It is absent more often than one
+// expects — a VM with no GPU passed through, a hardened browser, an old
+// driver, a remote session — and a map that renders nothing at all in those
+// cases is worse than one that renders slowly. The 2D fallback draws the same
+// data with the same level of detail.
+const gl = cv.getContext('webgl', {antialias: true, alpha: false})
+        || cv.getContext('experimental-webgl');
+const USE_GL = !!gl;
+const ctx2d = USE_GL ? null : cv.getContext('2d');
+
+function shader(type, src) {
+  if (!USE_GL) return null;
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  if (!USE_GL) return null;
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+// u_lod is the blend between detail and clump positions: 0 = all individual
+// symbols, 1 = all collapsed to their subsystem.
+const COMMON = `
+  uniform vec2 u_pan; uniform float u_zoom; uniform vec2 u_size; uniform float u_lod;
+  vec2 place(vec2 detail, vec2 clump) {
+    vec2 w = mix(detail, clump, u_lod) * u_zoom + u_pan;
+    return vec2(w.x / u_size.x * 2.0 - 1.0, 1.0 - w.y / u_size.y * 2.0);
+  }`;
+
+const nodeProg = program(`
+  attribute vec2 a_detail; attribute vec2 a_clump;
+  attribute vec3 a_color; attribute float a_size; attribute float a_local;
+  attribute float a_dim;
+  ${COMMON}
+  varying vec3 v_color; varying float v_alpha;
+  void main() {
+    gl_Position = vec4(place(a_detail, a_clump), 0.0, 1.0);
+    // Foreign references never grow: they are context, not content.
+    gl_PointSize = a_size * clamp(u_zoom, 0.55, 2.6) * (a_local > 0.5 ? 1.0 : 0.7);
+    v_color = a_color;
+    // Individual symbols fade as their clump takes over, so the transition
+    // reads as merging rather than popping.
+    // Focusing dims everything the focused node does not touch. Done in the
+    // shader from a small per-node buffer, so a click is one upload of one
+    // attribute rather than a rebuild of the whole geometry.
+    v_alpha = (a_local > 0.5 ? 1.0 : 0.45) * (1.0 - u_lod * 0.82) * (a_dim > 0.5 ? 0.07 : 1.0);
+  }`, `
+  precision mediump float;
+  varying vec3 v_color; varying float v_alpha;
+  void main() {
+    // Round points with a soft edge; a square dot reads as a rendering bug.
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+    gl_FragColor = vec4(v_color, v_alpha * smoothstep(0.5, 0.42, d));
+  }`);
+
+const edgeProg = program(`
+  attribute vec2 a_detail; attribute vec2 a_clump; attribute vec3 a_color;
+  ${COMMON}
+  varying vec3 v_color;
+  void main() { gl_Position = vec4(place(a_detail, a_clump), 0.0, 1.0); v_color = a_color; }`, `
+  precision mediump float;
+  uniform float u_fade;
+  varying vec3 v_color;
+  void main() { gl_FragColor = vec4(v_color, u_fade); }`);
+
+// Clump geometry: one large point per subsystem, drawn only when zoomed out.
+const clumpProg = program(`
+  attribute vec2 a_pos; attribute float a_size;
+  ${COMMON}
+  void main() {
+    gl_Position = vec4(place(a_pos, a_pos), 0.0, 1.0);
+    gl_PointSize = a_size * clamp(u_zoom, 0.5, 2.0);
+  }`, `
+  precision mediump float;
+  uniform float u_fade;
+  void main() {
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+    // A ring rather than a disc, so a clump reads as a container.
+    float ring = smoothstep(0.5, 0.46, d) - smoothstep(0.40, 0.36, d);
+    gl_FragColor = vec4(0.29, 0.75, 0.69, (ring * 0.9 + 0.06) * u_fade);
+  }`);
+
+function buffer(data) {
+  if (!USE_GL) return data;   // the 2D path reads the arrays directly
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return b;
+}
+function attrib(prog, name, buf, size) {
+  if (!USE_GL) return;
+  const loc = gl.getAttribLocation(prog, name);
+  if (loc < 0) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+}
+
+let buffers = null, dim = new Float32Array(0);
+
+/// Re-uploads only the dim attribute. Called on focus change, which is why
+/// focusing stays instant on a large viewport.
+function uploadFocus() {
+  if (!buffers) return;
+  DATA.nodes.forEach((n, i) => { dim[i] = visible(n.id) ? 0 : 1; });
+  if (!USE_GL) { draw(); return; }
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffers.dim);
+  gl.bufferData(gl.ARRAY_BUFFER, dim, gl.STATIC_DRAW);
+  draw();
+}
+function upload() {
+  const N = DATA.nodes.length;
+  const detail = new Float32Array(N * 2), clump = new Float32Array(N * 2);
+  const color = new Float32Array(N * 3), size = new Float32Array(N), local = new Float32Array(N);
+  dim = new Float32Array(N);
+  DATA.nodes.forEach((n, i) => {
+    detail[i * 2] = n.x; detail[i * 2 + 1] = n.y;
+    const c = clumpOf.get(n.community);
+    clump[i * 2] = c ? c.cx : n.x; clump[i * 2 + 1] = c ? c.cy : n.y;
+    const col = n.hub ? [0.91, 0.77, 0.40] : n.local ? [0.29, 0.75, 0.69] : [0.29, 0.37, 0.44];
+    color[i * 3] = col[0]; color[i * 3 + 1] = col[1]; color[i * 3 + 2] = col[2];
+    size[i] = n.hub ? 9 : n.local ? 6 : 4;
+    local[i] = n.local ? 1 : 0;
+  });
+
+  // Edges as line pairs, split by provenance so each colour is one draw call.
+  const groups = {extracted: [], inferred: [], ambiguous: []};
+  for (const e of DATA.edges) {
+    const a = index.get(e.s), b = index.get(e.t);
+    if (a === undefined || b === undefined) continue;
+    (groups[e.c] || groups.ambiguous).push(a, b);
+  }
+  const edgeBufs = {};
+  for (const [kind, pairs] of Object.entries(groups)) {
+    const d = new Float32Array(pairs.length * 2), c = new Float32Array(pairs.length * 2);
+    pairs.forEach((idx, j) => {
+      d[j * 2] = detail[idx * 2]; d[j * 2 + 1] = detail[idx * 2 + 1];
+      c[j * 2] = clump[idx * 2]; c[j * 2 + 1] = clump[idx * 2 + 1];
+    });
+    edgeBufs[kind] = {detail: buffer(d), clump: buffer(c), count: pairs.length};
+  }
+
+  // One point per subsystem, sized by how many symbols it holds.
+  const cl = [...clumpOf.values()];
+  const cPos = new Float32Array(cl.length * 2), cSize = new Float32Array(cl.length);
+  cl.forEach((c, i) => {
+    cPos[i * 2] = c.cx; cPos[i * 2 + 1] = c.cy;
+    cSize[i] = 22 + Math.sqrt(c.size) * 9;
+  });
+
+  buffers = {
+    detail: buffer(detail), clump: buffer(clump), color: buffer(color),
+    size: buffer(size), local: buffer(local), dim: buffer(dim), count: N,
+    edges: edgeBufs,
+    clumps: {pos: buffer(cPos), size: buffer(cSize), count: cl.length},
+  };
+}
+
+const EDGE_COLOR = {extracted: [0.29, 0.75, 0.69], inferred: [0.91, 0.77, 0.40], ambiguous: [0.85, 0.50, 0.27]};
+
+/// Neighbours of the focused node, filled by setFocus. Empty when nothing is
+/// focused, in which case `visible` lets everything through.
+let neighbours = new Set();
+
+/// Whether a node belongs in the current view. Focusing a node hides everything
+/// it does not touch, which is what makes a dense region readable.
+function visible(id) {
+  return focus === null || id === focus || neighbours.has(id);
+}
+
+/// Current level of detail: 0 shows every symbol, 1 collapses each into its
+/// subsystem. Shared by both renderers and by hit testing, so what is drawn and
+/// what is clickable never disagree.
+function lodNow() {
+  return 1 - Math.min(1, Math.max(0, (view.k - LOD_FAR) / (LOD_NEAR - LOD_FAR)));
+}
+
+function render() {
+  // The first frame happens before any viewport has arrived, so there is
+  // nothing uploaded yet — draw the clumps only rather than crashing.
+  if (!buffers) { drawLabels(1); return; }
+  if (!USE_GL) return render2d();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0.055, 0.102, 0.141, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  // The single number that drives everything: how far out we are. Below
+  // LOD_NEAR every symbol is itself; above LOD_FAR everything is its clump.
+  const lod = 1 - Math.min(1, Math.max(0, (view.k - LOD_FAR) / (LOD_NEAR - LOD_FAR)));
+  const size = [cv.width / dpr, cv.height / dpr];
+  const setUniforms = p => {
+    gl.uniform2f(gl.getUniformLocation(p, 'u_pan'), view.x, view.y);
+    gl.uniform1f(gl.getUniformLocation(p, 'u_zoom'), view.k);
+    gl.uniform2f(gl.getUniformLocation(p, 'u_size'), size[0], size[1]);
+    gl.uniform1f(gl.getUniformLocation(p, 'u_lod'), lod);
+  };
+
+  // Clumps first, behind everything, fading in as detail fades out.
+  if (lod > 0.02) {
+    gl.useProgram(clumpProg); setUniforms(clumpProg);
+    gl.uniform1f(gl.getUniformLocation(clumpProg, 'u_fade'), lod);
+    attrib(clumpProg, 'a_pos', buffers.clumps.pos, 2);
+    attrib(clumpProg, 'a_size', buffers.clumps.size, 1);
+    gl.drawArrays(gl.POINTS, 0, buffers.clumps.count);
+  }
+
+  gl.useProgram(edgeProg); setUniforms(edgeProg);
+  for (const [kind, b] of Object.entries(buffers.edges)) {
+    if (!b.count) continue;
+    const c = EDGE_COLOR[kind];
+    const loc = gl.getAttribLocation(edgeProg, 'a_color');
+    gl.disableVertexAttribArray(loc);
+    gl.vertexAttrib3f(loc, c[0], c[1], c[2]);
+    attrib(edgeProg, 'a_detail', b.detail, 2);
+    attrib(edgeProg, 'a_clump', b.clump, 2);
+    // Edges thin out as they collapse: at full clump they would be a solid
+    // block of colour between two points.
+    gl.uniform1f(gl.getUniformLocation(edgeProg, 'u_fade'),
+      (kind === 'extracted' ? 0.30 : 0.16) * (1 - lod * 0.9));
+    gl.drawArrays(gl.LINES, 0, b.count);
+  }
+
+  gl.useProgram(nodeProg); setUniforms(nodeProg);
+  attrib(nodeProg, 'a_detail', buffers.detail, 2);
+  attrib(nodeProg, 'a_clump', buffers.clump, 2);
+  attrib(nodeProg, 'a_color', buffers.color, 3);
+  attrib(nodeProg, 'a_size', buffers.size, 1);
+  attrib(nodeProg, 'a_local', buffers.local, 1);
+  attrib(nodeProg, 'a_dim', buffers.dim, 1);
+  gl.drawArrays(gl.POINTS, 0, buffers.count);
+
+  drawLabels(lod);
+}
+
+
+/// Canvas fallback. Slower than one draw call per pass, but the viewport
+/// bounds how much there is to draw, so at a few thousand nodes it keeps up.
+function render2d() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const g = ctx2d;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#0e1a24';
+  g.fillRect(0, 0, cv.width / dpr, cv.height / dpr);
+  g.save();
+  g.translate(view.x, view.y);
+  g.scale(view.k, view.k);
+
+  const lod = lodNow();
+  const at = n => {
+    const c = clumpOf.get(n.community);
+    return c
+      ? {x: n.x + (c.cx - n.x) * lod, y: n.y + (c.cy - n.y) * lod}
+      : {x: n.x, y: n.y};
+  };
+
+  if (lod > 0.02) {
+    for (const c of clumpOf.values()) {
+      g.beginPath();
+      g.arc(c.cx, c.cy, 22 + Math.sqrt(c.size) * 9, 0, Math.PI * 2);
+      g.strokeStyle = `rgba(75,192,176,${0.5 * lod})`;
+      g.lineWidth = 1.5 / view.k;
+      g.stroke();
+    }
+  }
+
+  const EC = {extracted: '75,192,176', inferred: '233,196,106', ambiguous: '217,127,69'};
+  for (const e of DATA.edges) {
+    if (focus !== null && !(visible(e.s) && visible(e.t))) continue;
+    const a = byId.get(e.s), b = byId.get(e.t);
+    if (!a || !b) continue;
+    const pa = at(a), pb = at(b);
+    g.beginPath();
+    g.moveTo(pa.x, pa.y);
+    g.lineTo(pb.x, pb.y);
+    g.strokeStyle = `rgba(${EC[e.c] || EC.ambiguous},${(e.c === 'extracted' ? 0.3 : 0.16) * (1 - lod * 0.9)})`;
+    g.lineWidth = (e.c === 'extracted' ? 1.3 : 0.8) / view.k;
+    g.stroke();
+  }
+
+  for (const n of DATA.nodes) {
+    if (focus !== null && !visible(n.id)) continue;
+    const p = at(n);
+    const r = (n.hub ? 4.5 : n.local ? 3 : 2) / view.k;
+    g.beginPath();
+    g.arc(p.x, p.y, r, 0, Math.PI * 2);
+    g.fillStyle = n.hub ? '#e9c46a' : n.local ? '#4bc0b0' : '#4a5f70';
+    g.globalAlpha = (n.local ? 1 : 0.5) * (1 - lod * 0.82);
+    g.fill();
+    if (n.id === hover || n.id === focus) {
+      g.globalAlpha = 1;
+      g.strokeStyle = '#e6eef5';
+      g.lineWidth = 1.6 / view.k;
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+  g.restore();
+  drawLabels(lod);
+}
+
+/* ---- Labels on a 2D canvas over the GL one --------------------------------
+   Text in WebGL means a glyph atlas and per-character quads; a 2D context on
+   top costs one pass over the few nodes whose labels are actually legible. */
+// Without WebGL the geometry is drawn on the same canvas, so labels share it
+// rather than sitting on a second layer.
+const tc = USE_GL ? document.getElementById('t') : cv;
+const tx = tc.getContext('2d');
+
+function drawLabels(lod) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  tx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // In 2D mode this canvas already holds the graph; clearing it would erase
+  // what was just drawn.
+  if (USE_GL) tx.clearRect(0, 0, tc.width / dpr, tc.height / dpr);
+  tx.textAlign = 'center';
+
+  // Zoomed out, only subsystems are named — that is the whole point of the
+  // clump level, and 600 symbol labels would be noise anyway.
+  if (lod > 0.35) {
+    tx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    for (const c of clumpOf.values()) {
+      const x = c.cx * view.k + view.x, y = c.cy * view.k + view.y;
+      if (x < -80 || y < -40 || x > tc.width / dpr + 80 || y > tc.height / dpr + 40) continue;
+      tx.fillStyle = `rgba(230,238,245,${Math.min(1, lod * 1.4)})`;
+      tx.fillText(c.label, x, y + 4);
+      tx.font = '11px ui-monospace, monospace';
+      tx.fillStyle = `rgba(99,121,140,${lod})`;
+      tx.fillText(String(c.size), x, y + 19);
+      tx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+    }
+  }
+
+  // Zoomed in, name the symbols — but only those on screen, so the cost is
+  // bounded by the viewport rather than by the graph.
+  if (lod < 0.55) {
+    tx.font = '11px ui-sans-serif, system-ui, sans-serif';
+    tx.textAlign = 'left';
+    const alpha = 1 - lod / 0.55;
+    const w = tc.width / dpr, h = tc.height / dpr;
+    for (const n of DATA.nodes) {
+      if (!n.local) continue;
+      if (view.k < 0.9 && !n.hub && n.id !== hover && n.id !== focus) continue;
+      const x = n.x * view.k + view.x, y = n.y * view.k + view.y;
+      if (x < -60 || y < -20 || x > w + 60 || y > h + 20) continue;
+      tx.fillStyle = n.id === hover || n.id === focus
+        ? '#e6eef5' : `rgba(199,213,224,${alpha * 0.85})`;
+      tx.fillText(n.label, x + 8, y + 4);
+    }
+  }
+}
+
+function draw() { render(); }
+
+/// Where a node currently appears, which depends on how far out we are: at
+/// full clump level a symbol is drawn at its subsystem's centre, so that is
+/// also where it must be clicked.
+function project(n) {
+  const lod = lodNow();
+  const c = clumpOf.get(n.community);
+  if (!c) return {x: n.x, y: n.y, s: 1};
+  return {x: n.x + (c.cx - n.x) * lod, y: n.y + (c.cy - n.y) * lod, s: 1};
+}
+
+/* ---- Interaction ------------------------------------------------------- */
+function resize() {
+  requestViewport();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  for (const el of [cv, tc]) {
+    el.width = innerWidth * dpr; el.height = innerHeight * dpr;
+    el.style.width = innerWidth + 'px'; el.style.height = innerHeight + 'px';
+  }
+  draw();
+}
+addEventListener('resize', () => { resize(); });
+
+function at(mx, my) {
+  let best = null, bd = 14;
+  for (const n of DATA.nodes) {
+    if (focus !== null && !visible(n.id)) continue;
+    const p = project(n);
+    const dx = p.x * view.k + view.x - mx, dy = p.y * view.k + view.y - my;
+    const d = Math.hypot(dx, dy);
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best;
+}
+
+let drag = null;
+cv.addEventListener('mousedown', e => { drag = {x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false}; cv.classList.add('drag'); });
+addEventListener('mouseup', e => {
+  if (drag && !drag.moved) {
+    const n = at(e.clientX, e.clientY);
+    setFocus(n && n.id !== focus ? n.id : null);
+  }
+  drag = null; cv.classList.remove('drag');
+});
+addEventListener('mousemove', e => {
+  if (drag) {
+    if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) drag.moved = true;
+    view.x = drag.vx + e.clientX - drag.x; view.y = drag.vy + e.clientY - drag.y;
+    draw(); requestViewport(); return;
+  }
+  const n = at(e.clientX, e.clientY);
+  const tip = document.getElementById('tip');
+  if (n) {
+    hover = n.id;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - 310) + 'px';
+    tip.style.top = (e.clientY + 14) + 'px';
+    tip.innerHTML = `<b>${esc(n.label)}</b><code>${esc(n.file || 'extern')}</code><br>
+      ${n.degree} Kanten${n.hub ? ' · Verbindungsknoten' : ''}`;
+  } else { hover = null; tip.style.display = 'none'; }
+  draw();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  view.x = e.clientX - (e.clientX - view.x) * f;
+  view.y = e.clientY - (e.clientY - view.y) * f;
+  view.k *= f; draw(); requestViewport();
+}, {passive: false});
+
+function setFocus(id) {
+  focus = id;
+  neighbours = new Set();
+  if (id !== null) {
+    for (const e of DATA.edges) {
+      if (e.s === id) neighbours.add(e.t);
+      if (e.t === id) neighbours.add(e.s);
+    }
+  }
+  uploadFocus();
+}
+addEventListener('keydown', e => { if (e.key === 'Escape') setFocus(null); });
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+document.querySelectorAll('button[data-mode]').forEach(b => {
+  b.onclick = () => {
+    mode = b.dataset.mode;
+    document.querySelectorAll('button[data-mode]').forEach(o =>
+      o.setAttribute('aria-pressed', String(o === b)));
+    // Every position changes, so the clumps and the frame have to be refetched
+    // before anything is drawn — a stale overview would put the labels in the
+    // wrong places.
+    fetch(`/overview?mode=${mode}`)
+      .then(r => r.json())
+      .then(d => {
+        OVERVIEW = d.clumps;
+        BOUNDS = d.bounds;
+        clumpOf.clear();
+        for (const c of OVERVIEW) {
+          clumpOf.set(c.id, {cx: c.cx, cy: c.cy, label: c.label || '', size: c.size});
+        }
+        rebuildSubsystemList();
+        fitAll();
+        fetchViewport();
+      })
+      .catch(() => {});
+  };
+});
+
+const q = document.getElementById('q'), hits = document.getElementById('hits');
+
+// Searches what is currently loaded. The page no longer holds the whole
+// graph, so a name off screen is not findable here — that is what the MCP
+// tools are for, and pretending otherwise would be worse than the limit.
+q.oninput = () => {
+  const v = q.value.trim().toLowerCase();
+  hits.innerHTML = '';
+  if (!v) return;
+  DATA.nodes
+    .filter(n => n.local && (n.label + ' ' + n.file).toLowerCase().includes(v))
+    .sort((a, b) => b.degree - a.degree)
+    .slice(0, 12)
+    .forEach(n => {
+      const li = document.createElement('li');
+      li.innerHTML = `<b>${esc(n.label)}</b><span>${n.degree}</span>`;
+      li.onclick = () => { setFocus(n.id); centre(n); };
+      hits.appendChild(li);
+    });
+};
+
+function centre(n) {
+  const p = project(n);
+  view.k = Math.max(view.k, 1.4);
+  view.x = (innerWidth + 270) / 2 - p.x * view.k;
+  view.y = innerHeight / 2 - p.y * view.k;
+  draw();
+}
+
+const comms = document.getElementById('comms');
+// Subsystems come from the overview, which covers the whole graph — the loaded
+// viewport is only what happens to be on screen. Rebuilt on a layout switch,
+// since the centres move.
+function rebuildSubsystemList() {
+  comms.innerHTML = '';
+  [...OVERVIEW].sort((a, b) => b.size - a.size).slice(0, 16).forEach(c => {
+    const li = document.createElement('li');
+    li.innerHTML = `<b>${esc(c.label || 'Teilsystem ' + c.id)}</b><span>${c.size}</span>`;
+    li.onclick = () => {
+      setFocus(null);
+      view.k = Math.max(view.k, 1.2);
+      view.x = (innerWidth + 270) / 2 - c.cx * view.k;
+      view.y = innerHeight / 2 - c.cy * view.k;
+      draw(); requestViewport();
+    };
+    comms.appendChild(li);
+  });
+}
+rebuildSubsystemList();
+
+resize();
+fitAll();
+fetchViewport();
+</script>

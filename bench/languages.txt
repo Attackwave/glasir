@@ -1,0 +1,248 @@
+# Per-language floors for `glasir langcheck --check`.
+#
+# `bench/baseline.txt` guards retrieval on *this* tree, which is Rust: six of
+# its seven floors read nothing else, so a scanner that stopped finding Julia
+# definitions moves none of them. These floors guard extraction instead.
+#
+#   <language>  <min defs/kLOC>  <min edges/kLOC>  <max % on <module>>
+#
+# **They are measured against `bench/langs`, not against a corpus of foreign
+# code**, and that is the whole reason this file can be a CI gate. The corpus
+# these numbers were calibrated with is 1.8 GB of clones under `tmp/`: GPL in
+# one case, unclear in five, and every permissive one would mean carrying its
+# copyright notice. `bench/langs` is 25 files of our own, one per language,
+# all writing the same four functions — a charge that refuses over a limit —
+# so a number that differs between two languages is a scanner difference
+# rather than a program difference.
+#
+# **A 25-line fixture catches what 720,000 lines catch.** Sabotaging Go's
+# `func` keyword, which is the shape a new language version produces, takes
+# the fixture from 0% on `<module>` to 100%; on the real corpus it took 3% to
+# 99%. What does *not* transfer is the yield: definitions per 1,000 lines are
+# 208 on the fixture against 45 in gin, because a fixture is all signature and
+# no body. Hence the floors below sit at 60% of the fixture's own measurement
+# — they check that extraction still happens, not that a corpus is normal.
+#
+# **The third number is the sharp one.** A yield figure moves by a third when
+# a corpus changes mix — gin measures 81, 112 and 97 definitions per 1,000
+# lines across three of its own subdirectories — while `<module>` stays at
+# 1-2% in all three. It is the share of references with no enclosing
+# definition, and a scanner that stops recognising a keyword has nothing else
+# to attribute them to.
+#
+# Ceilings are per language on purpose. Erlang's `-export` and `-define` are
+# file-level attributes and Julia's `module ... end` legitimately encloses
+# nothing, so both sit above zero here; on real code a C header is 70% and
+# RSpec's blocks are 100%, which one global bound could not express.
+#
+# Measured values, not goals. Raise one in the same commit that improves it;
+# lower one only with the reason. Run `glasir langcheck bench/langs` to see
+# what the numbers are now, and `glasir langcheck tmp/corpus` against real
+# code when the clones are present.
+
+#         lang         defs  edges  <module>%
+Apex                      130    104      10
+ArkTs                     142    142      10
+Awk                        86    114      10
+Bash                       96    168      10
+Bicep                     170    163      10
+Blade                     160    214      10
+C                         120     96      10
+CSharp                    116     66      10
+# 166/133 -> 177/155: the fixture now carries `defmulti`, `defmethod` and
+# `deftest`, so it extracts more. Raised in the commit that earned it — the
+# previous one claimed this and did not apply it.
+Cairo                     142    142      10
+Cfml                      102    136      10
+Cfscript                   98    130      10
+ChiaLisp                  150    150      10
+Clojure                   177    155      10
+Cmake                      90    120      10
+Cpp                       123    105      10
+Crystal                   114    114      10
+Cuda                      109    109      10
+Elixir                    150    100      10
+# 29% -> 0% on the fixture, 13% -> 7% on 2.2M lines of OTP. Every
+# `-attribute(...)` other than `-module` and `-record` fell through to the
+# call branch, so `-export([f/1])` and `-define(X, 1)` were recorded as
+# calls from `<module>`. The parenthesised argument is skipped too, or a
+# name inside it reads as one.
+Erlang                    126    220       5
+Fennel                    176    176      10
+GdScript                  180    103      10
+Go                        133    133      10
+GoTemplate                160    214      10
+Hare                      142    142      10
+Haskell                   166     66      10
+# 41% -> 3% on 2,263 Terraform files, and the floors drop because a second
+# fixture joined: `.tftest.hcl` and `.tfcomponent.hcl` carry block types the
+# `.tf` grammar does not — `run` 410, `component` 193, `stack` 35 — so a test
+# file yielded no definition and every assertion in it was attributed to the
+# file. 1,318 of 1,703 references across 555 `.hcl` files. Empty files
+# 364 -> 141, definitions 144 -> 167 per 1,000 lines.
+HclTerraform               76    114       5
+# New. `CREATE INDEX … ON t` names the table it covers and had no scope of
+# its own, so the reference fell to the file; index, sequence, type, domain
+# and schema are statement-scoped now. What remains on the corpus is real:
+# a DDL script or an `INSERT` run has no enclosing definition, which is why
+# the corpus reads 66% and this fixture 0%.
+Ispc                      178    142      10
+Janet                     141    141      10
+Jinja                     160    214      10
+Jsonnet                   184    184      10
+Just                      231    404      10
+Liquid                    188    188      10
+LlvmIr                    112    150      10
+Luau                      142    142      10
+Makefile                  184    322      10
+Meson                     184    184      10
+Move                      162    130      10
+Nasm                      112    150      10
+ObjC                       92     92      10
+ObjectScript              134    134      10
+Pascal                     75     75      10
+Plsql                      83    104      10
+Pony                      157    209      10
+Prisma                    120    150      10
+Puppet                    126    126      10
+Qml                       125    125      10
+ReScript                  142    142      10
+Smali                     137    137      10
+Soql                      132     88      10
+Sosl                       83    104      10
+Sql                       120     90       5
+Java                      139     79      10
+# 25% -> 0% on the fixture, 67% -> 52% on the corpus: the body of a
+# `function` opened no level, so the first `end` inside it — an `if`'s —
+# closed the function. Third language with this shape after Lua and
+# Fortran, and it needs the same two halves: open the body *and* record
+# the definition one level below it. `base` measures 32% -> 9%; what
+# remains is `@testset "…" begin … end`, a macro block with no enclosing
+# name — 88 of 256 stdlib files are tests, and excluding them measures 12%.
+Julia                     142    114       5
+Kotlin                    177     88      10
+# New: there was no Lisp fixture at all, which is why a Scheme scope bug went
+# unseen — the corpus reported 35% and nothing else could. `(define (f args)`
+# puts the name inside a nested paren, and both halves of the fix are needed:
+# counting the parameter list's paren *and* setting the definition's depth two
+# below. Either one alone changes nothing; reverting both takes this fixture
+# from 0% to 100%.
+Lisp                     120    144      10
+# Definitions 147 -> 255 per 1,000 lines on Nim's own tree: `const` alone on
+# its line with the names indented under it is 2,968 of 8,516 declarations —
+# a third of them, and none was found. Empty files 454 -> 318. The floor is
+# 200 rather than 60% of the fixture, because that is what catches the
+# regression: reverting takes the fixture 238 -> 143 definitions while
+# `<module>` does not move at all.
+Nim                       200    114       5
+OCaml                     133    133      10
+Perl                       77     77      10
+Php                       113     64      10
+R                          81    109      10
+Ruby                      144     96      10
+Rust                      103    103      10
+Scala                     150     85      10
+Solidity                   77     77      10
+Squirrel                  107    142      10
+Starlark                  106    141      10
+Swift                     100     79      10
+# 21% -> 3%: `<Assembly: AssemblyTitle("x")>` is a declaration, and 129 of
+# 469 VB files in the sample corpus are a generated AssemblyInfo.vb that is
+# nothing but these. Edges 233 -> 157; every removed one was false.
+Tcl                        81    109      10
+Teal                      142    142      10
+Templ                     141    187      10
+TlaPlus                   187    187      10
+Vb                         94     63       5
+
+# The twenty that had a rule file and no fixture, so `langcheck --check` could
+# not see them at all. Writing them found two scanner defects real code could
+# not: Lua closed a function on the first `end` inside it (an `if`'s), and
+# Fortran read `end function charge` as a second definition of `charge` —
+# every subroutine and function counted twice. Neither language appears in
+# tmp/corpus, so the fixture was the only instrument that could find them.
+Ada                        88     88      10
+CapnProto                  90      0      10
+D                         115     92      10
+Dart                       92    115      10
+Elm                       177    422      10
+FlatBuffers               112      0      10
+# 7% -> 0%: `if (…) then … end if` opened no level, so its `end if`
+# closed the enclosing function and the call after it fell to `<module>`.
+# The fix needs both halves — opening the block *and* recording the
+# definition one level below the paren that opened its body, since an
+# inner `end` drops back to exactly that depth.
+Fortran                    68    257       5
+Gleam                      85    114      10
+GraphQL                    94     63      10
+# Both fixtures gained a destructuring parameter: `({ a, b }) => …` opens a
+# brace inside its own parameter list, and the matching one closed the
+# constant, putting every call in the body on `<module>`. The bug was in
+# shared `scope.rs`, so it moved eight languages at once — JavaScript 61% ->
+# 38%, Julia 52% -> 27%, TypeScript 37% -> 21%, Bash 23% -> 11%.
+JavaScript                115    115       5
+Lean                      171     85      10
+Lua                       114    114      10
+Mojo                      120    120      10
+Protobuf                  163      0      10
+PureScript                282    635      10
+Python                    114    114      10
+Thrift                     90     60      10
+TypeScript                115    115       5
+Verilog                    85     85      10
+Vimscript                  86    200      10
+Wolfram                   107    142      10
+Zig                       199    114      10
+Batch                     141    187      10
+Cobol                     291    166      10
+Cypher                    204    136      10
+Dockerfile                204    136      10
+FSharp                    200    399      10
+Fish                      103    207      15
+Groovy                    130    130      10
+Latex                     176    176      10
+Matlab                    112    150      10
+Nix                       158    237      10
+Odin                      136    136      10
+PowerShell                 93    219      10
+Shader                    102    136      10
+Svelte                    136    136      10
+Typst                     136    136      10
+Vhdl                      107     85      10
+Vue                       120    120      10
+Wat                       162    162      10
+Agda                      249    150      10
+Astro                     125    156      10
+BitBake                   158    394      10
+Magma                     142    142      10
+Mermaid                   624    500      10
+Pine                      158    158      10
+Slang                     178    142      10
+Smithy                    138    222      10
+Sway                      136    136      10
+Wit                       141     93      10
+Css                       160      0      10
+Html                      281    375      10
+Json                      900      0      10
+Xml                       875      0      10
+Yaml                      642      0      10
+Beancount                 375    375      10
+DeviceTree                112     75      10
+GoMod                      68    136      10
+LinkerScript              132    176      10
+Nickel                    403    750      10
+Pkl                       273    273      10
+Ron                       309     88      10
+TableGen                  200    399      10
+BibTeX                    375     53      10
+DotEnv                    562      0      10
+Gn                        309     88      10
+Ini                       450    225      10
+Properties                562    562      10
+Requirements              281      0      10
+Rst                       102     68      10
+Kconfig                   187    125      10
+FunC                      178    142      10
+Hyprlang                  141     93      10
+OracleForms                99     99      10
+SshConfig                 160    107      10

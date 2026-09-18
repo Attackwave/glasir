@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glasir.dev/schemas/contracts.v1.schema.json",
+  "title": "Glasir cross-repository contracts v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "package"],
+  "properties": {
+    "schema": {"const": "glasir.contracts.v1"},
+    "package": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}}},
+    "exports": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["symbol", "contract"], "properties": {"symbol": {"type": "string", "minLength": 1}, "contract": {"type": "string", "minLength": 1}}}},
+    "imports": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["package", "version", "contract"], "properties": {"package": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}, "contract": {"type": "string", "minLength": 1}}}}
+  }
+}

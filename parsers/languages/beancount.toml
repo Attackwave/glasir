@@ -1,0 +1,12 @@
+schema_version = 1
+language = "beancount"
+revision = 1
+
+[lexical]
+identifier_dashes = true
+line_comments = [";"]
+doc_comments = [";"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "true", "false", "null", "go", "compatible", "reg", "status", "string", "int", "bit", "list", "dag", "code"]

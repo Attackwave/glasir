@@ -1,0 +1,11 @@
+schema_version = 1
+language = "julia"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+block_comment = ["#=", "=#"]
+
+[calls]
+exclude = ["if", "elseif", "else", "while", "for", "return", "begin", "try", "catch", "finally"]

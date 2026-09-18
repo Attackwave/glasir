@@ -1,0 +1,17 @@
+% Keeps the running balance for one account.
+
+\newcommand{\limitamount}{5000}
+
+\newcommand{\refuse}[1]{%
+  \warnowner{#1}%
+}
+
+\newcommand{\commitentry}[2]{%
+  \writeentry{#1}{#2}%
+}
+
+% Bills the account and returns what is left.
+\newcommand{\charge}[2]{%
+  \refuse{#1}%
+  \commitentry{#1}{#2}%
+}

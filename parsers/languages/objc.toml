@@ -1,0 +1,11 @@
+schema_version = 1
+language = "objc"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "switch", "return", "self", "super", "nil", "implementation", "interface", "end", "import", "property", "synthesize"]

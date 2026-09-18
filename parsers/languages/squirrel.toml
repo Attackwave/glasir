@@ -1,0 +1,19 @@
+schema_version = 1
+language = "squirrel"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "foreach", "switch", "return", "local", "function", "class", "try", "catch", "throw"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+    { keyword = "class", scope = "body" },
+]

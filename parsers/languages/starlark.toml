@@ -1,0 +1,17 @@
+schema_version = 1
+language = "starlark"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "elif", "else", "for", "return", "load", "not", "and", "or", "in", "pass", "break", "continue"]
+
+[generic]
+braces = false
+receivers = ["."]
+definitions = [
+    { keyword = "def", scope = "body_with_docs" },
+]

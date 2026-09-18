@@ -1,0 +1,10 @@
+schema_version = 1
+language = "python"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "elif", "while", "for", "return", "with", "assert", "import", "from", "raise"]

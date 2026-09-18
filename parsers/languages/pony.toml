@@ -1,0 +1,25 @@
+schema_version = 1
+language = "pony"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "then", "else", "elseif", "while", "for", "do", "end", "match", "recover", "return", "error"]
+
+[generic]
+braces = false
+block_open = ["do", "then"]
+block_end = ["end"]
+receivers = ["."]
+definitions = [
+    { keyword = "fun", scope = "body_with_docs" },
+    { keyword = "be", scope = "body_with_docs" },
+    { keyword = "new", scope = "body_with_docs" },
+    { keyword = "class", scope = "body" },
+    { keyword = "actor", scope = "body" },
+    { keyword = "primitive", scope = "body" },
+]

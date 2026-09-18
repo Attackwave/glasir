@@ -1,0 +1,11 @@
+schema_version = 1
+language = "purescript"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["{-", "-}"]
+
+[calls]
+exclude = ["if", "then", "else", "case", "of", "let", "in", "where", "do", "ado", "import", "module", "data", "type", "newtype", "class", "instance"]

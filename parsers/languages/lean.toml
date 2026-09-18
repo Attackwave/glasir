@@ -1,0 +1,16 @@
+schema_version = 1
+language = "lean"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["/-", "-/"]
+
+[calls]
+# Empty on purpose: the hand-written scanner this file replaces excludes
+# nothing, and the admission test is identity. Filling it measured one
+# edge better on the corpus (107 -> 106) and was reverted — a rule file
+# that improves on its scanner is a separate change, made against the
+# scanner first.
+exclude = []

@@ -1,0 +1,20 @@
+schema_version = 1
+language = "capnproto"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = []
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "struct", scope = "body" },
+    { keyword = "interface", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "const", scope = "body" },
+]

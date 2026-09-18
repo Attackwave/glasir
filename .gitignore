@@ -1,0 +1,17 @@
+/target
+/tmp
+
+
+# Computed layout for `glasir view`; derived from the graph, not source.
+.glasir-layout
+index.scip
+
+.glasir-graph
+glasir.cdx.json
+.glasir-layout-*
+.glasir-tokens
+.glasir-audit.jsonl
+
+# Build output of the parsers crate. `/target` covers the root only, and
+# 452 artefacts (87 MB) were tracked here before anyone noticed.
+parsers/target/
