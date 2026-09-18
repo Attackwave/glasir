@@ -18,6 +18,16 @@
 //! here is what lets that existing rule do its job.
 
 #[test]
+fn fixture_id_is_safe_for_windows_paths() {
+    let id = crate::fixture_id();
+    assert!(
+        !id.chars()
+            .any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')),
+        "fixture identifier contains a Windows-reserved path character: {id}"
+    );
+}
+
+#[test]
 fn audit() {
     crate::demo_audit();
 }
