@@ -169,6 +169,7 @@ jobs:
           REF: ${{ github.ref_name }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          IMAGE="${IMAGE,,}"
           for tag in $TAGS; do
             docker buildx imagetools create --tag "$tag" \
               "$IMAGE:$REF-amd64" "$IMAGE:$REF-arm64"
