@@ -60,6 +60,9 @@ pub struct Audit {
     /// Records the queue could not take. Reported rather than hidden: a log
     /// with silent holes is worse than one that says where they are.
     dropped: Arc<AtomicU64>,
+    /// Counts write attempts so the self-check can wait for a deliberately
+    /// unwritable destination without racing the background writer.
+    attempts: Arc<AtomicU64>,
 }
 
 enum Command {
@@ -79,6 +82,8 @@ impl Audit {
         let (tx, rx) = mpsc::sync_channel::<Command>(QUEUE);
         let dropped = Arc::new(AtomicU64::new(0));
         let counter = dropped.clone();
+        let attempts = Arc::new(AtomicU64::new(0));
+        let attempted = attempts.clone();
         let stall = Arc::new(AtomicU64::new(0));
         let stalled = stall.clone();
         std::thread::spawn(move || {
@@ -94,6 +99,7 @@ impl Audit {
                         // of drops becomes one note in the file instead of a line each.
                         let now = counter.swap(0, Ordering::Relaxed);
                         missed += now;
+                        attempted.fetch_add(1, Ordering::Relaxed);
                         if write_line(&path, &tree, &rec, missed).is_ok() {
                             missed = 0;
                         }
@@ -104,7 +110,12 @@ impl Audit {
                 }
             }
         });
-        Audit { tx, stall, dropped }
+        Audit {
+            tx,
+            stall,
+            dropped,
+            attempts,
+        }
     }
 
     /// Wedges the writer for `ms` per record. Self-check only: see the
@@ -116,6 +127,15 @@ impl Audit {
     /// Records dropped so far, for the self-check and the operator note.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Write attempts observed by the background worker.
+    ///
+    /// This is intentionally only a test synchronisation point. Production
+    /// callers use the signed log and dropped-record metric rather than an
+    /// in-process counter that resets on restart.
+    pub fn attempts_for_test(&self) -> u64 {
+        self.attempts.load(Ordering::Relaxed)
     }
 
     /// Hands a record to the writer. Never blocks: a full queue drops.

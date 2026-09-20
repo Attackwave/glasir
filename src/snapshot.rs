@@ -198,7 +198,7 @@ pub fn source_times(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u
                 .strip_prefix(root)
                 .unwrap_or(p)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             let nanos = std::fs::metadata(p)
                 .and_then(|m| m.modified())
                 .ok()?

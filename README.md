@@ -177,13 +177,15 @@ glasir serve /srv/repo --http 0.0.0.0:8899 --watch
   stays open — that is the single-machine case.
 - `Origin` validation and a bounded connection pool, per the MCP transport spec.
 
-## Not yet
+## Deployment boundary
 
 For an enterprise deployment, run the separate
-[`glasir-control`](../glasir-be) control plane at the public edge. It supplies
-OIDC resource-server validation, repository routing, code-host permission
-mirroring, central audit and the public TLS boundary. Run every core process
-as a private data plane, never with a public shared secret:
+[Glasir Control](https://github.com/Attackwave/glasir-control) service at the
+public edge. It supplies OIDC resource-server validation, repository routing,
+code-host permission mirroring, central audit and the public TLS boundary.
+Glasir Core remains the private data plane for an individual source tree and
+does not expose those control-plane capabilities itself. Run every Core process
+without a public shared secret:
 
 ```sh
 cd /srv/alpha && CONTROL_TOKEN="$(glasir token add control)"
@@ -221,9 +223,8 @@ server certificate/key and control-plane client certificate in a workload
 secret (or an external-secrets provider), rotate them independently, and do
 not terminate this hop at a plaintext sidecar.
 
-What remains outside a product claim: SAML (use an OIDC-capable IdP), formal
-SOC 2/ISO 27001 certification, a graphical administration console, and
-cross-repository graph resolution. TLS is available (`--tls-cert` / `--tls-key`)
+The Core's standalone scope excludes public identity administration and
+cross-repository orchestration. TLS is available (`--tls-cert` / `--tls-key`)
 for standalone use or terminates at the reverse proxy. Current Core boundaries
 and guarantees are documented in `docs/architecture.md`.
 

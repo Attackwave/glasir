@@ -352,7 +352,17 @@ unless a proxy terminates TLS in front of this process. Pass --tls-cert and \
                 Some(tls) => match rustls::ServerConnection::new(tls.clone()) {
                     Ok(conn) => {
                         let mut tls_stream = rustls::StreamOwned::new(conn, stream);
-                        handle_connection(&state, &cfg, &mut tls_stream)
+                        let result = handle_connection(&state, &cfg, &mut tls_stream);
+                        // A Control Plane client reads the complete backend
+                        // response before it may reuse or retire the socket.
+                        // Closing the TCP stream without TLS close_notify is
+                        // indistinguishable from a truncated response to
+                        // rustls, so finish the protocol after every bounded
+                        // request. The HTTP response already asks for
+                        // `Connection: close`; this is its TLS equivalent.
+                        tls_stream.conn.send_close_notify();
+                        let _ = tls_stream.flush();
+                        result
                     }
                     Err(e) => {
                         eprintln!("http: tls: {e}");
@@ -720,9 +730,32 @@ impl Request {
     }
 }
 
+fn read_line_retry<R: Read>(
+    stream: &mut BufReader<R>,
+    line: &mut String,
+) -> std::io::Result<usize> {
+    loop {
+        match stream.read_line(line) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A socket read timeout is already configured by `serve`.
+                // Some platforms surface an in-flight TLS record as WouldBlock
+                // before that timeout, so retry rather than rejecting a valid
+                // request that has not finished arriving.
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Request>> {
     let mut start = String::new();
-    if stream.read_line(&mut start)? == 0 {
+    if read_line_retry(stream, &mut start)? == 0 {
         return Ok(None); // client closed
     }
     let mut parts = start.split_whitespace();
@@ -738,7 +771,7 @@ fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Re
             return Err(std::io::Error::other("too many headers"));
         }
         let mut line = String::new();
-        if stream.read_line(&mut line)? == 0 {
+        if read_line_retry(stream, &mut line)? == 0 {
             break;
         }
         if line == "\r\n" || line == "\n" {
