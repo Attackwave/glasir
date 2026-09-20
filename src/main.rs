@@ -7122,6 +7122,7 @@ fn demo_audit() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let attempts_before = log.attempts_for_test();
         std::fs::remove_file(&path).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         for _ in 0..50 {
@@ -7133,6 +7134,19 @@ fn demo_audit() {
                 ok: true,
             });
         }
+        // The writer is asynchronous. Waiting for its first failed attempt is
+        // the synchronization the assertion needs: restoring permissions
+        // immediately races the worker and can turn this into a successful
+        // write on a fast or differently scheduled platform.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while log.attempts_for_test() < attempts_before + 50 && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            log.attempts_for_test() >= attempts_before + 50,
+            "the audit writer did not attempt the deliberately unwritable destination"
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
             !path.exists(),
