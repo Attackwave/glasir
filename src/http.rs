@@ -352,7 +352,17 @@ unless a proxy terminates TLS in front of this process. Pass --tls-cert and \
                 Some(tls) => match rustls::ServerConnection::new(tls.clone()) {
                     Ok(conn) => {
                         let mut tls_stream = rustls::StreamOwned::new(conn, stream);
-                        handle_connection(&state, &cfg, &mut tls_stream)
+                        let result = handle_connection(&state, &cfg, &mut tls_stream);
+                        // A Control Plane client reads the complete backend
+                        // response before it may reuse or retire the socket.
+                        // Closing the TCP stream without TLS close_notify is
+                        // indistinguishable from a truncated response to
+                        // rustls, so finish the protocol after every bounded
+                        // request. The HTTP response already asks for
+                        // `Connection: close`; this is its TLS equivalent.
+                        tls_stream.conn.send_close_notify();
+                        let _ = tls_stream.flush();
+                        result
                     }
                     Err(e) => {
                         eprintln!("http: tls: {e}");
