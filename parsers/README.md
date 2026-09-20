@@ -9,14 +9,13 @@ module for that language.
 
 | Language | Extraction implementation | What TOML controls |
 |---|---|---|
-| Go, Zig, Gleam, GraphQL, Protobuf, Solidity, Thrift, FlatBuffers, Cap'n Proto | `src/generic.rs` | Everything: definition keywords and scopes, comments, call exclusions, receivers, block words and lexical options |
-| Rust, Ruby, Python, Java, Haskell, OCaml, Scala, Kotlin, Julia | `src/languages/*.rs` | Comments, identifier options and call exclusions; the syntax a description cannot carry stays Rust — indentation, `static final`, singleton classes, attributes and macros |
-| The other fifty-four | Existing category modules | Not migrated |
+| Some languages | Shared generic scanner | Bundled definition keywords, scopes, comments, call exclusions and lexical options |
+| Some languages | Native parser module plus bundled rules | Syntax that requires state remains Rust; bundled rules supply lexical options |
+| Remaining languages | Native category modules | Not configurable through the public override interface |
 
-A language moves here only when the rule set produces **exactly** what the
-hand-written scanner produced, measured per file over 8.2M lines of foreign
-code. Twenty-two candidates did not and kept their scanners: C, C++, C#, PHP,
-Erlang, Elixir, Clojure, Nim, VB, Swift, TypeScript, JavaScript and others.
+A language moves to a shared rule-driven path only when its fixtures preserve
+the expected definitions, calls, ownership, documentation, and source ranges.
+Languages whose syntax needs additional state keep native scanners.
 What separates them is not language family but how a definition is written —
 C's `int charge(...)`, Bash's `name() {` and R's `name <- function(` define by
 shape, and no list of keywords expresses that. Lua came closest and still
@@ -63,9 +62,10 @@ cargo run --release -- serve /path/to/project --watch --language-rules /tmp/my-g
 ```
 
 An override replaces the **whole file**, not selected keys. Missing language
-files use the bundled version. The accepted names are the forty-three files in
-`parsers/languages/`; an unknown `.toml` file is an error. Non-TOML files are ignored.
-No directory is discovered implicitly and no executable extension is loaded.
+files use the bundled version. The public override interface currently accepts
+`go.toml`, `rust.toml`, and `ruby.toml`; an unknown TOML file is an error.
+Non-TOML files are ignored. No directory is discovered implicitly and no
+executable extension is loaded.
 Use the flag on every analysis or serving invocation that should use overrides;
 `install` does not persist it in editor registrations or generated git hooks.
 
