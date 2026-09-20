@@ -164,12 +164,13 @@ pub fn identify(entries: &[Entry], token: &str, now: u64) -> Option<String> {
         .map(|e| e.name.clone())
 }
 
-/// The token file, re-read when it changes.
+/// The token file, re-read when its identity or contents change.
 ///
-/// Revoking without a restart is the acceptance criterion, and the cheap way to
-/// get it is to stat the file per request — microseconds — and re-read only
-/// when the mtime moved. Parsing on every request would work too and cost more
-/// for nothing.
+/// Revoking without a restart is the acceptance criterion. Metadata catches
+/// normal edits cheaply, while a content fingerprint closes the Windows case
+/// where an atomic replacement can preserve both file length and timestamp.
+/// Token files are intentionally small, so hashing them per request is a
+/// bounded cost for a stronger revocation guarantee.
 pub struct Tokens {
     path: PathBuf,
     cache: Mutex<(Option<FileStamp>, Vec<Entry>)>,
@@ -182,17 +183,20 @@ pub struct Tokens {
 struct FileStamp {
     modified: Option<SystemTime>,
     len: u64,
+    content_hash: String,
     #[cfg(unix)]
     inode: u64,
 }
 
 fn stamp(path: &Path) -> Option<FileStamp> {
     let metadata = std::fs::metadata(path).ok()?;
+    let content_hash = sha256_hex(&std::fs::read(path).ok()?);
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     Some(FileStamp {
         modified: metadata.modified().ok(),
         len: metadata.len(),
+        content_hash,
         #[cfg(unix)]
         inode: metadata.ino(),
     })
