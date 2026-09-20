@@ -3010,6 +3010,12 @@ pub(crate) fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
+    // `read_dir` deliberately makes no ordering promise. The registry assigns
+    // monotonic node IDs while files are folded, so accepting that order would
+    // make an otherwise identical checkout produce a different graph and move
+    // retrieval tie-breaks. Sort once at the boundary rather than asking every
+    // graph consumer to remember this invariant.
+    out.sort();
     out
 }
 
@@ -3274,6 +3280,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_doc_coverage();
     demo_doc_ranking();
     demo_markdown();
+    demo_walk_order();
     demo_parallel_ingest();
     demo_incremental();
     demo_index_scale();
@@ -3282,6 +3289,34 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_batch_build();
     demo_concurrent_compaction();
     println!("phase 2 ok: union view, file scoping, compaction");
+}
+
+/// File discovery is a deterministic input to graph construction.
+///
+/// Directory enumeration order is filesystem-specific. A sorted walk is what
+/// keeps node IDs, snapshots, search tie-breaks, and benchmark recall stable
+/// across an engineer's machine and a clean CI checkout.
+fn demo_walk_order() {
+    let dir = std::env::temp_dir().join(format!("glasir-walk-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("z/nested")).unwrap();
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    // Create in deliberately non-lexical order. A filesystem is free to
+    // return this order, creation order, hash order, or another order entirely.
+    for path in ["z/nested/last.rs", "a/first.rs", "root.rs", "z/middle.rs"] {
+        std::fs::write(dir.join(path), "fn stable() {}\n").unwrap();
+    }
+
+    let files = walk(&dir);
+    let mut expected = files.clone();
+    expected.sort();
+    assert_eq!(
+        files, expected,
+        "walk must canonicalize filesystem enumeration before graph construction"
+    );
+    assert_eq!(files.len(), 4, "the fixture must exercise nested paths");
+
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Hammers the graph with writes while compaction runs in the background: no

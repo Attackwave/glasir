@@ -198,6 +198,11 @@ fn markdown() {
 }
 
 #[test]
+fn walk_order() {
+    crate::demo_walk_order();
+}
+
+#[test]
 fn mcp() {
     crate::demo_mcp();
 }
