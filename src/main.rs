@@ -7211,8 +7211,22 @@ fn demo_audit() {
         rotated.exists(),
         "the log rotates rather than growing forever"
     );
+    // Rotation moves the old file aside. A new live file is intentionally
+    // created lazily by the next record, rather than leaving an empty file
+    // after an otherwise idle service.
+    log.record(audit::Record {
+        who: "anna".into(),
+        tool: "query_graph".into(),
+        args: "after rotation".into(),
+        bytes: 1,
+        ok: true,
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert!(
-        std::fs::metadata(&path).unwrap().len() < 10 * 1024 * 1024,
+        path.exists() && std::fs::metadata(&path).unwrap().len() < 10 * 1024 * 1024,
         "the live file starts over after a rotation"
     );
 
