@@ -1,50 +1,27 @@
-# Ground truth for the documentation in this tree, kept separate from
-# questions.txt on purpose.
-#
-# questions.txt asks "which code does this" and its answers are symbols. These
-# ask "what was intended, and why" — questions whose honest answer is a
-# document section, not a function. Mixing them would have made the code
-# benchmark punish every documentation node for occupying a slot, which is what
-# it did when documents were first indexed: prose recall fell 58% -> 50% with no
-# question in the set that a document could answer.
-#
-# The two files are measured separately for that reason. A change that helps
-# one and hurts the other is a trade to decide, not a regression to revert.
+# Retrieval ground truth for current public architecture and operations
+# documentation. Each expected answer is a root-relative Markdown section.
 
-# The overview section names the layers; the layer sections are the layers.
-# Either answers the question, so both count — pinning only the overview made
-# the set measure a formatting choice rather than whether the answer was found.
-what are the five layers this system is built from?
-  docs/architecture.md#Systemübersicht: Die 5 Schichten von Glasir
-  docs/architecture.md#Schicht 1: Agent & Gateway Layer (Model Context Protocol)
+how does the Core discover, extract, resolve, store, and query source code?
+  docs/architecture.md#Processing pipeline
 
-why is the base graph immutable, and where do changes go instead?
-  docs/architecture.md#Schicht 3: Dynamic Graph Engine & Delta-Buffer Layer
-  src/delta.rs#DeltaStore
+what trust boundary applies when Core runs behind the control plane?
+  docs/architecture.md#Trust boundary
 
-what was the plan for storing the graph without parsing it back?
-  docs/plan.md#1.2 Zero-Copy Persistenz & Memory-Mapping
+how are cross-repository links prevented from becoming guessed dependencies?
+  docs/architecture.md#Cross-repository contracts
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts
 
-what happens when a build is broken or a toolchain is missing?
-  docs/plan.md#3.1 Graceful Degradation (Kaskaden-Parser)
+which operational properties keep snapshots and requests safe?
+  docs/architecture.md#Operational properties
 
-how was the retrieval layer supposed to filter before generating tokens?
-  docs/architecture.md#Schicht 2: Semantic Physics & Retrieval Engine Layer
+how are individual user tokens revoked for a team server?
+  README.md#Running it for a team
 
-what does an agent actually reach this system through?
-  docs/architecture.md#Schicht 1: Agent & Gateway Layer (Model Context Protocol)
+how should an enterprise deployment separate Core from Glasir Control?
+  README.md#Deployment boundary
 
-# Measured and understood, not a weighting bug: this section is three lines of
-# German ("Bei Dateiänderungen sendet der Client textDocument/didChange") and
-# the question is English, so they share no term at all. It scored before B.1
-# only because nothing else matched either; `serve --watch` then brought in code
-# and comments that genuinely are about keeping the index current, and a real
-# match displaced a non-match. Kept in the set: it measures the language gap in
-# this tree's own documentation, which is a real limit on what retrieval can
-# reach. Translating plan.md would fix it, and that is a decision about the
-# documents, not about the ranking.
-what was intended for keeping the index current while someone types?
-  docs/plan.md#3.2 Live-LSP-Integration
+which endpoint reports readiness and which endpoint exposes metrics?
+  README.md#Operating it
 
-how does a request travel through the whole system, end to end?
-  docs/architecture.md#Datenfluss im Gesamtsystem (End-to-End Walkthrough)
+what information must an explicit cross-repository contract carry?
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts

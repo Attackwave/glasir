@@ -1335,11 +1335,6 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     let also = [
         root.join("bench/questions-identifier.txt"),
         root.join("bench/questions-docs.txt"),
-        // The same documentation questions in German. Measured separately
-        // because what differs is the language of the question, not what it
-        // asks: a tree whose documentation is German and whose code is English
-        // is the normal shape in industry, and nothing else here measures it.
-        root.join("bench/questions-docs-de.txt"),
     ];
     let questions = bench::load_questions(&questions_path)?;
     if questions.is_empty() {
@@ -6584,12 +6579,11 @@ fn demo_baseline() {
         println!("phase D.2 skipped: bench/baseline.txt not readable from here");
         return;
     };
-    assert_eq!(base.floors.len(), 7, "one floor per ground truth");
+    assert_eq!(base.floors.len(), 6, "one floor per ground truth");
     for set in [
         "questions",
         "questions-identifier",
         "questions-docs",
-        "questions-docs-de",
         // Not a question file: the partition scores against the same answer
         // symbols through `bench::overview_scale`. It gets a floor because the
         // four above are blind to it — `query_graph` never reads communities,
