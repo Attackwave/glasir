@@ -218,6 +218,12 @@ struct Target {
     /// Config file relative to the user's home, if supported.
     user: Option<&'static str>,
     format: Format,
+    /// Paths under the project that show the client is in use.
+    markers: &'static [&'static str],
+    /// Paths under the user's home that show the client is installed.
+    home_markers: &'static [&'static str],
+    /// What the user does next, printed after a write.
+    next: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -227,13 +233,41 @@ enum Format {
 }
 
 /// The neutral registration is useful to deployment tooling without coupling
-/// the Core to a particular editor, assistant, or vendor configuration.
-const TARGETS: &[Target] = &[Target {
-    name: "mcp",
-    project: Some("glasir-mcp.json"),
-    user: None,
-    format: Format::McpJson,
-}];
+/// the Core to a particular editor, assistant, or vendor configuration, and it
+/// is what `install` writes when no client below is detected.
+///
+/// The clients are written only where they are found. Without them `install`
+/// ended in a file no client reads and a sentence telling the user to finish
+/// the job by hand, which is where a first-time user stops.
+const TARGETS: &[Target] = &[
+    Target {
+        name: "mcp",
+        project: Some("glasir-mcp.json"),
+        user: None,
+        format: Format::McpJson,
+        markers: &[],
+        home_markers: &[],
+        next: "point your MCP client at the entry in glasir-mcp.json",
+    },
+    Target {
+        name: "claude",
+        project: Some(".mcp.json"),
+        user: None,
+        format: Format::McpJson,
+        markers: &[".mcp.json", ".claude"],
+        home_markers: &[".claude"],
+        next: "restart Claude Code in this directory and approve the glasir server",
+    },
+    Target {
+        name: "cursor",
+        project: Some(".cursor/mcp.json"),
+        user: Some(".cursor/mcp.json"),
+        format: Format::McpJson,
+        markers: &[".cursor"],
+        home_markers: &[".cursor"],
+        next: "enable glasir under Cursor Settings > MCP",
+    },
+];
 
 impl Target {
     /// Config path for the requested scope, if this target has one.
@@ -246,9 +280,19 @@ impl Target {
         }
     }
 
-    /// The neutral local registration is always available in project scope.
+    /// Whether the client is in use here. The neutral registration has no
+    /// markers and is always available.
     fn detected(&self, root: &std::path::Path) -> bool {
-        !root.as_os_str().is_empty()
+        if self.markers.is_empty() && self.home_markers.is_empty() {
+            return true;
+        }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        self.markers.iter().any(|m| root.join(m).exists())
+            || home.is_some_and(|h| self.home_markers.iter().any(|m| h.join(m).exists()))
+    }
+
+    fn is_client(&self) -> bool {
+        !self.markers.is_empty()
     }
 }
 
@@ -964,8 +1008,19 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
             }
             found
         }
-        // Without --platform, write the neutral project registration.
-        None => TARGETS.iter().filter(|t| t.detected(root)).collect(),
+        // Without --platform, every detected client, or the neutral file when
+        // none is found.
+        None => {
+            let clients: Vec<&Target> = TARGETS
+                .iter()
+                .filter(|t| t.is_client() && t.detected(root))
+                .collect();
+            if clients.is_empty() {
+                TARGETS.iter().filter(|t| !t.is_client()).collect()
+            } else {
+                clients
+            }
+        }
     };
 
     if selected.is_empty() && !quiet {
@@ -975,6 +1030,7 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     }
 
     let mut wrote = 0;
+    let mut next = Vec::new();
     for target in selected {
         let Some(path) = target.path(root, user_scope) else {
             if !quiet {
@@ -986,16 +1042,29 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
             }
             continue;
         };
+        // A file created here holds absolute paths to this machine, so it must
+        // not be committed; one that existed is the team's and stays tracked.
+        let created = !path.exists();
         match write_registration(target, &path, &exe, &abs, dry) {
-            Ok(true) if quiet => wrote += 1,
             Ok(true) => {
+                if created
+                    && !user_scope
+                    && !dry
+                    && let Some(rel) = target.project
+                {
+                    ignore_generated_files(&abs, &[rel]);
+                }
+                next.push(target.next);
+                wrote += 1;
+                if quiet {
+                    continue;
+                }
                 println!(
                     "{} {}: {}",
                     if dry { "would write" } else { "wrote" },
                     target.name,
                     path.display()
                 );
-                wrote += 1;
             }
             Ok(false) if quiet => {}
             Ok(false) => println!("{}: already registered", target.name),
@@ -1022,7 +1091,10 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     }
 
     if wrote > 0 && !dry && !quiet {
-        println!("\nregistration written; configure your MCP-compatible client to use it.");
+        println!("\nnext:");
+        for step in next {
+            println!("  {step}");
+        }
     }
     Ok(())
 }
@@ -1188,6 +1260,8 @@ fn run_status(args: &cli::Args) -> std::io::Result<()> {
         }
         let state = if !where_.is_empty() {
             format!("registered ({})", where_.join(", "))
+        } else if !target.is_client() {
+            "available (--platform mcp)".into()
         } else if target.detected(root) {
             "detected, not registered".into()
         } else {
@@ -5507,13 +5581,15 @@ fn demo_install() {
     };
 
     // A dry run must change nothing at all.
-    run_install(&args("install", &["--dry-run"])).unwrap();
+    run_install(&args("install", &["--platform", "mcp", "--dry-run"])).unwrap();
     assert!(
         !dir.join("glasir-mcp.json").exists(),
         "--dry-run must not write"
     );
 
-    run_install(&args("install", &[])).unwrap();
+    // Explicit, because detection also reads $HOME and this machine may have
+    // a client installed.
+    run_install(&args("install", &["--platform", "mcp"])).unwrap();
     let registration = dir.join("glasir-mcp.json");
     let mcp: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
@@ -5521,15 +5597,41 @@ fn demo_install() {
     assert_eq!(mcp["mcpServers"]["glasir"]["args"][0], "serve");
 
     // Installing twice must not duplicate anything.
-    run_install(&args("install", &[])).unwrap();
+    run_install(&args("install", &["--platform", "mcp"])).unwrap();
     let again = std::fs::read_to_string(&registration).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&again).unwrap();
     assert!(parsed["mcpServers"]["glasir"].is_object());
+
+    // A team's existing file is merged into and stays tracked.
+    std::fs::write(dir.join(".mcp.json"), r#"{"mcpServers":{"other":{}}}"#).unwrap();
+    run_install(&args("install", &["--platform", "claude"])).unwrap();
+    let claude: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+    assert!(claude["mcpServers"]["other"].is_object());
+    assert!(claude["mcpServers"]["glasir"].is_object());
+    let ignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(!ignore.lines().any(|l| l == ".mcp.json"));
+
+    // A project marker is detected without $HOME, and a file created here
+    // carries absolute paths, so it is ignored rather than committed.
+    std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+    run_install(&args("install", &[])).unwrap();
+    let cursor: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".cursor/mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(cursor["mcpServers"]["glasir"]["args"][0], "serve");
+    let ignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == ".cursor/mcp.json"));
+    assert!(ignore.lines().any(|l| l == "glasir-mcp.json"));
 
     run_uninstall(&args("uninstall", &[])).unwrap();
     let after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
     assert!(after["mcpServers"]["glasir"].is_null());
+    let claude: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+    assert!(claude["mcpServers"]["glasir"].is_null());
+    assert!(claude["mcpServers"]["other"].is_object());
 
     std::fs::remove_dir_all(&dir).unwrap();
     println!("phase 5.2 ok: local MCP registration round-trips cleanly");

@@ -98,8 +98,8 @@ USAGE
   glasir <command> [path] [options]
 
 SETUP
-  install [path]        Write a neutral local MCP registration
-  uninstall [path]      Remove that registration
+  install [path]        Register with detected assistants, add git hooks
+  uninstall [path]      Remove those registrations and hooks
   status [path]         Show registration and graph status
 
 RUNNING
@@ -147,7 +147,7 @@ DIAGNOSTICS
 
 OPTIONS
   --language-rules <dir> Load explicit TOML overrides for Go, Rust and Ruby
-  --platform <name>     Registration target (currently: mcp)
+  --platform <name>     Registration target: claude, cursor, mcp (neutral)
   --user                Install for the user rather than the project
   --dry-run             Print what would be written, change nothing
   --no-hook             install: skip the git hooks that keep the graph current

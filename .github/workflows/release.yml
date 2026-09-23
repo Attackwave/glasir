@@ -24,10 +24,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
+            platform: macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -67,24 +70,38 @@ jobs:
         run: |
           BIN=target/${{ matrix.target }}/release/glasir
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
-          NAME=glasir-${{ github.ref_name }}-${{ matrix.target }}
+          # Tags carry a prefix (`v`, `control-v`); the archive names the product
+          # once and the platform the way a user would look for it.
+          VERSION="${GITHUB_REF_NAME#control-}"
+          VERSION="${VERSION#v}"
+          NAME=glasir-$VERSION-${{ matrix.platform }}
           mkdir -p "dist/$NAME"
           cp "$BIN" LICENSE NOTICE README.md SECURITY.md "dist/$NAME/"
-          cd dist && tar czf "$NAME.tar.gz" "$NAME"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            ARCHIVE="$NAME.zip"
+            7z a -tzip "$ARCHIVE" "$NAME" >/dev/null
+          else
+            ARCHIVE="$NAME.tar.gz"
+            tar czf "$ARCHIVE" "$NAME"
+          fi
           # Checksums are per file and beside it, so a mirror cannot serve a
           # different archive under the same name unnoticed.
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           else
-            openssl dgst -sha256 -r "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            openssl dgst -sha256 -r "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
 
   # Generated from the tagged Cargo.lock, so it describes the build being
   # released rather than whatever was on the branch that day.

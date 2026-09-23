@@ -17,8 +17,35 @@ always produce the same answer.
 > mTLS boundaries, audited administration, cross-repository review, and
 > provider pull-request checks.
 
+## Quickstart
+
+Download the archive for your platform from
+[Releases](https://github.com/Attackwave/glasir/releases) —
+`glasir-<version>-linux-x86_64.tar.gz`, `…-macos-arm64.tar.gz` or
+`…-windows-x86_64.zip` — check it against the `.sha256` beside it, and put
+`glasir` on your `PATH`. Then, in the repository you want to ask about:
+
+```sh
+glasir install .
 ```
-glasir serve . --watch  # index the tree, follow edits, serve on stdio
+
+That registers the server with the assistants it finds — Claude Code
+(`.mcp.json`) and Cursor (`.cursor/mcp.json`) — and installs git hooks that
+keep the graph current after a pull, checkout or rebase. A registration file it
+creates holds absolute paths to your machine, so it is added to `.gitignore`;
+one your team already tracks is merged into, never replaced. With no assistant
+detected it writes a neutral `glasir-mcp.json` for any MCP client; pick a
+target explicitly with `--platform claude|cursor|mcp`.
+
+Restart the assistant and ask it something about the code: *"what breaks if I
+change `parse_config`?"*, *"how does a request reach the database?"*. The
+answers come from `impact`, `query_graph`, `shortest_path` and six more tools
+listed under [What it serves](#what-it-serves).
+
+```sh
+glasir status .             # what is registered, what the graph holds
+glasir why "your question"  # what the search saw, when an answer surprises you
+glasir uninstall .          # remove the registration and the hooks
 ```
 
 ## Why a graph
