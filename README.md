@@ -198,6 +198,40 @@ Rules are validated before indexing, stay fixed until restart, and participate
 in snapshot validity. See [language rule maintenance](parsers/README.md) for the
 schema, examples, tests and current extraction limits.
 
+## Asking in other languages
+
+**English is the preferred language for questions.** Code is almost always
+named in English, and `query_graph` matches the words of a question against
+identifiers and documentation — it does not translate.
+
+Everything structural is independent of language: `impact`, `find_callers`,
+`shortest_path`, `explain_node`, `cycles` and `overview` work on symbols and
+edges, and documentation and comments in any language are indexed.
+
+A question in another language still finds English code when its technical
+words share a stem with the code's — which technical vocabulary often does:
+*server*, *serveur*, *servidor*; *compaction*, *compactage*, *compactación*;
+German *Konfiguration* reaches `configuration` and *Aktion* reaches `action`,
+because German `k` and `z` are matched against English `c` and `t`. Asked in
+German, French and Spanish, the same questions about this repository land in
+the right file, though English ranks the exact symbol highest.
+
+What does not work is a word pair with no common stem — *Raum* and `room`,
+*Leinwand* and `canvas`. Bridging those needs a dictionary or a language model,
+and Glasir deliberately has neither in its query path, so the same question
+always returns the same answer. When a question misses, the reply lists the
+repository's own vocabulary so the assistant can ask again in its words.
+
+| Question language | Status |
+|---|---|
+| English | Preferred; the reference for all benchmarks |
+| German | Supported: question words are filtered, spelling differences to English are bridged |
+| Other Latin-script languages | Works through shared technical stems; question words such as *comment* or *qué* are not filtered and count as search terms |
+| Other scripts (Cyrillic, CJK, …) | Not measured; free-text questions are unlikely to match English code, structural tools are unaffected |
+
+In practice the assistant in front of Glasir usually phrases its tool calls in
+the code's own terms, whatever language you ask it in.
+
 ## Running it for a team
 
 ```
