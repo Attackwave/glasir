@@ -204,6 +204,7 @@ pub fn parse_dart(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();

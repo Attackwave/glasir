@@ -14,6 +14,7 @@ pub fn parse_zig(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -133,6 +134,7 @@ pub fn parse_nim(src: &str) -> FileFacts {
         block_comment_end: Some("]#"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -295,6 +297,7 @@ pub fn parse_odin(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -377,6 +380,7 @@ pub fn parse_c(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -570,6 +574,7 @@ pub fn parse_cpp(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -787,6 +792,7 @@ pub fn parse_swift(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -964,6 +970,7 @@ pub fn parse_ada(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1097,6 +1104,7 @@ pub fn parse_d(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1300,6 +1308,7 @@ pub fn parse_wat(src: &str) -> FileFacts {
         block_comment_end: Some(";)"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();

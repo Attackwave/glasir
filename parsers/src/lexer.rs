@@ -48,6 +48,14 @@ pub struct CommentStyle<'s> {
     /// Off everywhere else, because a dash is subtraction in every language
     /// that is not a Lisp: `a-b` must stay three tokens there.
     pub ident_dashes: bool,
+    /// Whether a backslash keeps a quote from closing an `r"…"` string.
+    ///
+    /// Rust's raw strings have no escapes at all — `r"C:\"` ends at the second
+    /// quote — but Python's do: `r"a\"b"` is one string, and the backslash
+    /// stays in it. Read the Rust way, one regex such as `r"(['\"]?)"` closed
+    /// early and the rest of the file became a string: measured on graphify's
+    /// `cli.py`, 15 of 34 functions after that line were missing from the graph.
+    pub raw_escapes: bool,
 }
 
 impl Default for CommentStyle<'_> {
@@ -59,6 +67,7 @@ impl Default for CommentStyle<'_> {
             block_comment_end: Some("*/"),
             ident_suffix_marks: false,
             ident_dashes: false,
+            raw_escapes: false,
         }
     }
 }
@@ -560,6 +569,10 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.pos = k + target_quotes;
 
                 while self.pos < bytes.len() {
+                    if self.comment_style.raw_escapes && hash_count == 0 && bytes[self.pos] == b'\\' {
+                        self.pos += 2;
+                        continue;
+                    }
                     if bytes[self.pos] == quote_byte {
                         let mut match_quotes = 0;
                         while match_quotes < target_quotes

@@ -5,6 +5,8 @@ revision = 1
 [lexical]
 line_comments = ["#"]
 doc_comments = ["#"]
+# `r"a\"b"` is one string: a backslash keeps the quote from closing it.
+raw_string_escapes = true
 
 [calls]
 exclude = ["if", "elif", "while", "for", "return", "with", "assert", "import", "from", "raise"]

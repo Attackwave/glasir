@@ -22,6 +22,7 @@ pub fn parse_python(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: true,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -166,6 +167,7 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -341,6 +343,7 @@ pub fn parse_java(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -591,6 +594,7 @@ pub fn parse_csharp(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -823,6 +827,7 @@ pub fn parse_php(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -991,6 +996,7 @@ pub fn parse_groovy(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1216,6 +1222,7 @@ pub fn parse_vb(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1439,6 +1446,7 @@ pub fn parse_cobol(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();

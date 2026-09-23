@@ -35,7 +35,7 @@ use std::path::Path;
 ///
 /// 3: the step 2-5 and 8a audit repairs.
 /// 4: definition byte ranges, so a tool can return source and not only a name.
-const FORMAT_VERSION: u32 = 23;
+const FORMAT_VERSION: u32 = 24;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
