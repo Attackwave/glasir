@@ -208,6 +208,11 @@ fn mcp() {
 }
 
 #[test]
+fn change_tools() {
+    crate::demo_change_tools();
+}
+
+#[test]
 fn parallel_ingest() {
     crate::demo_parallel_ingest();
 }

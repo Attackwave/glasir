@@ -69,7 +69,7 @@ folder you have trusted. `install` prints the step for each one it wrote.
 
 Restart the assistant and ask it something about the code: *"what breaks if I
 change `parse_config`?"*, *"how does a request reach the database?"*. The
-answers come from `impact`, `query_graph`, `shortest_path` and six more tools
+answers come from `impact`, `query_graph`, `shortest_path` and nine more tools
 listed under [What it serves](#what-it-serves).
 
 ```sh
@@ -132,7 +132,7 @@ source and extraction configuration still match.
 
 ## What it serves
 
-Nine MCP tools, over stdio for a local editor or Streamable HTTP for a remote
+Twelve MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
@@ -145,7 +145,24 @@ agent:
   recorded, so nothing has to open the file or guess a line
 - `find_callers` — the direct callers of one symbol, as one list
 - `detect_changes` — a git diff mapped to the symbols it touches and what
-  depends on them; the only tool that reads the working tree
+  depends on them
+
+Three answer what to do *before* a commit, which is when an answer is
+cheapest to act on:
+
+- `affected_tests` — the tests that reach a symbol or the uncommitted diff,
+  nearest first, with the files to run. Recognises the test conventions of
+  each language (`tests/`, `spec/`, `__tests__/`, `test_x`, `x_test`,
+  `x.spec`, `FooTest`, `TestX`)
+- `co_changes` — the files that change in the same commits as one file, from
+  the git history, marking those no edge in the graph connects: the hidden
+  coupling — a template, a migration, a client in another language — that
+  `impact` cannot see because no code names it
+- `check_architecture` — the architecture contract in `glasir-rules.txt`
+  (`deny <path> -> <path>`, `no-cycles`) checked against the graph, every
+  broken rule with the edges that break it; pass rules ad hoc to test a
+  boundary before writing it down. Under `serve --watch` the graph follows
+  the working tree, so a change is checked before it is committed
 
 **Every answer comes twice: as prose and as `structuredContent`.** The text is
 laid out for a person to read; the structured half is the same facts as data,

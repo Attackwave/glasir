@@ -18,6 +18,7 @@ mod docs;
 mod embed;
 mod graph;
 mod guard;
+mod history;
 mod http;
 mod import_json;
 mod import_scip;
@@ -3503,6 +3504,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_embed();
     demo_community();
     demo_mcp();
+    demo_change_tools();
     demo_install();
     demo_search();
     demo_snapshot();
@@ -5377,7 +5379,7 @@ fn demo_mcp() {
     // client has no way to know the shape it is being handed.
     let listed = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 12);
     for t in tools {
         assert!(
             t["outputSchema"]["type"] == "object",
@@ -5476,7 +5478,7 @@ fn demo_mcp() {
     let list = tools["result"]["tools"].as_array().unwrap();
     // The count is asserted so adding a tool is a deliberate act: a client's
     // whole picture of this server is this list.
-    assert_eq!(list.len(), 9, "query_graph, overview and the other seven");
+    assert_eq!(list.len(), 12, "query_graph, overview and the other ten");
     for t in list {
         assert!(t["name"].is_string());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -5736,6 +5738,228 @@ fn demo_mcp() {
 /// install/uninstall touch the user's editor configuration, so the property
 /// that matters is that a round trip leaves other people's settings exactly as
 /// they were.
+/// The three tools that answer what to do before a commit: which tests to run,
+/// what else usually changes, and whether a boundary breaks.
+fn demo_change_tools() {
+    use serde_json::json;
+
+    // Every language's test conventions, and the names that only look close.
+    for (symbol, want) in [
+        ("tests/pay.rs#charges", true),
+        ("app/spec/pay_spec.rb#it_charges", true),
+        ("web/__tests__/pay.js#renders", true),
+        ("pay/pay_test.go#TestPay", true),
+        ("src/pay.test.ts#charges", true),
+        ("src/Pay.spec.js#charges", true),
+        ("src/PayTest.java#charges", true),
+        ("src/PayTests.cs#Charges", true),
+        ("tools/test_pay.py#helper", true),
+        ("src/pay.rs#test_refund", true),
+        ("src/Pay.java#testRefund", true),
+        ("src/latest.rs#fetch", false),
+        ("src/contest.py#run", false),
+        ("src/pay.go#Testify", false),
+        ("src/pay.rs#testing_mode", false),
+        ("test_pay", false),
+    ] {
+        assert_eq!(mcp::is_test_symbol(symbol), want, "{symbol}");
+    }
+
+    // pay -> charge -> log, a test two hops from log and one three hops out,
+    // and a test elsewhere that must not be named.
+    let mut b = csr::CsrBuilder::new();
+    for _ in 0..7u32 {
+        b.add_node(0);
+    }
+    let e = |t| csr::Edge {
+        target: t,
+        timestamp: 1_756_600_000,
+        authority: 1.0,
+        edge_kind: 0,
+        confidence: csr::Confidence::Inferred,
+    };
+    b.add_edge(0, e(1));
+    b.add_edge(1, e(2));
+    b.add_edge(3, e(0));
+    b.add_edge(6, e(1));
+    b.add_edge(5, e(4));
+    let g = graph::Graph::new(b.build());
+    let snap = g.load();
+    let mut reg = ingest::SymbolRegistry::new(0);
+    for (i, name) in [
+        "src/pay.rs#pay",
+        "src/charge.rs#charge",
+        "src/log.rs#log",
+        "tests/pay.rs#pays_once",
+        "src/util.rs#unrelated",
+        "tests/util.rs#unrelated_works",
+        "src/charge.rs#test_charge_twice",
+    ]
+    .iter()
+    .enumerate()
+    {
+        reg.insert((*name).to_string(), i as csr::NodeId);
+    }
+    let defined: std::collections::HashSet<csr::NodeId> = (0..7).collect();
+    let comms = community::detect(
+        &snap,
+        &community::Params::default(),
+        &community::Context::from_names(
+            Some(&defined),
+            snap.width(),
+            reg.entries().map(|(s, &n)| (s.as_str(), n)),
+        ),
+    );
+    let emb = embed::embed(&snap, 3);
+    let search = search::SearchIndex::build_with_docs(&reg, reg.docs());
+    let names = mcp::name_table(&reg, snap.width());
+
+    // A tree on disk with a history, for `co_changes`: charge and pay change
+    // together three times, docs twice, log once, and a sweeping commit that
+    // touches everything is left out or it would couple log too.
+    let dir = std::env::temp_dir().join(format!("glasir-changes-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    let mut round = 0;
+    let mut commit = |files: &[&str]| {
+        round += 1;
+        for f in files {
+            std::fs::write(dir.join(f), format!("{round}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "c"]);
+    };
+    for _ in 0..3 {
+        commit(&["src/pay.rs", "src/charge.rs"]);
+    }
+    commit(&["src/pay.rs", "docs/pay.md", "src/util.rs"]);
+    commit(&["src/pay.rs", "docs/pay.md", "src/util.rs"]);
+    commit(&["src/pay.rs", "src/log.rs"]);
+    let sweep: Vec<String> = (0..history::MAX_COMMIT_FILES)
+        .map(|i| format!("src/gen{i}.rs"))
+        .collect();
+    let mut all: Vec<&str> = sweep.iter().map(String::as_str).collect();
+    all.extend(["src/pay.rs", "src/log.rs"]);
+    commit(&all);
+
+    let served = mcp::Served {
+        snap: &snap,
+        names: &names,
+        defined: &defined,
+        search: &search,
+        registry: &reg,
+        communities: &comms,
+        embeddings: &emb,
+        physics: physics::Physics::default(),
+        now: 1_756_600_000,
+        files: None,
+        root: Some(&dir),
+    };
+    let call = |tool: &str, args: serde_json::Value| {
+        let r = mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": args}}),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false, "{tool}: {r}");
+        let text = r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (r["result"]["structuredContent"].clone(), text)
+    };
+
+    // Nearest first, the unrelated test absent, and the prose names them all.
+    let (v, text) = call("affected_tests", json!({"symbol": "src/log.rs#log"}));
+    let tests: Vec<(&str, u64)> = v["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["symbol"].as_str().unwrap(), t["hop"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        tests,
+        vec![
+            ("src/charge.rs#test_charge_twice", 2),
+            ("tests/pay.rs#pays_once", 3)
+        ],
+        "{text}"
+    );
+    for (t, _) in &tests {
+        assert!(text.contains(t), "{t} is in the JSON and not in the text");
+    }
+
+    // The history: charge 3x and in the graph, docs and util 2x and not —
+    // util is a file the graph knows, which is what makes `in_graph` a check
+    // rather than a restatement of "unknown file" — and log dropped because
+    // its second co-change was in the sweeping commit.
+    let (v, text) = call("co_changes", json!({"file": "src/pay.rs"}));
+    let coupled: Vec<(&str, u64, bool)> = v["coupled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["file"].as_str().unwrap(),
+                c["together"].as_u64().unwrap(),
+                c["in_graph"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        coupled,
+        vec![
+            ("src/charge.rs", 3, true),
+            ("docs/pay.md", 2, false),
+            ("src/util.rs", 2, false)
+        ],
+        "{text}"
+    );
+    assert!(text.contains("history only"), "{text}");
+
+    // A rule the graph breaks names the edge that breaks it; one it keeps holds.
+    let (v, text) = call(
+        "check_architecture",
+        json!({"rules": "deny src/charge.rs -> src/log.rs\ndeny src/log.rs -> src/pay.rs\n"}),
+    );
+    assert_eq!(v["rules"], 2);
+    assert_eq!(v["holds"], false);
+    let broken = v["violations"].as_array().unwrap();
+    assert_eq!(broken.len(), 1, "{text}");
+    assert!(
+        broken[0]["evidence"][0]
+            .as_str()
+            .unwrap()
+            .contains("src/charge.rs#charge"),
+        "{text}"
+    );
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("changes ok: tests to run, what changes with it, which rule breaks");
+}
+
 fn demo_install() {
     let dir = std::env::temp_dir().join(format!("glasir-install-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);

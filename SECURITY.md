@@ -34,8 +34,9 @@ could reach:
 - **No model anywhere in the index or query path**, so no code is sent anywhere
   for embedding or completion. This holds for documentation too, not only code.
 - **It does start three external programs**, all from the system path: `git`
-  (to locate the hooks directory, and to read the diff for `detect_changes`
-  and `impact-of`), an indexer such as `rust-analyzer scip` when one is
+  (to locate the hooks directory, to read the diff for `detect_changes`,
+  `affected_tests` and `impact-of`, and the commit history for `co_changes`),
+  an indexer such as `rust-analyzer scip` when one is
   configured for the language, and a language server for tier-1 upgrades
   during `watch`. The last two are optional.
   Whoever can write to those binaries can already run code as the user, but the

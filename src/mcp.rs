@@ -664,8 +664,8 @@ fn tool_definitions() -> Value {
             "name": "detect_changes",
             "title": "What a diff puts at risk",
             "description": "Maps a git diff to the symbols the changed files \
-    define, then to what depends on those. The one tool here that reads the working \
-    tree rather than only the graph. Defaults to uncommitted changes against HEAD; \
+    define, then to what depends on those. Reads the working tree as well as the \
+    graph. Defaults to uncommitted changes against HEAD; \
     pass a revision to compare that revision to HEAD.\n\nA changed file the graph \
     does not carry yet — added since the last analysis — is named rather than \
     silently ignored, because \"defines nothing\" and \"not indexed\" are different \
@@ -695,6 +695,118 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["changed_files", "changed_symbols",
                              "files_without_known_symbols", "dependents", "hops"]
+            }
+        },
+        {
+            "name": "affected_tests",
+            "title": "Which tests to run",
+            "description": "The tests that reach a symbol or a git diff, nearest \
+    first, with the files to run. Answers \"what do I run before I commit this\" \
+    without running the suite. Pass `symbol` for one definition, or nothing (or a \
+    `rev`) for the uncommitted diff. Tests are recognised by the conventions of \
+    each language: tests/, spec/, __tests__/, test_x, x_test, x.test, x.spec, \
+    FooTest, TestX. An empty answer is not proof of no coverage: a test in an \
+    unindexed file, or one reaching the code through dynamic dispatch, is \
+    invisible to the graph.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
+                    "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
+                    "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
+                    "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
+                        "description": "Lowest provenance tier to follow (default ambiguous)"}
+                }
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "count": {"type": "integer"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                    "tests": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string"},
+                            "file": {"type": "string"},
+                            "hop": {"type": "integer", "description": "0 for a test that is itself part of the change"}
+                        },
+                        "required": ["symbol", "file", "hop"]
+                    }},
+                    "depth": {"type": "integer"},
+                    "files_without_known_symbols": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["target", "count", "files", "tests", "depth", "files_without_known_symbols"]
+            }
+        },
+        {
+            "name": "co_changes",
+            "title": "What changes with this",
+            "description": "Files that changed in the same commits as one file, \
+    from the git history, with how often and whether the graph connects them at \
+    all. A coupled file with no edge in the graph is hidden coupling — a template, \
+    a migration, a fixture, a client in another language — that `impact` cannot \
+    see because no code names it. Commits touching more than 30 files are left \
+    out, and a pair must occur twice to count.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "Path relative to the tree"},
+                    "symbol": {"type": "string", "description": "Alternatively a symbol; its file is used"},
+                    "commits": {"type": "integer", "description": "How many recent commits to read (default 500)"},
+                    "top": {"type": "integer", "description": "How many coupled files to return (default 10)"}
+                }
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "commits": {"type": "integer", "description": "Commits in the window that touched the file"},
+                    "window": {"type": "integer", "description": "Commits read, after dropping oversized ones"},
+                    "coupled": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "file": {"type": "string"},
+                            "together": {"type": "integer"},
+                            "share": {"type": "number", "description": "Fraction of the file's commits that also touched this one"},
+                            "in_graph": {"type": "boolean", "description": "Whether any edge in the graph joins the two files"}
+                        },
+                        "required": ["file", "together", "share", "in_graph"]
+                    }}
+                },
+                "required": ["file", "commits", "window", "coupled"]
+            }
+        },
+        {
+            "name": "check_architecture",
+            "title": "Does this break the architecture",
+            "description": "Checks the tree's architecture contract \
+    (`glasir-rules.txt`: `deny <path> -> <path>`, `no-cycles`) against the graph, \
+    and returns every broken rule with the edges that break it. Pass `rules` to \
+    test a boundary that is not written down yet. With `serve --watch` the graph \
+    follows the working tree, so a change can be checked before it is committed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rules": {"type": "string", "description": "Rules to check instead of the tree's file, one per line"}
+                }
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "rules": {"type": "integer"},
+                    "holds": {"type": "boolean"},
+                    "violations": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "rule": {"type": "string"},
+                            "evidence": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["rule", "evidence"]
+                    }}
+                },
+                "required": ["source", "rules", "holds", "violations"]
             }
         }
     ])
@@ -1297,34 +1409,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
     let node = served.resolve_one(symbol)?;
-
-    let reverse = served.snap.reverse();
-    // Breadth-first, so the first time a node is reached is by its shortest
-    // backwards path — which is the hop count worth reporting.
-    let mut seen = std::collections::HashSet::from([node]);
-    let mut frontier = vec![node];
-    let mut levels: Vec<Vec<(NodeId, Confidence)>> = Vec::new();
-    for _ in 0..depth {
-        let mut next: Vec<(NodeId, Confidence)> = Vec::new();
-        for &n in &frontier {
-            for (caller, edge) in reverse.callers(n) {
-                if edge.confidence < floor {
-                    continue;
-                }
-                if seen.insert(caller) {
-                    next.push((caller, edge.confidence));
-                }
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        // Deterministic: the reverse index is built in node order, but a
-        // frontier merges several sources.
-        next.sort_by_key(|&(n, _)| n);
-        frontier = next.iter().map(|&(n, _)| n).collect();
-        levels.push(next);
-    }
+    let levels = reverse_levels(served, &[node], depth, floor);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     Ok(json!({
@@ -1407,16 +1492,49 @@ does not cover are not ruled out.\n"
 }
 
 /// A git diff mapped to the symbols the changed files define, then to what
-/// depends on those. The only tool here reading the working tree; it re-uses
-/// the served snapshot rather than re-analysing.
+/// depends on those. It reads the working tree and re-uses the served
+/// snapshot rather than re-analysing.
 ///
 /// A file the graph does not carry yet is named rather than skipped: "defines
 /// nothing" and "not indexed" are different answers, and only one of them means
 /// nothing depends on it.
 fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
-    let rev = args["rev"].as_str().unwrap_or("").trim();
     let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
+    let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
+    let seeds: Vec<NodeId> = diff.touched.iter().map(|&(_, n)| n).collect();
+    let levels = reverse_levels(served, &seeds, depth, Confidence::Ambiguous);
 
+    Ok(json!({
+        "changed_files": diff.files.len(),
+        "changed_symbols": diff.touched.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+        // Named rather than counted: a file the graph does not carry is the
+        // case where "nothing depends on this" is a wrong answer, so the
+        // caller has to see which files those are.
+        "files_without_known_symbols": diff.unknown,
+        "dependents": levels.iter().map(Vec::len).sum::<usize>(),
+        "hops": levels
+            .iter()
+            .enumerate()
+            .map(|(i, level)| json!({
+                "hop": i + 1,
+                "symbols": level.iter().map(|&(n, _)| served.name(n)).collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+/// A git diff read against the served graph.
+struct Diff {
+    files: Vec<String>,
+    /// Symbols the changed files define, sorted.
+    touched: Vec<(String, NodeId)>,
+    /// Changed files that define nothing the graph knows.
+    unknown: Vec<String>,
+}
+
+/// The working tree against HEAD for an empty `rev`, or `rev` against HEAD.
+fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
+    let rev = rev.trim();
     // Same default as the CLI: the working tree against HEAD is what someone
     // asking mid-change means.
     let range: Vec<&str> = if rev.is_empty() || rev == "." {
@@ -1439,7 +1557,7 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let changed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -1449,69 +1567,64 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
     // Symbols defined in a changed file. The file is the name's prefix, so no
     // file-to-node map is needed — the property incremental indexing relies on.
     let mut touched: Vec<(String, NodeId)> = Vec::new();
-    let mut files_with_symbols: std::collections::HashSet<&str> = Default::default();
+    let mut known: std::collections::HashSet<&str> = Default::default();
     for (symbol, &node) in served.registry.entries() {
         if let Some((file, _)) = symbol.split_once('#')
-            && changed.iter().any(|c| c == file)
+            && let Some(f) = files.iter().find(|c| *c == file)
             && served.defined.contains(&node)
         {
             touched.push((symbol.clone(), node));
-            files_with_symbols.insert(changed.iter().find(|c| *c == file).unwrap().as_str());
+            known.insert(f.as_str());
         }
     }
     touched.sort();
+    let unknown = files
+        .iter()
+        .filter(|f| !known.contains(f.as_str()))
+        .cloned()
+        .collect();
+    Ok(Diff {
+        files,
+        touched,
+        unknown,
+    })
+}
 
-    // One sweep from every changed symbol at once, not one per symbol: a real
-    // diff overlaps heavily, and a caller reached from two of them belongs in
-    // the answer once, at its shortest distance.
+/// Everything that reaches `seeds` backwards, one level per hop. Breadth-first,
+/// so a node appears at its shortest distance — the hop count worth reporting,
+/// since a direct caller almost certainly breaks and a fourth-hop one probably
+/// does not. One sweep from all seeds at once: a diff overlaps heavily, and a
+/// caller reached from two changed symbols belongs in the answer once.
+fn reverse_levels(
+    served: &Served,
+    seeds: &[NodeId],
+    depth: usize,
+    floor: Confidence,
+) -> Vec<Vec<(NodeId, Confidence)>> {
     let reverse = served.snap.reverse();
-    let seeds: std::collections::HashSet<NodeId> = touched.iter().map(|&(_, n)| n).collect();
-    let mut seen = seeds.clone();
-    let mut frontier: Vec<NodeId> = {
-        let mut f: Vec<NodeId> = seeds.iter().copied().collect();
-        f.sort_unstable();
-        f
-    };
-    let mut levels: Vec<Vec<NodeId>> = Vec::new();
+    let mut seen: std::collections::HashSet<NodeId> = seeds.iter().copied().collect();
+    let mut frontier: Vec<NodeId> = seen.iter().copied().collect();
+    frontier.sort_unstable();
+    let mut levels = Vec::new();
     for _ in 0..depth {
-        let mut next: Vec<NodeId> = Vec::new();
+        let mut next: Vec<(NodeId, Confidence)> = Vec::new();
         for &n in &frontier {
-            for (caller, _) in reverse.callers(n) {
-                if seen.insert(caller) {
-                    next.push(caller);
+            for (caller, edge) in reverse.callers(n) {
+                if edge.confidence >= floor && seen.insert(caller) {
+                    next.push((caller, edge.confidence));
                 }
             }
         }
         if next.is_empty() {
             break;
         }
-        next.sort_unstable();
-        frontier.clone_from(&next);
+        // Deterministic: the reverse index is built in node order, but a
+        // frontier merges several sources.
+        next.sort_by_key(|&(n, _)| n);
+        frontier = next.iter().map(|&(n, _)| n).collect();
         levels.push(next);
     }
-
-    let unknown: Vec<&String> = changed
-        .iter()
-        .filter(|c| !files_with_symbols.contains(c.as_str()))
-        .collect();
-
-    Ok(json!({
-        "changed_files": changed.len(),
-        "changed_symbols": touched.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
-        // Named rather than counted: a file the graph does not carry is the
-        // case where "nothing depends on this" is a wrong answer, so the
-        // caller has to see which files those are.
-        "files_without_known_symbols": unknown.iter().map(|s| (*s).clone()).collect::<Vec<_>>(),
-        "dependents": levels.iter().map(Vec::len).sum::<usize>(),
-        "hops": levels
-            .iter()
-            .enumerate()
-            .map(|(i, level)| json!({
-                "hop": i + 1,
-                "symbols": level.iter().map(|&n| served.name(n)).collect::<Vec<_>>(),
-            }))
-            .collect::<Vec<_>>(),
-    }))
+    levels
 }
 
 fn render_detect_changes(v: &Value) -> String {
@@ -1570,6 +1683,317 @@ since the last analysis is not in it yet:\n",
         }
         if ss.len() > CHANGE_LIST_LIMIT {
             out.push_str(&format!("  … and {} more\n", ss.len() - CHANGE_LIST_LIMIT));
+        }
+    }
+    out
+}
+
+/// Whether a symbol is a test, by where it lives or how it is named. Broader
+/// than `resolve::is_test_path`, which only keeps test definitions from
+/// capturing production calls: selecting tests has to recognise the
+/// conventions of every language that names them — `tests/`, `spec/`,
+/// `__tests__/`, `test_x.py`, `x_test.go`, `x.test.ts`, `x.spec.js`,
+/// `x_spec.rb`, `FooTest.java`, `FooTests.cs`, and `test_x`, `TestX`, `testX`.
+/// A production function named `test_connection` is misread; the cost is one
+/// extra test in the list, never a missing one.
+pub fn is_test_symbol(symbol: &str) -> bool {
+    let Some((file, name)) = symbol.split_once('#') else {
+        return false;
+    };
+    let lower = file.to_ascii_lowercase();
+    let in_test_dir = [
+        "test/",
+        "tests/",
+        "spec/",
+        "specs/",
+        "__tests__/",
+        "testing/",
+    ]
+    .iter()
+    .any(|d| lower.starts_with(d) || lower.contains(&format!("/{d}")));
+    let base = file.rsplit('/').next().unwrap_or(file);
+    let stem = base.split('.').next().unwrap_or(base);
+    let lower_base = base.to_ascii_lowercase();
+    let test_file = lower_base.starts_with("test_")
+        || ["_test.", ".test.", ".spec.", "_spec.", "-test.", "-spec."]
+            .iter()
+            .any(|m| lower_base.contains(m))
+        || stem.ends_with("Test")
+        || stem.ends_with("Tests");
+    let after = |p: &str| {
+        name.strip_prefix(p)
+            .and_then(|r| r.chars().next())
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+    };
+    let test_name = name.starts_with("test_") || after("Test") || after("test");
+    in_test_dir || test_file || test_name
+}
+
+/// Hops a test may sit from what it covers. A test reaches code through
+/// placeholders and helpers, each a hop, so the blast-radius default of 3
+/// misses most of them.
+const TEST_DEPTH: u64 = 12;
+
+/// Which tests reach a symbol or a diff: the answer to "what do I run before
+/// I commit this". `impact` lists every dependent, and an agent then has to
+/// guess which of them are tests.
+fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
+    let depth = args["depth"].as_u64().unwrap_or(TEST_DEPTH).clamp(1, 30) as usize;
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let (target, seeds, unknown) = match args["symbol"].as_str() {
+        Some(symbol) => {
+            let node = served.resolve_one(symbol)?;
+            (served.name(node), vec![node], Vec::new())
+        }
+        None => {
+            let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
+            let target = format!("{} changed file(s)", diff.files.len());
+            (
+                target,
+                diff.touched.iter().map(|&(_, n)| n).collect(),
+                diff.unknown,
+            )
+        }
+    };
+
+    // A changed test is a test to run, at distance zero.
+    let mut found: std::collections::BTreeMap<String, usize> = Default::default();
+    let hop0 = seeds.iter().map(|&n| (n, 0));
+    let reached = reverse_levels(served, &seeds, depth, floor)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, level)| level.into_iter().map(move |(n, _)| (n, i + 1)));
+    for (node, hop) in hop0.chain(reached) {
+        let name = served.name(node);
+        if served.defined.contains(&node) && is_test_symbol(&name) {
+            found.entry(name).or_insert(hop);
+        }
+    }
+    let mut tests: Vec<(String, usize)> = found.into_iter().collect();
+    tests.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let mut files: Vec<String> = tests
+        .iter()
+        .filter_map(|(t, _)| t.split_once('#').map(|(f, _)| f.to_string()))
+        .collect();
+    files.sort();
+    files.dedup();
+
+    Ok(json!({
+        "target": target,
+        "count": tests.len(),
+        "files": files,
+        "tests": tests
+            .iter()
+            .map(|(t, hop)| json!({
+                "symbol": t,
+                "file": t.split_once('#').map_or("", |(f, _)| f),
+                "hop": hop,
+            }))
+            .collect::<Vec<_>>(),
+        "depth": depth,
+        "files_without_known_symbols": unknown,
+    }))
+}
+
+fn render_affected_tests(v: &Value) -> String {
+    let target = v["target"].as_str().unwrap_or("");
+    let tests = v["tests"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out = format!("{target}\n\n");
+    let unknown = v["files_without_known_symbols"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !unknown.is_empty() {
+        out.push_str("changed but unknown to the graph, so not traced:\n");
+        for f in unknown {
+            out.push_str(&format!("  {}\n", f.as_str().unwrap_or("")));
+        }
+        out.push('\n');
+    }
+    if tests.is_empty() {
+        out.push_str(&format!(
+            "no test in the graph reaches this within {} hops. That is not \
+proof it is untested: a test in a file the graph does not index, or one that \
+calls through dynamic dispatch, is invisible here.\n",
+            v["depth"].as_u64().unwrap_or(0)
+        ));
+        return out;
+    }
+    let files = v["files"].as_array().map_or(0, Vec::len);
+    out.push_str(&format!(
+        "{} test(s) in {files} file(s), nearest first:\n",
+        tests.len()
+    ));
+    for t in tests.iter().take(CHANGE_LIST_LIMIT) {
+        out.push_str(&format!(
+            "  {:>2} hop  {}\n",
+            t["hop"].as_u64().unwrap_or(0),
+            t["symbol"].as_str().unwrap_or("")
+        ));
+    }
+    if tests.len() > CHANGE_LIST_LIMIT {
+        out.push_str(&format!(
+            "  … and {} more (all of them in structuredContent)\n",
+            tests.len() - CHANGE_LIST_LIMIT
+        ));
+    }
+    out.push_str("\nfiles to run:\n");
+    for f in v["files"].as_array().map_or(&[][..], Vec::as_slice) {
+        out.push_str(&format!("  {}\n", f.as_str().unwrap_or("")));
+    }
+    out
+}
+
+/// Files that change in the same commits as one file, with whether the graph
+/// connects them at all. The ones it does not are the hidden coupling: a
+/// template, a migration, a fixture in another language — what `impact`
+/// cannot see because no code names it.
+fn co_changes(served: &Served, args: &Value) -> Result<Value, String> {
+    let root = served
+        .root
+        .ok_or("this server has no tree on disk to read history from")?;
+    let file = match (args["file"].as_str(), args["symbol"].as_str()) {
+        (Some(f), _) => f.trim_start_matches("./").to_string(),
+        (None, Some(sym)) => {
+            let node = served.resolve_one(sym)?;
+            let name = served.name(node);
+            name.split_once('#')
+                .map(|(f, _)| f.to_string())
+                .ok_or(format!("{name} is not defined in a file"))?
+        }
+        (None, None) => return Err("pass `file` or `symbol`".into()),
+    };
+    let window = args["commits"].as_u64().unwrap_or(500).clamp(10, 5000) as usize;
+    let top = args["top"].as_u64().unwrap_or(10).clamp(1, 100) as usize;
+
+    let commits = crate::history::commits(root, window)?;
+    let (own, pairs) = crate::history::coupled(&commits, &file);
+
+    let fallback = std::sync::OnceLock::new();
+    let graph = served.file_graph(&fallback);
+    let index = |f: &str| graph.files.binary_search_by(|x| x.as_str().cmp(f)).ok();
+    let linked = |other: &str| match (index(&file), index(other)) {
+        (Some(a), Some(b)) => {
+            graph.edges.contains_key(&(a, b)) || graph.edges.contains_key(&(b, a))
+        }
+        _ => false,
+    };
+
+    Ok(json!({
+        "file": file,
+        "commits": own,
+        "window": commits.len(),
+        "coupled": pairs
+            .iter()
+            .take(top)
+            .map(|(f, n)| json!({
+                "file": f,
+                "together": n,
+                "share": round_to(*n as f64 / own.max(1) as f64, 100.0),
+                "in_graph": linked(f),
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn render_co_changes(v: &Value) -> String {
+    let file = v["file"].as_str().unwrap_or("");
+    let own = v["commits"].as_u64().unwrap_or(0);
+    let window = v["window"].as_u64().unwrap_or(0);
+    if own == 0 {
+        return format!("{file}\n\nno change to it in the last {window} commits.\n");
+    }
+    let coupled = v["coupled"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out = format!("{file}\n\nchanged in {own} of the last {window} commits.");
+    if coupled.is_empty() {
+        out.push_str(&format!(
+            " No other file changed with it {} times or more.\n",
+            crate::history::MIN_TOGETHER
+        ));
+        return out;
+    }
+    out.push_str(" Files that changed with it:\n\n");
+    for c in coupled {
+        let share = c["share"].as_f64().unwrap_or(0.0) * 100.0;
+        let note = if c["in_graph"].as_bool().unwrap_or(false) {
+            ""
+        } else {
+            "   history only: no edge in the graph"
+        };
+        out.push_str(&format!(
+            "  {:>3}x {:>4.0}%  {}{note}\n",
+            c["together"].as_u64().unwrap_or(0),
+            share,
+            c["file"].as_str().unwrap_or("")
+        ));
+    }
+    out
+}
+
+/// Where a tree keeps its architecture contract; `glasir guard` reads the same.
+pub const RULES_FILE: &str = "glasir-rules.txt";
+
+/// The architecture contract, checked against the served graph — the rules in
+/// the tree's `glasir-rules.txt`, or ones passed in to test a boundary before
+/// writing it down. Under `serve --watch` the graph follows the working tree,
+/// so an agent can check a change before committing it, which is when a
+/// violation is cheapest.
+fn check_architecture(served: &Served, args: &Value) -> Result<Value, String> {
+    let (text, source) = match args["rules"].as_str() {
+        Some(r) => (r.to_string(), "argument"),
+        None => {
+            let root = served
+                .root
+                .ok_or("this server has no tree on disk; pass `rules` instead")?;
+            let text = std::fs::read_to_string(root.join(RULES_FILE)).map_err(|_| {
+                format!(
+                    "no {RULES_FILE} in this tree. Pass `rules` to check one ad hoc, \
+e.g. \"deny src/api -> src/db\" or \"no-cycles\"."
+                )
+            })?;
+            (text, RULES_FILE)
+        }
+    };
+    let rules = crate::guard::parse(&text)?;
+    let violations = crate::guard::check(
+        served.snap,
+        served.registry,
+        served.names,
+        served.defined,
+        &rules,
+    );
+    Ok(json!({
+        "source": source,
+        "rules": rules.len(),
+        "holds": violations.is_empty(),
+        "violations": violations
+            .iter()
+            .map(|v| json!({"rule": v.rule, "evidence": v.evidence}))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn render_check_architecture(v: &Value) -> String {
+    let rules = v["rules"].as_u64().unwrap_or(0);
+    let source = v["source"].as_str().unwrap_or("");
+    let violations = v["violations"].as_array().map_or(&[][..], Vec::as_slice);
+    if violations.is_empty() {
+        return format!("all {rules} rule(s) from {source} hold\n");
+    }
+    let mut out = format!(
+        "{} of {rules} rule(s) from {source} broken:\n",
+        violations.len()
+    );
+    for v in violations {
+        out.push_str(&format!("\n{}\n", v["rule"].as_str().unwrap_or("")));
+        let evidence = v["evidence"].as_array().map_or(&[][..], Vec::as_slice);
+        for e in evidence.iter().take(CHANGE_LIST_LIMIT) {
+            out.push_str(&format!("  {}\n", e.as_str().unwrap_or("")));
+        }
+        if evidence.len() > CHANGE_LIST_LIMIT {
+            out.push_str(&format!(
+                "  … and {} more\n",
+                evidence.len() - CHANGE_LIST_LIMIT
+            ));
         }
     }
     out
@@ -2157,6 +2581,9 @@ fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, St
         "cycles" => cycles(served, args),
         "find_callers" => find_callers(served, args),
         "detect_changes" => detect_changes(served, args),
+        "affected_tests" => affected_tests(served, args),
+        "co_changes" => co_changes(served, args),
+        "check_architecture" => check_architecture(served, args),
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -2173,6 +2600,9 @@ fn render(name: &str, v: &Value) -> String {
         "cycles" => render_cycles(v),
         "find_callers" => render_find_callers(v),
         "detect_changes" => render_detect_changes(v),
+        "affected_tests" => render_affected_tests(v),
+        "co_changes" => render_co_changes(v),
+        "check_architecture" => render_check_architecture(v),
         _ => String::new(),
     }
 }
