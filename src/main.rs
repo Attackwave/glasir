@@ -1208,17 +1208,32 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
         removed += notes.len();
     }
 
+    // What an analysis writes. It named a `.glasir` directory that nothing
+    // creates, so `--purge` deleted nothing. Tokens and the audit log are
+    // access records, not cache, and stay.
     if args.has("purge") {
-        let graph = root.join(".glasir");
-        if graph.exists() {
+        let generated = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == ".glasir-graph" || n.starts_with(".glasir-layout-"))
+            });
+        for path in generated {
             if !dry {
-                std::fs::remove_dir_all(&graph)?;
+                std::fs::remove_file(&path)?;
             }
-            println!(
-                "{} {}",
-                if dry { "would delete" } else { "deleted" },
-                graph.display()
-            );
+            removed += 1;
+            if !quiet {
+                println!(
+                    "{} {}",
+                    if dry { "would delete" } else { "deleted" },
+                    path.display()
+                );
+            }
         }
     }
     if removed == 0 && !quiet {
@@ -5632,6 +5647,17 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
     assert!(claude["mcpServers"]["glasir"].is_null());
     assert!(claude["mcpServers"]["other"].is_object());
+
+    std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
+    std::fs::write(dir.join(".glasir-layout-free"), b"x").unwrap();
+    std::fs::write(dir.join(auth::TOKEN_FILE), b"x").unwrap();
+    run_uninstall(&args("uninstall", &["--purge"])).unwrap();
+    assert!(!dir.join(".glasir-graph").exists());
+    assert!(!dir.join(".glasir-layout-free").exists());
+    assert!(
+        dir.join(auth::TOKEN_FILE).exists(),
+        "--purge must keep tokens"
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
     println!("phase 5.2 ok: local MCP registration round-trips cleanly");

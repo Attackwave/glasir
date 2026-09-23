@@ -86,6 +86,12 @@ jobs:
         run: |
           cargo install cargo-cyclonedx --locked
           cargo cyclonedx --format json --all
+      # A dependency under a licence about.toml does not accept fails here,
+      # in the pull request, rather than at the release tag.
+      - name: third-party licences
+        run: |
+          cargo install cargo-about --locked --features cli
+          cargo about generate --locked --fail about.hbs -o THIRD-PARTY-LICENSES.txt
       - uses: actions/upload-artifact@v4
         with:
           name: sbom

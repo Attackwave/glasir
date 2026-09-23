@@ -3,6 +3,10 @@ name = "glasir"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
+license = "Apache-2.0"
+description = "Deterministic code intelligence: a queryable graph of a repository, served over MCP"
+repository = "https://github.com/Attackwave/glasir"
+publish = false
 
 [dependencies]
 libc = "0.2.189"

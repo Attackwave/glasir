@@ -2,28 +2,42 @@
 
 ## Reporting a vulnerability
 
-Open a [private security advisory](../../security/advisories/new) on GitHub.
-Please do not open a public issue for anything exploitable.
+Open a [private security advisory](https://github.com/Attackwave/glasir/security/advisories/new)
+on GitHub. Please do not open a public issue for anything exploitable.
 
 Expect an acknowledgement within a week. There is no bounty programme.
+
+## Supported versions
+
+Fixes land on the latest release. Before 1.0 there are no backports: upgrade to
+the newest `0.x` to receive a fix. Each release names its version
+(`glasir --version`), ships a SHA-256 per archive and a CycloneDX SBOM, and the
+container image is signed with Cosign and carries build provenance.
 
 ## What Glasir touches
 
 Worth knowing before an evaluation, because it bounds what a vulnerability here
 could reach:
 
-- **It reads source files and writes three files beside the tree**:
-  `.glasir-graph` (the analysed graph), `.glasir-tokens` (SHA-256 hashes of
-  access tokens, mode 0600) and `.glasir-audit.jsonl` (mode 0600). `install`
-  adds all three to `.gitignore`.
+- **It reads source files and writes beside the tree**: `.glasir-graph` (the
+  analysed graph), `.glasir-layout-*` (map coordinates, written by `view`),
+  `.glasir-tokens` (SHA-256 hashes of access tokens, mode 0600) and
+  `.glasir-audit.jsonl` (mode 0600). `install` adds them to `.gitignore`.
+- **`install` writes editor configuration and git hooks**: an MCP registration
+  (`.mcp.json`, `.cursor/mcp.json` or `glasir-mcp.json`) holding the absolute
+  path to the binary and the tree, and `post-merge`, `post-checkout` and
+  `post-rewrite` hooks that run `glasir analyse`. Existing files are merged
+  into, never replaced; a registration file it creates is gitignored.
+  `uninstall` removes exactly what it wrote.
 - **It makes no network connections of its own.** No telemetry, no model API, no
   update check. The only sockets are the ones you ask it to listen on.
 - **No model anywhere in the index or query path**, so no code is sent anywhere
   for embedding or completion. This holds for documentation too, not only code.
-- **It does start three external programs**, all of them optional and all from
-  the tree being served or the system path: `git` (to locate the hooks
-  directory), an indexer such as `rust-analyzer scip` when one is configured
-  for the language, and a language server for tier-1 upgrades during `watch`.
+- **It does start three external programs**, all from the system path: `git`
+  (to locate the hooks directory, and to read the diff for `detect_changes`
+  and `impact-of`), an indexer such as `rust-analyzer scip` when one is
+  configured for the language, and a language server for tier-1 upgrades
+  during `watch`. The last two are optional.
   Whoever can write to those binaries can already run code as the user, but the
   dependency belongs stated rather than discovered.
 
@@ -78,9 +92,19 @@ behind the token.
 `--tls-key`, both PEM, both or neither. Without them the server speaks plain
 HTTP and warns on a non-loopback address, because a bearer token in clear is
 readable by anything on the path. Terminating at a reverse proxy instead
-remains fine — that is why this warns rather than refuses. No client
-certificates: the credential is the token, and TLS is what keeps it unreadable
-on the wire.
+remains fine — that is why this warns rather than refuses. In this mode there
+are no client certificates: the credential is the token, and TLS is what keeps
+it unreadable on the wire.
+
+**Behind Glasir Control** (`--behind-control-plane`) the Core is a private data
+plane and is stricter. It requires a revocable per-service token from
+`.glasir-tokens` and refuses a shared `--token`. It binds to loopback unless
+`--control-plane-cidr` names the network the control plane connects from; a
+peer outside that range is dropped without an HTTP response, so it does not
+learn a graph service exists. With `--control-plane-client-ca` plus a
+certificate and key, the listener requires mutual TLS and verifies the control
+plane's client certificate against that CA. Token, network range and client
+certificate are checked independently.
 
 ## Known limits
 
