@@ -11,7 +11,7 @@ code:
   "schema": "glasir.contracts.v1",
   "package": {"name": "payments-api", "version": "2026.09.18"},
   "exports": [{"symbol": "src/api.rs#create_payment", "contract": "openapi:payments.v2"}],
-  "imports": [{"package": "ledger", "version": "^4", "contract": "event:payment.created.v1"}]
+  "imports": [{"package": "ledger", "version": "4.0.0", "contract": "event:payment.created.v1"}]
 }
 ```
 
@@ -20,11 +20,11 @@ file and publish the resulting snapshot together with the same source revision;
 never reuse a contract report across a different commit.
 
 Global symbol identity is `package@version::symbol`. An import edge is emitted
-only when package/version and contract agree. Its evidence is `contract`; SCIP
-or compiler resolution upgrades it to `precise`; runtime telemetry may add an
-`observed` edge but never replace static evidence.
+only when package, **exact version**, and contract agree. Version ranges are not
+resolved. The current report emits contract evidence and unresolved imports; it
+does not infer runtime edges or upgrade an edge from compiler telemetry.
 
-Every persisted edge carries `source`, `target`, `relation`, `evidence`,
-`confidence`, `repo`, `revision`, `valid_from`, and `valid_to`. This makes a
-PR report explain *why* an impact crosses repositories and prevents stale
-dependency metadata from silently changing a historical answer.
+The current `glasir.cross-repo-report.v1` output records source package, target
+package, contract, target symbol, and `contract` evidence. Persist the source
+revision that produced a report alongside the report itself when a historical
+review must be reproducible.

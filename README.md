@@ -23,70 +23,55 @@ glasir serve . --watch  # index the tree, follow edits, serve on stdio
 
 ## Why a graph
 
-An agent asked "what breaks if I change this?" has two options: read files until
-the context window fills, or ask something that already knows. Glasir answers
-from a graph of definitions and references, filtered before a single token is
-generated.
+Search finds text. A graph preserves the relationships that make a repository
+behave as a system.
 
-Measured on this repository against a grep-and-read baseline, at the same node
-budget a client actually receives:
+For example, answering "what is affected if `authorize` changes?" with search
+requires finding candidate files, interpreting each call site, and repeatedly
+reconstructing transitive dependencies. `impact` follows stored,
+provenance-labelled edges and returns affected symbols grouped by distance.
+Likewise, `shortest_path` shows the evidence-backed route between two symbols
+instead of asking a caller to infer one from unrelated file excerpts.
 
-| question set | Glasir | grep + read |
+| Need | Search and file reading | Glasir |
 |---|---|---|
-| code, asked in prose | 83 % | 79 % |
-| code, asked with identifiers | 93 % | 67 % |
-| documentation ("what was intended") | 81 % | 12 % |
-| documentation, asked in German | 94 % | 94 % |
-| **a deep, layered tree** | **90 %** | 65 % |
-| **structural: who calls this, how does A reach B** | **100 %** | 52 % |
+| Find text mentioning a name | Useful | Useful |
+| Find direct callers | Manual interpretation required | Direct graph query |
+| Assess transitive impact | Reconstruct dependencies repeatedly | Bounded traversal with edge provenance |
+| Explain how A reaches B | Infer a path from excerpts | Return a concrete path |
 
-Roughly 500 tokens per question against 100,000. That ratio is worth nothing
-without the recall beside it, which is why both are here — including the German
-row, where the naive baseline draws level rather than losing.
+The graph does not claim to translate arbitrary natural language. Search uses
+deterministic identifier and text matching; unresolved or ambiguous symbols
+remain visible as such rather than being guessed.
 
-A question asked in one language reaches code named in another when the two
-words share a stem, including across the spellings that hide one
-(`Konfiguration` finds `configuration`, `Aktion` finds `parse_actions`). A word
-pair with no shared stem at all — `Raum` and `room` — still does not resolve;
-that requires an explicit dictionary rather than an inferred translation.
+## Benchmarking
 
-The structural row is the one that answers "why a graph at all". Every other
-row measures search, which is the half a grep baseline is competitive at — and
-wins two of five. `impact` and `shortest_path` answer a different kind of
-question, and there grep has to read the tree: 100% against 52%, at 102 tokens
-per question against 108,989.
+Glasir ships regression benchmarks, not vendor-comparison claims. They compare
+the checked-in corpus with a documented grep-and-read baseline and fail when a
+configured recall floor regresses. Results change as the corpus, questions and
+implementation change, so this README intentionally does not publish static
+percentages or token counts.
 
-Another floor scores the *partition* rather than retrieval: whether `overview`
-sends a reader to the file a symbol actually lives in. It exists because none
-of the sets above can see the partition at all, which let it degrade unnoticed
-for five sessions.
+```sh
+glasir benchmark .
+glasir benchmark . --check
+```
 
-Every one of these is a floor in `bench/baseline.txt` that fails the build when
-it drops — including the deep-tree set, which is a second *shape* of repository
-(layered, two languages, deep paths) rather than more questions about this one.
+[Benchmark methodology](docs/benchmarking.md) defines the corpus, baseline,
+token estimate, limits, and interpretation. It also explains why results from
+this repository are not a substitute for an evaluation on a customer's code.
 
-## Speed
+## Performance
 
-A synthetic million-line tree, 10,000 files, measured not extrapolated:
+Indexing and query latency depend on source shape, parser tier, storage,
+hardware, and the requested graph traversal. The `analyse` command reports the
+measured cold-index time and graph size for a repository; running it a second
+time measures snapshot reuse. Evaluate performance with the exact release,
+repository shape, and deployment limits that will be used in production.
 
-| | this repo (16k lines) | 1M lines |
-|---|---|---|
-| cold index | 0.13 s | 14.4 s |
-| warm start | 0.002 s | 0.17 s |
-| after 50 edited files | — | 0.67 s |
-| after 1,900 edited files | — | 2.9 s |
-| peak memory | 48 MB | 262 MB |
-| one `query_graph` | 8 ms | 13 ms |
-| slowest of the five tools | 8 ms | 70 ms |
-
-The warm start is the normal case: the analysed graph is stored beside the tree
-in its own memory layout and mapped back rather than parsed.
-
-Every tool was measured against that tree, including the deliberately awkward
-cases — a six-hop blast radius from a hub, a path across 200,000 nodes, a
-question that matches nothing. The slowest is `shortest_path` at 70 ms. Under
-load the server is linear: 10 concurrent queries in 23 ms, 30 in 44 ms, 60 in
-90 ms, holding 137 MB throughout.
+Snapshots are stored beside the source tree and validated before reuse. A warm
+start maps the stored graph instead of reparsing the full tree, provided the
+source and extraction configuration still match.
 
 ## What it serves
 
@@ -136,21 +121,16 @@ it guessed.
 no external grammar dependency. Among them Rust, Python, JavaScript,
 TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity and
-Erlang. Twenty-six carry a definition, a call and a constant through a fixture
-of their own in `bench/langs`, so a scanner that stops matching fails the build
-rather than quietly yielding nothing. Markdown is indexed as a source in its own right —
-sections are nodes and backticked names are edges to the code they name.
+Erlang. The checked-in language fixtures exercise extraction floors for every
+supported language variant, so an empty or materially degraded scanner fails
+the build rather than quietly yielding nothing. Markdown is indexed as a source
+in its own right — sections are nodes and backticked names are edges to the
+code they name.
 
-Eighteen languages read their rules from a file in `parsers/languages/`. Nine
-run entirely on a shared scanner configured by that file — Go, Zig, Gleam,
-GraphQL, Protobuf, Solidity, Thrift, FlatBuffers and Cap'n Proto — and nine
-keep their own syntax module for what a description cannot carry (Rust, Ruby,
-Python, Java, Haskell, OCaml, Scala, Kotlin, Julia) while reading their comment
-markers and call exclusions from the same file. The other fifty-four have not
-migrated: a language moves only when the rule set extracts *exactly* what its
-hand-written scanner did, measured file by file over 8.2M lines of real code.
-
-Bundled rules work without setup. To replace selected language rules explicitly:
+Bundled extraction rules work without setup. The public override interface is
+currently limited to Go, Rust, and Ruby; other bundled rule files are internal
+implementation detail and are not a compatibility promise. To replace a
+supported language rule explicitly:
 
 ```sh
 glasir analyse . --language-rules /path/to/rules
@@ -231,10 +211,11 @@ and guarantees are documented in `docs/architecture.md`.
 ## Building
 
 Tagged releases publish signed, multi-architecture (`linux/amd64`,
-`linux/arm64`) Core images to GHCR. Each image digest carries an SPDX SBOM,
-SLSA build provenance, and a keyless Cosign signature; deploy by digest, not a
-mutable tag. CI also rebuilds the production Dockerfile and verifies its
-non-root runtime on every change.
+`linux/arm64`) Core images to GHCR. Release assets include a CycloneDX SBOM;
+the release workflow also creates build provenance and a keyless Cosign
+signature for the published image manifest. Deploy by digest, not a mutable
+tag. CI also rebuilds the production Dockerfile and verifies its non-root
+runtime on every change.
 
 ```
 cargo build --release

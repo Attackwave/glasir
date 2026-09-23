@@ -44,3 +44,7 @@ inventing a dependency. The exchange schema is documented in
 - A request never changes graph state.
 - Incremental updates remove stale symbols before publishing the next snapshot.
 - The Core has no network dependency in the extraction or query path.
+
+See [operations.md](operations.md) for local-state, recovery, and deployment
+boundaries. See the Control repository for public identity, policy, central
+audit, and multi-repository operating procedures.
