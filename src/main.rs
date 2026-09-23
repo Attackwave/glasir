@@ -218,6 +218,8 @@ struct Target {
     /// Config file relative to the user's home, if supported.
     user: Option<&'static str>,
     format: Format,
+    /// Programs on `PATH` that show the client is installed.
+    binaries: &'static [&'static str],
     /// Paths under the project that show the client is in use.
     markers: &'static [&'static str],
     /// Paths under the user's home that show the client is installed.
@@ -226,10 +228,78 @@ struct Target {
     next: &'static str,
 }
 
+/// How a client stores MCP servers. Each shape was taken from what the client
+/// itself writes (`<cli> mcp add` under a scratch `$HOME`) or lists back, not
+/// from memory: a wrong key is a registration the client silently ignores.
 #[derive(Clone, Copy, PartialEq)]
 enum Format {
-    /// `{"mcpServers": {"<name>": {"command": ..., "args": [...]}}}`
+    /// `{"mcpServers": {"glasir": {"type": "stdio", "command", "args"}}}`
     McpJson,
+    /// The same without `type`, as Gemini CLI and Qwen Code write it.
+    McpJsonPlain,
+    /// VS Code's `{"servers": {...}}`.
+    VsCode,
+    /// OpenCode's `{"mcp": {"glasir": {"type": "local", "command": [...]}}}`.
+    OpenCode,
+    /// Codex's `[mcp_servers.glasir]` table, edited as text so the comments and
+    /// layout of the rest of the file survive.
+    CodexToml,
+}
+
+impl Format {
+    /// The JSON object holding the servers; `None` for the TOML format.
+    fn container(self) -> Option<&'static str> {
+        match self {
+            Format::McpJson | Format::McpJsonPlain => Some("mcpServers"),
+            Format::VsCode => Some("servers"),
+            Format::OpenCode => Some("mcp"),
+            Format::CodexToml => None,
+        }
+    }
+
+    fn entry(self, exe: &str, root: &str) -> serde_json::Value {
+        match self {
+            Format::OpenCode => serde_json::json!({
+                "type": "local",
+                "command": [exe, "serve", root],
+                "enabled": true,
+            }),
+            Format::McpJsonPlain => serde_json::json!({"command": exe, "args": ["serve", root]}),
+            _ => serde_json::json!({"type": "stdio", "command": exe, "args": ["serve", root]}),
+        }
+    }
+}
+
+const CODEX_HEADER: &str = "[mcp_servers.glasir]";
+
+/// The file with our `[mcp_servers.glasir]` table and its subtables removed,
+/// and whether one was there.
+fn strip_codex_block(text: &str) -> (String, bool) {
+    let mut out = String::new();
+    let mut inside = false;
+    let mut found = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            inside = t == CODEX_HEADER || t.starts_with("[mcp_servers.glasir.");
+            found |= inside;
+        }
+        if !inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    (out, found)
+}
+
+fn codex_block(exe: &str, root: &str) -> String {
+    // A JSON string literal is a valid TOML basic string.
+    let q = |v: &str| serde_json::Value::from(v).to_string();
+    format!(
+        "{CODEX_HEADER}\ncommand = {}\nargs = [\"serve\", {}]\n",
+        q(exe),
+        q(root)
+    )
 }
 
 /// The neutral registration is useful to deployment tooling without coupling
@@ -238,13 +308,15 @@ enum Format {
 ///
 /// The clients are written only where they are found. Without them `install`
 /// ended in a file no client reads and a sentence telling the user to finish
-/// the job by hand, which is where a first-time user stops.
+/// the job by hand, which is where a first-time user stops. Every client has a
+/// project-scoped file, so one tree's registration never overwrites another's.
 const TARGETS: &[Target] = &[
     Target {
         name: "mcp",
         project: Some("glasir-mcp.json"),
         user: None,
         format: Format::McpJson,
+        binaries: &[],
         markers: &[],
         home_markers: &[],
         next: "point your MCP client at the entry in glasir-mcp.json",
@@ -254,20 +326,85 @@ const TARGETS: &[Target] = &[
         project: Some(".mcp.json"),
         user: None,
         format: Format::McpJson,
+        binaries: &["claude"],
         markers: &[".mcp.json", ".claude"],
         home_markers: &[".claude"],
-        next: "restart Claude Code in this directory and approve the glasir server",
+        next: "Claude Code: restart it here and approve the glasir server",
     },
     Target {
         name: "cursor",
         project: Some(".cursor/mcp.json"),
         user: Some(".cursor/mcp.json"),
         format: Format::McpJson,
+        binaries: &["cursor", "cursor-agent"],
         markers: &[".cursor"],
         home_markers: &[".cursor"],
-        next: "enable glasir under Cursor Settings > MCP",
+        next: "Cursor: enable glasir under Settings > MCP",
+    },
+    Target {
+        name: "codex",
+        project: Some(".codex/config.toml"),
+        user: Some(".codex/config.toml"),
+        format: Format::CodexToml,
+        binaries: &["codex"],
+        markers: &[".codex"],
+        home_markers: &[".codex"],
+        // Measured: an untrusted project's .codex/config.toml is ignored.
+        next: "Codex: start it here and trust the project when asked",
+    },
+    Target {
+        name: "gemini",
+        project: Some(".gemini/settings.json"),
+        user: Some(".gemini/settings.json"),
+        format: Format::McpJsonPlain,
+        binaries: &["gemini"],
+        markers: &[".gemini"],
+        home_markers: &[".gemini"],
+        next: "Gemini CLI: restart it here",
+    },
+    Target {
+        name: "qwen",
+        project: Some(".qwen/settings.json"),
+        user: Some(".qwen/settings.json"),
+        format: Format::McpJsonPlain,
+        binaries: &["qwen"],
+        markers: &[".qwen"],
+        home_markers: &[".qwen"],
+        next: "Qwen Code: restart it here",
+    },
+    Target {
+        name: "vscode",
+        project: Some(".vscode/mcp.json"),
+        user: None,
+        format: Format::VsCode,
+        binaries: &["code", "code-insiders"],
+        markers: &[".vscode"],
+        home_markers: &[],
+        next: "VS Code: open this folder and start glasir from .vscode/mcp.json",
+    },
+    Target {
+        name: "opencode",
+        project: Some("opencode.json"),
+        user: None,
+        format: Format::OpenCode,
+        binaries: &["opencode"],
+        markers: &["opencode.json", ".opencode"],
+        home_markers: &[".config/opencode", ".opencode"],
+        next: "OpenCode: restart it here",
     },
 ];
+
+/// Whether a program of this name is on `PATH`.
+fn on_path(bin: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        ["", ".exe", ".cmd"]
+            .iter()
+            .any(|ext| dir.join(format!("{bin}{ext}")).is_file())
+    })
+}
 
 impl Target {
     /// Config path for the requested scope, if this target has one.
@@ -280,15 +417,17 @@ impl Target {
         }
     }
 
-    /// Whether the client is in use here. The neutral registration has no
-    /// markers and is always available.
+    /// Whether the client is in use here: its program on `PATH`, its settings
+    /// in the home directory, or its files in the project. The neutral
+    /// registration has no markers and is always available.
     fn detected(&self, root: &std::path::Path) -> bool {
-        if self.markers.is_empty() && self.home_markers.is_empty() {
+        if !self.is_client() {
             return true;
         }
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         self.markers.iter().any(|m| root.join(m).exists())
             || home.is_some_and(|h| self.home_markers.iter().any(|m| h.join(m).exists()))
+            || self.binaries.iter().any(|b| on_path(b))
     }
 
     fn is_client(&self) -> bool {
@@ -1112,9 +1251,23 @@ fn write_registration(
     dry: bool,
 ) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let (exe, root) = (exe.to_string_lossy(), root.to_string_lossy());
 
-    let updated = match target.format {
-        Format::McpJson => {
+    let updated = match target.format.container() {
+        None => {
+            let (rest, _) = strip_codex_block(&existing);
+            let block = codex_block(&exe, &root);
+            if existing.contains(&block) {
+                return Ok(false);
+            }
+            let rest = rest.trim_end();
+            if rest.is_empty() {
+                block
+            } else {
+                format!("{rest}\n\n{block}")
+            }
+        }
+        Some(key) => {
             let mut doc: serde_json::Value = if existing.trim().is_empty() {
                 serde_json::json!({})
             } else {
@@ -1128,13 +1281,9 @@ fn write_registration(
             if !doc.is_object() {
                 return Err(std::io::Error::other("config root is not an object"));
             }
-            let mut entry = serde_json::json!({
-                "command": exe.to_string_lossy(),
-                "args": ["serve", root.to_string_lossy()],
-            });
-            entry["type"] = serde_json::json!("stdio");
-            let already = doc["mcpServers"]["glasir"] == entry;
-            doc["mcpServers"]["glasir"] = entry;
+            let entry = target.format.entry(&exe, &root);
+            let already = doc[key]["glasir"] == entry;
+            doc[key]["glasir"] = entry;
 
             if already {
                 return Ok(false);
@@ -1168,15 +1317,22 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
             continue;
         };
 
-        let updated = match target.format {
-            Format::McpJson => {
+        let updated = match target.format.container() {
+            None => {
+                let (rest, found) = strip_codex_block(&existing);
+                if !found {
+                    continue;
+                }
+                rest
+            }
+            Some(key) => {
                 let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&existing) else {
                     continue;
                 };
-                if doc["mcpServers"]["glasir"].is_null() {
+                if doc[key]["glasir"].is_null() {
                     continue;
                 }
-                if let Some(servers) = doc["mcpServers"].as_object_mut() {
+                if let Some(servers) = doc[key].as_object_mut() {
                     servers.remove("glasir");
                 }
                 format!("{doc:#}\n")
@@ -1251,9 +1407,10 @@ fn is_registered(target: &Target, path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
-    match target.format {
-        Format::McpJson => serde_json::from_str::<serde_json::Value>(&text)
-            .is_ok_and(|d| d["mcpServers"]["glasir"].is_object()),
+    match target.format.container() {
+        None => strip_codex_block(&text).1,
+        Some(key) => serde_json::from_str::<serde_json::Value>(&text)
+            .is_ok_and(|d| d[key]["glasir"].is_object()),
     }
 }
 
@@ -5627,6 +5784,48 @@ fn demo_install() {
     let ignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
     assert!(!ignore.lines().any(|l| l == ".mcp.json"));
 
+    // Every client's own shape, as the client writes it.
+    for (platform, file, pointer) in [
+        (
+            "gemini",
+            ".gemini/settings.json",
+            "/mcpServers/glasir/command",
+        ),
+        ("qwen", ".qwen/settings.json", "/mcpServers/glasir/command"),
+        ("vscode", ".vscode/mcp.json", "/servers/glasir/command"),
+        ("opencode", "opencode.json", "/mcp/glasir/command/0"),
+    ] {
+        run_install(&args("install", &["--platform", platform])).unwrap();
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap()).unwrap();
+        assert!(
+            doc.pointer(pointer).is_some_and(|v| v.is_string()),
+            "{platform}"
+        );
+    }
+    assert!(
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(dir.join(".gemini/settings.json")).unwrap()
+        )
+        .unwrap()["mcpServers"]["glasir"]["type"]
+            .is_null(),
+        "gemini writes no type"
+    );
+
+    // Codex is TOML edited as text: the rest of the file survives verbatim,
+    // a second install does not duplicate the table, and uninstall removes
+    // exactly it.
+    let codex = dir.join(".codex/config.toml");
+    std::fs::create_dir_all(dir.join(".codex")).unwrap();
+    let theirs = "# keep me\nmodel = \"o3\"\n\n[mcp_servers.other]\ncommand = \"x\"\n";
+    std::fs::write(&codex, theirs).unwrap();
+    run_install(&args("install", &["--platform", "codex"])).unwrap();
+    run_install(&args("install", &["--platform", "codex"])).unwrap();
+    let text = std::fs::read_to_string(&codex).unwrap();
+    assert!(text.starts_with(theirs), "{text}");
+    assert_eq!(text.matches("[mcp_servers.glasir]").count(), 1, "{text}");
+    assert!(text.contains("args = [\"serve\", "), "{text}");
+
     // A project marker is detected without $HOME, and a file created here
     // carries absolute paths, so it is ignored rather than committed.
     std::fs::create_dir_all(dir.join(".cursor")).unwrap();
@@ -5647,6 +5846,12 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
     assert!(claude["mcpServers"]["glasir"].is_null());
     assert!(claude["mcpServers"]["other"].is_object());
+    let text = std::fs::read_to_string(&codex).unwrap();
+    assert_eq!(text.trim_end(), theirs.trim_end(), "uninstall left: {text}");
+    let vscode: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".vscode/mcp.json")).unwrap())
+            .unwrap();
+    assert!(vscode["servers"]["glasir"].is_null());
 
     std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
     std::fs::write(dir.join(".glasir-layout-free"), b"x").unwrap();

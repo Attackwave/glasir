@@ -42,13 +42,30 @@ Then, in the repository you want to ask about:
 glasir install .
 ```
 
-That registers the server with the assistants it finds — Claude Code
-(`.mcp.json`) and Cursor (`.cursor/mcp.json`) — and installs git hooks that
-keep the graph current after a pull, checkout or rebase. A registration file it
-creates holds absolute paths to your machine, so it is added to `.gitignore`;
-one your team already tracks is merged into, never replaced. With no assistant
-detected it writes a neutral `glasir-mcp.json` for any MCP client; pick a
-target explicitly with `--platform claude|cursor|mcp`.
+That finds the coding assistants installed on your machine — by their program
+on `PATH`, their settings in your home directory, or their files in the
+project — and registers Glasir with each, in the project's own configuration:
+
+| Assistant | File |
+|---|---|
+| Claude Code | `.mcp.json` |
+| Codex | `.codex/config.toml` |
+| Gemini CLI | `.gemini/settings.json` |
+| Qwen Code | `.qwen/settings.json` |
+| Cursor | `.cursor/mcp.json` |
+| VS Code (Copilot) | `.vscode/mcp.json` |
+| OpenCode | `opencode.json` |
+
+It also installs git hooks that keep the graph current after a pull, checkout
+or rebase. A registration file it creates holds absolute paths to your machine,
+so it is added to `.gitignore`; one your team already tracks is merged into,
+never replaced, and nothing in your home directory is touched. With no
+assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.
+`--platform <name>` picks one explicitly.
+
+Most assistants ask before they start a new server: Claude Code and Qwen Code
+want the server approved, Codex and Gemini CLI read project settings only in a
+folder you have trusted. `install` prints the step for each one it wrote.
 
 Restart the assistant and ask it something about the code: *"what breaks if I
 change `parse_config`?"*, *"how does a request reach the database?"*. The
