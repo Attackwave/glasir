@@ -117,8 +117,8 @@ it guessed.
 
 ## Languages
 
-119 language variants are registered in `parsers/`, with native scanners and
-no external grammar dependency. Among them Rust, Python, JavaScript,
+147 languages are registered in `parsers/`, with native scanners and no
+external grammar dependency. Among them Rust, Python, JavaScript,
 TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity and
 Erlang. The checked-in language fixtures exercise extraction floors for every

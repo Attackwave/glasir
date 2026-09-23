@@ -7402,6 +7402,19 @@ fn demo_snapshot() {
 fn demo_docs() {
     use parse_ast::{Lang, parse};
 
+    // See `docs::NOT_DOCUMENTATION`.
+    for (path, want) in [
+        ("CLAUDE.md", false),
+        ("AGENTS.md", false),
+        ("docs/a.md", true),
+    ] {
+        assert_eq!(
+            docs::is_markdown(std::path::Path::new(path)),
+            want,
+            "{path}"
+        );
+    }
+
     for (lang, src, want) in [
         (
             Lang::Rust,

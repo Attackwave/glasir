@@ -9,12 +9,20 @@
 # material and replaced it with the published architecture, operations, and
 # cross-repository contracts. Structural and deep-tree floors are retained from
 # their unchanged dedicated fixtures.
-questions                76
-questions-identifier     68
-questions-docs           75
+#
+# That recalibration was measured in a working copy holding an untracked
+# CLAUDE.md, which the indexer read as documentation because the instruction
+# files had dropped out of `docs::NOT_DOCUMENTATION`. The file outranks the code
+# it describes, so the floors were set 17 to 25 points below what a clean clone
+# measures, and CI, which checks out a clean clone, could lose that much without
+# failing. With the exclusion restored, a clean clone and a working copy agree:
+# 93 / 93 / 100 / 47 / 92, and the floors are those values again.
+questions                93
+questions-identifier     93
+questions-docs           100
 structural               100
-partition                41
-deep                     90
+partition                47
+deep                     92
 
 # A tolerance of three points catches material regressions while avoiding a
 # failure caused by one answer in a small fixed question set.
