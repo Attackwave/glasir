@@ -41,6 +41,7 @@ pub struct LangSpec<'s> {
     pub ident_suffix_marks: bool,
     /// Whether `-` may appear inside an identifier (a Lisp's `commit-entry`).
     pub ident_dashes: bool,
+    pub raw_escapes: bool,
 
     /// Keywords opening a definition, with what they open. Read in order, so a
     /// keyword may appear once only.
@@ -86,6 +87,7 @@ impl LangSpec<'_> {
         block_comment: Some(("/*", "*/")),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
         definitions: &[],
         modifiers: &[],
         not_a_call: &[],
@@ -107,6 +109,7 @@ pub fn parse(src: &str, spec: &LangSpec<'_>) -> FileFacts {
         block_comment_end: spec.block_comment.map(|(_, e)| e),
         ident_suffix_marks: spec.ident_suffix_marks,
         ident_dashes: spec.ident_dashes,
+        raw_escapes: spec.raw_escapes,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();

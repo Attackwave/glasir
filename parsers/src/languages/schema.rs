@@ -90,11 +90,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         tokens[i - 1].kind,
                         TokenKind::Symbol(':') | TokenKind::Symbol('[') | TokenKind::Symbol(',')
                     );
-                let declarable = ident
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_uppercase())
-                    || ident.contains('-');
+                let declarable =
+                    ident.chars().next().is_some_and(|c| c.is_uppercase()) || ident.contains('-');
                 if after_colon && declarable && calls.allows(ident) {
                     scope.record_call(ident, &mut facts);
                 }

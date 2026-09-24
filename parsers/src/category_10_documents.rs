@@ -28,7 +28,11 @@ pub fn parse_markdown(src: &str) -> FileFacts {
                         let d = pending_comments.join(" ");
                         pending_comments.clear();
                         let cleaned = clean_doc(&d);
-                        if cleaned.is_empty() { None } else { Some(cleaned) }
+                        if cleaned.is_empty() {
+                            None
+                        } else {
+                            Some(cleaned)
+                        }
                     } else {
                         None
                     };
@@ -66,7 +70,11 @@ pub fn parse_typst(src: &str) -> FileFacts {
                         let d = pending_comments.join(" ");
                         pending_comments.clear();
                         let cleaned = clean_doc(&d);
-                        if cleaned.is_empty() { None } else { Some(cleaned) }
+                        if cleaned.is_empty() {
+                            None
+                        } else {
+                            Some(cleaned)
+                        }
                     } else {
                         None
                     };
@@ -83,7 +91,11 @@ pub fn parse_typst(src: &str) -> FileFacts {
                     let d = pending_comments.join(" ");
                     pending_comments.clear();
                     let cleaned = clean_doc(&d);
-                    if cleaned.is_empty() { None } else { Some(cleaned) }
+                    if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    }
                 } else {
                     None
                 };
@@ -99,9 +111,22 @@ pub fn parse_typst(src: &str) -> FileFacts {
 /// The control sequences that *declare* rather than call. `\section` names a
 /// section, `\newcommand` names a macro; neither is a use of something else.
 const DECLARING: [&str; 16] = [
-    "part", "chapter", "section", "subsection", "subsubsection", "paragraph",
-    "subparagraph", "newcommand", "renewcommand", "def", "DeclareMathOperator",
-    "newenvironment", "bibitem", "label", "begin", "end",
+    "part",
+    "chapter",
+    "section",
+    "subsection",
+    "subsubsection",
+    "paragraph",
+    "subparagraph",
+    "newcommand",
+    "renewcommand",
+    "def",
+    "DeclareMathOperator",
+    "newenvironment",
+    "bibitem",
+    "label",
+    "begin",
+    "end",
 ];
 
 pub fn parse_latex(src: &str) -> FileFacts {
@@ -203,7 +228,9 @@ pub fn parse_latex(src: &str) -> FileFacts {
                     + rest
                         .find(|c: char| !c.is_alphanumeric() && c != '_')
                         .unwrap_or(rest.len());
-                let Some(name) = line.get(start..end) else { break };
+                let Some(name) = line.get(start..end) else {
+                    break;
+                };
                 at = end.max(start + 1);
                 if name.is_empty() || DECLARING.contains(&name) {
                     continue;

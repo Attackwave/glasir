@@ -15,6 +15,7 @@ pub fn parse_hcl_terraform(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -25,7 +26,9 @@ pub fn parse_hcl_terraform(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -60,9 +63,17 @@ pub fn parse_hcl_terraform(src: &str) -> FileFacts {
                     "resource" | "data" | "action" | "ephemeral" => {
                         let start_byte = tok.start;
                         if i + 2 < tokens.len() {
-                            if let (TokenKind::StringLit(_t), TokenKind::StringLit(n)) = (&tokens[i + 1].kind, &tokens[i + 2].kind) {
+                            if let (TokenKind::StringLit(_t), TokenKind::StringLit(n)) =
+                                (&tokens[i + 1].kind, &tokens[i + 2].kind)
+                            {
                                 let clean_name = n.trim_matches('"');
-                                scope.open_definition_with_body_docs(clean_name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    clean_name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(clean_name);
                                 i += 3;
                                 continue;
@@ -76,13 +87,19 @@ pub fn parse_hcl_terraform(src: &str) -> FileFacts {
                     // definition and every assertion in it was attributed to
                     // the file: 1,318 of 1,703 references across 555 `.hcl`
                     // files.
-                    "module" | "variable" | "output" | "provider" | "check" | "run" | "component"
-                    | "stack" | "mock_provider" => {
+                    "module" | "variable" | "output" | "provider" | "check" | "run"
+                    | "component" | "stack" | "mock_provider" => {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::StringLit(n) = &tokens[i + 1].kind {
                                 let clean_name = n.trim_matches('"');
-                                scope.open_definition_with_body_docs(clean_name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    clean_name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(clean_name);
                                 i += 2;
                                 continue;
@@ -96,7 +113,13 @@ pub fn parse_hcl_terraform(src: &str) -> FileFacts {
                     // alone accounts for most of the `<module>` share.
                     "locals" | "terraform" | "import" | "moved" | "removed" => {
                         let start_byte = tok.start;
-                        scope.open_definition_with_body_docs(*block_type, start_byte as usize, true, false, &mut facts);
+                        scope.open_definition_with_body_docs(
+                            *block_type,
+                            start_byte as usize,
+                            true,
+                            false,
+                            &mut facts,
+                        );
                         // The `{` that follows is counted by the delimiter arm
                         // above, *after* this definition recorded its depth —
                         // so the matching `}` drops back to exactly that value
@@ -167,7 +190,11 @@ pub fn parse_yaml(src: &str) -> FileFacts {
                         let d = pending_comments.join(" ");
                         pending_comments.clear();
                         let cleaned = clean_doc(&d);
-                        if cleaned.is_empty() { None } else { Some(cleaned) }
+                        if cleaned.is_empty() {
+                            None
+                        } else {
+                            Some(cleaned)
+                        }
                     } else {
                         None
                     };
@@ -198,7 +225,11 @@ pub fn parse_toml(src: &str) -> FileFacts {
                 let d = pending_comments.join(" ");
                 pending_comments.clear();
                 let cleaned = clean_doc(&d);
-                if cleaned.is_empty() { None } else { Some(cleaned) }
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    Some(cleaned)
+                }
             } else {
                 None
             };
@@ -238,7 +269,11 @@ pub fn parse_dockerfile(src: &str) -> FileFacts {
                 let d = pending_comments.join(" ");
                 pending_comments.clear();
                 let cleaned = clean_doc(&d);
-                if cleaned.is_empty() { None } else { Some(cleaned) }
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    Some(cleaned)
+                }
             } else {
                 None
             };
@@ -287,6 +322,7 @@ pub fn parse_nix(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -297,7 +333,9 @@ pub fn parse_nix(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -335,8 +373,17 @@ pub fn parse_nix(src: &str) -> FileFacts {
                 // Check for attribute binding: name = ...
                 if i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Symbol('=') {
                     let start_byte = tok.start;
-                    if !matches!(*ident, "in" | "if" | "then" | "else" | "with" | "inherit" | "let" | "rec") {
-                        scope.open_definition_with_body_docs(*ident, start_byte as usize, true, false, &mut facts);
+                    if !matches!(
+                        *ident,
+                        "in" | "if" | "then" | "else" | "with" | "inherit" | "let" | "rec"
+                    ) {
+                        scope.open_definition_with_body_docs(
+                            *ident,
+                            start_byte as usize,
+                            true,
+                            false,
+                            &mut facts,
+                        );
                         scope.on_word(ident);
                         i += 2;
                         continue;
@@ -354,7 +401,10 @@ pub fn parse_nix(src: &str) -> FileFacts {
                     )
                 });
                 if (scope.had_receiver || applied)
-                    && !matches!(*ident, "in" | "if" | "then" | "else" | "with" | "inherit" | "let" | "rec")
+                    && !matches!(
+                        *ident,
+                        "in" | "if" | "then" | "else" | "with" | "inherit" | "let" | "rec"
+                    )
                 {
                     scope.record_call(ident, &mut facts);
                 }
@@ -382,6 +432,7 @@ pub fn parse_json(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -392,7 +443,9 @@ pub fn parse_json(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 let clean = clean_doc(text);
                 if !clean.is_empty() {
                     pending_doc = Some(clean);

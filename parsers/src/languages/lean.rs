@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -27,13 +29,27 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             TokenKind::Ident(ident) => {
                 let lower = ident.to_ascii_lowercase();
                 match lower.as_str() {
-                    "theorem" | "lemma" | "def" | "definition" | "inductive" | "structure" | "axiom" | "opaque" => {
+                    "theorem" | "lemma" | "def" | "definition" | "inductive" | "structure"
+                    | "axiom" | "opaque" => {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.close_definitions_at_or_above(0, start_byte as usize, &mut facts);
-                                let is_fn = matches!(lower.as_str(), "theorem" | "lemma" | "def" | "definition");
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, is_fn, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    0,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
+                                let is_fn = matches!(
+                                    lower.as_str(),
+                                    "theorem" | "lemma" | "def" | "definition"
+                                );
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    is_fn,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;

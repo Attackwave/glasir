@@ -31,12 +31,20 @@ pub fn parse_html(src: &str) -> FileFacts {
             let tag_start = i;
             if let Some(tag_end_rel) = src[tag_start..].find('>') {
                 let tag_str = &src[tag_start..=tag_start + tag_end_rel];
-                let tag_name = tag_str[1..].split_whitespace().next().unwrap_or("").trim_end_matches('>');
+                let tag_name = tag_str[1..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches('>');
                 let doc = if !pending_comments.is_empty() {
                     let d = pending_comments.join(" ");
                     pending_comments.clear();
                     let cleaned = clean_doc(&d);
-                    if cleaned.is_empty() { None } else { Some(cleaned) }
+                    if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    }
                 } else {
                     None
                 };
@@ -142,10 +150,18 @@ pub fn parse_css(src: &str) -> FileFacts {
             }
         }
 
-        if bytes[i] == b'.' || bytes[i] == b'#' || bytes[i] == b'@' || bytes[i..].starts_with(b"--") {
+        if bytes[i] == b'.' || bytes[i] == b'#' || bytes[i] == b'@' || bytes[i..].starts_with(b"--")
+        {
             let start = i;
             let mut j = i;
-            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-' || bytes[j] == b'_' || bytes[j] == b'.' || bytes[j] == b'#' || bytes[j] == b'@') {
+            while j < bytes.len()
+                && (bytes[j].is_ascii_alphanumeric()
+                    || bytes[j] == b'-'
+                    || bytes[j] == b'_'
+                    || bytes[j] == b'.'
+                    || bytes[j] == b'#'
+                    || bytes[j] == b'@')
+            {
                 j += 1;
             }
             if j > start {
@@ -159,7 +175,11 @@ pub fn parse_css(src: &str) -> FileFacts {
                         let d = pending_comments.join(" ");
                         pending_comments.clear();
                         let cleaned = clean_doc(&d);
-                        if cleaned.is_empty() { None } else { Some(cleaned) }
+                        if cleaned.is_empty() {
+                            None
+                        } else {
+                            Some(cleaned)
+                        }
                     } else {
                         None
                     };
@@ -204,6 +224,7 @@ pub fn parse_dart(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -214,7 +235,9 @@ pub fn parse_dart(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -260,7 +283,9 @@ pub fn parse_dart(src: &str) -> FileFacts {
                 i += 1;
                 continue;
             }
-            TokenKind::Symbol('.') | TokenKind::DoubleSymbol("?.") | TokenKind::DoubleSymbol("..") => {
+            TokenKind::Symbol('.')
+            | TokenKind::DoubleSymbol("?.")
+            | TokenKind::DoubleSymbol("..") => {
                 scope.on_receiver();
                 i += 1;
                 continue;
@@ -286,7 +311,12 @@ pub fn parse_dart(src: &str) -> FileFacts {
                         | "covariant"
                 ) {
                     // Check if followed by class/mixin/extension/enum/typedef
-                    if i + 1 < tokens.len() && matches!(tokens[i + 1].kind, TokenKind::Ident("class" | "mixin" | "extension" | "enum" | "typedef")) {
+                    if i + 1 < tokens.len()
+                        && matches!(
+                            tokens[i + 1].kind,
+                            TokenKind::Ident("class" | "mixin" | "extension" | "enum" | "typedef")
+                        )
+                    {
                         i += 1;
                         continue;
                     }
@@ -310,7 +340,11 @@ pub fn parse_dart(src: &str) -> FileFacts {
                         }
                         if ok {
                             if let TokenKind::Ident(name) = tokens[k].kind {
-                                scope.open_statement_definition(name, tok.start as usize, &mut facts);
+                                scope.open_statement_definition(
+                                    name,
+                                    tok.start as usize,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = k + 1;
                                 continue;
@@ -321,7 +355,13 @@ pub fn parse_dart(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -332,7 +372,13 @@ pub fn parse_dart(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -346,7 +392,10 @@ pub fn parse_dart(src: &str) -> FileFacts {
                             j += 1;
                         }
                         let mut lib_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 lib_name.push_str(part);
                             } else if let TokenKind::Symbol('.') = tokens[j].kind {
@@ -355,7 +404,13 @@ pub fn parse_dart(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !lib_name.is_empty() {
-                            scope.open_definition_with_body_docs(&lib_name, start_byte as usize, false, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &lib_name,
+                                start_byte as usize,
+                                false,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(&lib_name);
                             i = j;
                             continue;
@@ -378,17 +433,39 @@ pub fn parse_dart(src: &str) -> FileFacts {
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident("async" | "sync") | TokenKind::Symbol('*') | TokenKind::Symbol(':'))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident("async" | "sync")
+                                            | TokenKind::Symbol('*')
+                                            | TokenKind::Symbol(':')
+                                    ))
+                            {
                                 k += 1;
                             }
-                            if k < tokens.len() && (tokens[k].kind == TokenKind::Symbol('{') || tokens[k].kind == TokenKind::DoubleSymbol("=>")) {
+                            if k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Symbol('{')
+                                    || tokens[k].kind == TokenKind::DoubleSymbol("=>"))
+                            {
                                 is_fn_def = true;
                             }
                         }
 
-                        if is_fn_def && !matches!(*ident, "if" | "while" | "for" | "switch" | "catch" | "assert") {
+                        if is_fn_def
+                            && !matches!(
+                                *ident,
+                                "if" | "while" | "for" | "switch" | "catch" | "assert"
+                            )
+                        {
                             let start_byte = tok.start;
-                            scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                *ident,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
                             scope.on_word(ident);
                             i += 1;
                             continue;
@@ -504,13 +581,20 @@ pub fn parse_vue(src: &str) -> FileFacts {
             if let Some(end_script) = src[script_content_start..].find("</script>") {
                 let script_content_end = script_content_start + end_script;
                 let script_code = &src[script_content_start..script_content_end];
-                let sub_facts = crate::category_01_backend::parse_typescript_javascript(script_code);
-                
+                let sub_facts =
+                    crate::category_01_backend::parse_typescript_javascript(script_code);
+
                 for def in sub_facts.defines {
                     facts.defines.push(def);
                 }
                 for (name, range) in sub_facts.ranges {
-                    facts.ranges.push((name, (range.0 + script_content_start as u32, range.1 + script_content_start as u32)));
+                    facts.ranges.push((
+                        name,
+                        (
+                            range.0 + script_content_start as u32,
+                            range.1 + script_content_start as u32,
+                        ),
+                    ));
                 }
                 for (name, doc) in sub_facts.docs {
                     facts.docs.push((name, doc));
@@ -547,13 +631,20 @@ pub fn parse_svelte(src: &str) -> FileFacts {
             if let Some(end_script) = src[script_content_start..].find("</script>") {
                 let script_content_end = script_content_start + end_script;
                 let script_code = &src[script_content_start..script_content_end];
-                let sub_facts = crate::category_01_backend::parse_typescript_javascript(script_code);
-                
+                let sub_facts =
+                    crate::category_01_backend::parse_typescript_javascript(script_code);
+
                 for def in sub_facts.defines {
                     facts.defines.push(def);
                 }
                 for (name, range) in sub_facts.ranges {
-                    facts.ranges.push((name, (range.0 + script_content_start as u32, range.1 + script_content_start as u32)));
+                    facts.ranges.push((
+                        name,
+                        (
+                            range.0 + script_content_start as u32,
+                            range.1 + script_content_start as u32,
+                        ),
+                    ));
                 }
                 for (name, doc) in sub_facts.docs {
                     facts.docs.push((name, doc));
@@ -598,7 +689,12 @@ pub fn parse_xml(src: &str) -> FileFacts {
             }
         }
 
-        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] != b'/' && bytes[i + 1] != b'!' && bytes[i + 1] != b'?' {
+        if bytes[i] == b'<'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] != b'/'
+            && bytes[i + 1] != b'!'
+            && bytes[i + 1] != b'?'
+        {
             let tag_start = i;
             if let Some(tag_end_rel) = src[tag_start..].find('>') {
                 let tag_str = &src[tag_start..=tag_start + tag_end_rel];
@@ -612,13 +708,21 @@ pub fn parse_xml(src: &str) -> FileFacts {
                     let d = pending_comments.join(" ");
                     pending_comments.clear();
                     let cleaned = clean_doc(&d);
-                    if cleaned.is_empty() { None } else { Some(cleaned) }
+                    if cleaned.is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    }
                 } else {
                     None
                 };
 
                 if !tag_name.is_empty() && !facts.defines.contains(&tag_name.to_string()) {
-                    facts.add_definition(tag_name, (tag_start as u32, (tag_start + tag_end_rel) as u32), doc.clone());
+                    facts.add_definition(
+                        tag_name,
+                        (tag_start as u32, (tag_start + tag_end_rel) as u32),
+                        doc.clone(),
+                    );
                 }
 
                 for attr in &["id=", "name="] {
@@ -633,7 +737,11 @@ pub fn parse_xml(src: &str) -> FileFacts {
                                 let abs_end = abs_start + val.len();
                                 let sym = format!("{}:{}", tag_name, val);
                                 if !facts.defines.contains(&sym) {
-                                    facts.add_definition(sym, (abs_start as u32, abs_end as u32), doc.clone());
+                                    facts.add_definition(
+                                        sym,
+                                        (abs_start as u32, abs_end as u32),
+                                        doc.clone(),
+                                    );
                                 }
                             }
                         }

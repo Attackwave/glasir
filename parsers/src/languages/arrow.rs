@@ -35,19 +35,19 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     continue;
                 }
                 if !facts.defines.contains(&(*ident).to_string()) {
-                    facts.add_definition(
-                        *ident,
-                        (tokens[i].start, tokens[i].end),
-                        None,
-                    );
+                    facts.add_definition(*ident, (tokens[i].start, tokens[i].end), None);
                 }
                 left = Some(((*ident).to_string(), tokens[i].start, tokens[i].end));
             }
             // `-->`, `---`, `==>`: the lexer splits them, so any run of dashes
             // or equals between two identifiers is an edge.
-            TokenKind::Symbol('-') | TokenKind::Symbol('>') | TokenKind::Symbol('=')
-            | TokenKind::DoubleSymbol("--") | TokenKind::DoubleSymbol("->")
-            | TokenKind::DoubleSymbol("==") | TokenKind::DoubleSymbol("=>") => {
+            TokenKind::Symbol('-')
+            | TokenKind::Symbol('>')
+            | TokenKind::Symbol('=')
+            | TokenKind::DoubleSymbol("--")
+            | TokenKind::DoubleSymbol("->")
+            | TokenKind::DoubleSymbol("==")
+            | TokenKind::DoubleSymbol("=>") => {
                 let mut j = i + 1;
                 while j < tokens.len()
                     && matches!(

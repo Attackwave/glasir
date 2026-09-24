@@ -17,8 +17,74 @@ always produce the same answer.
 > mTLS boundaries, audited administration, cross-repository review, and
 > provider pull-request checks.
 
+## Quickstart
+
+Install with the package manager you already use:
+
+```sh
+brew install attackwave/glasir/glasir                      # macOS, Linux
+scoop bucket add glasir https://github.com/Attackwave/scoop-glasir
+scoop install glasir                                       # Windows
 ```
-glasir serve . --watch  # index the tree, follow edits, serve on stdio
+
+Or download the archive for your platform from
+[Releases](https://github.com/Attackwave/glasir/releases), check it against
+the `.sha256` beside it, and put `glasir` on your `PATH`:
+
+| Platform | Archive |
+|---|---|
+| Linux x86_64 | `glasir-<version>-linux-x86_64.tar.gz` |
+| Linux ARM64 | `glasir-<version>-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `glasir-<version>-macos-arm64.tar.gz` |
+| macOS Intel | `glasir-<version>-macos-x86_64.tar.gz` |
+| Windows x86_64 | `glasir-<version>-windows-x86_64.zip` |
+
+The Linux binaries are statically linked and run on any distribution,
+including Alpine and older enterprise releases. A binary downloaded by hand on
+macOS is not yet notarized, so macOS refuses its first start; clear the flag
+once, after checking the checksum: `xattr -d com.apple.quarantine glasir`.
+Homebrew installs are not affected.
+
+Then, in the repository you want to ask about:
+
+```sh
+glasir install .
+```
+
+That finds the coding assistants installed on your machine — by their program
+on `PATH`, their settings in your home directory, or their files in the
+project — and registers Glasir with each, in the project's own configuration:
+
+| Assistant | File |
+|---|---|
+| Claude Code | `.mcp.json` |
+| Codex | `.codex/config.toml` |
+| Gemini CLI | `.gemini/settings.json` |
+| Qwen Code | `.qwen/settings.json` |
+| Cursor | `.cursor/mcp.json` |
+| VS Code (Copilot) | `.vscode/mcp.json` |
+| OpenCode | `opencode.json` |
+
+It also installs git hooks that keep the graph current after a pull, checkout
+or rebase. A registration file it creates holds absolute paths to your machine,
+so it is added to `.gitignore`; one your team already tracks is merged into,
+never replaced, and nothing in your home directory is touched. With no
+assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.
+`--platform <name>` picks one explicitly.
+
+Most assistants ask before they start a new server: Claude Code and Qwen Code
+want the server approved, Codex and Gemini CLI read project settings only in a
+folder you have trusted. `install` prints the step for each one it wrote.
+
+Restart the assistant and ask it something about the code: *"what breaks if I
+change `parse_config`?"*, *"how does a request reach the database?"*. The
+answers come from `impact`, `query_graph`, `shortest_path` and ten more tools
+listed under [What it serves](#what-it-serves).
+
+```sh
+glasir status .             # what is registered, what the graph holds
+glasir why "your question"  # what the search saw, when an answer surprises you
+glasir uninstall .          # remove the registration and the hooks
 ```
 
 ## Why a graph
@@ -75,7 +141,7 @@ source and extraction configuration still match.
 
 ## What it serves
 
-Nine MCP tools, over stdio for a local editor or Streamable HTTP for a remote
+Thirteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
@@ -87,8 +153,33 @@ agent:
 - `get_code_snippet` — the source a symbol names, from the range the parser
   recorded, so nothing has to open the file or guess a line
 - `find_callers` — the direct callers of one symbol, as one list
-- `detect_changes` — a git diff mapped to the symbols it touches and what
-  depends on them; the only tool that reads the working tree
+- `detect_changes` — a git diff mapped to the definitions whose lines it
+  touches (new files included) and what depends on them, with a risk level
+  and its reasons: changed code that has callers and no test reaching it, and
+  files the history says usually change too that the change leaves out
+
+Three answer what to do *before* a commit, which is when an answer is
+cheapest to act on:
+
+- `affected_tests` — the tests that reach a symbol or the uncommitted diff,
+  nearest first, with the files to run. Recognises the test conventions of
+  each language (`tests/`, `spec/`, `__tests__/`, `test_x`, `x_test`,
+  `x.spec`, `FooTest`, `TestX`)
+- `co_changes` — the files that change in the same commits as one file, from
+  the git history, marking those no edge in the graph connects: the hidden
+  coupling — a template, a migration, a client in another language — that
+  `impact` cannot see because no code names it
+- `check_architecture` — the architecture contract in `glasir-rules.txt`
+  (`deny <path> -> <path>`, `no-cycles`) checked against the graph, every
+  broken rule with the edges that break it; pass rules ad hoc to test a
+  boundary before writing it down. Under `serve --watch` the graph follows
+  the working tree, so a change is checked before it is committed
+- `find_unused` — definitions nothing in the tree refers to, confirmed against
+  every text file rather than the call graph alone, with tests, annotated and
+  generated code, overrides and framework conventions left out. On six real
+  repositories in five languages, every name it reported appeared nowhere but
+  in its own definition; what it cannot see — a library's public API, a name
+  built at run time — is stated in each answer
 
 **Every answer comes twice: as prose and as `structuredContent`.** The text is
 laid out for a person to read; the structured half is the same facts as data,
@@ -117,8 +208,8 @@ it guessed.
 
 ## Languages
 
-119 language variants are registered in `parsers/`, with native scanners and
-no external grammar dependency. Among them Rust, Python, JavaScript,
+147 languages are registered in `parsers/`, with native scanners and no
+external grammar dependency. Among them Rust, Python, JavaScript,
 TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity and
 Erlang. The checked-in language fixtures exercise extraction floors for every
@@ -140,6 +231,40 @@ glasir serve . --watch --language-rules /path/to/rules
 Rules are validated before indexing, stay fixed until restart, and participate
 in snapshot validity. See [language rule maintenance](parsers/README.md) for the
 schema, examples, tests and current extraction limits.
+
+## Asking in other languages
+
+**English is the preferred language for questions.** Code is almost always
+named in English, and `query_graph` matches the words of a question against
+identifiers and documentation — it does not translate.
+
+Everything structural is independent of language: `impact`, `find_callers`,
+`shortest_path`, `explain_node`, `cycles` and `overview` work on symbols and
+edges, and documentation and comments in any language are indexed.
+
+A question in another language still finds English code when its technical
+words share a stem with the code's — which technical vocabulary often does:
+*server*, *serveur*, *servidor*; *compaction*, *compactage*, *compactación*;
+German *Konfiguration* reaches `configuration` and *Aktion* reaches `action`,
+because German `k` and `z` are matched against English `c` and `t`. Asked in
+German, French and Spanish, the same questions about this repository land in
+the right file, though English ranks the exact symbol highest.
+
+What does not work is a word pair with no common stem — *Raum* and `room`,
+*Leinwand* and `canvas`. Bridging those needs a dictionary or a language model,
+and Glasir deliberately has neither in its query path, so the same question
+always returns the same answer. When a question misses, the reply lists the
+repository's own vocabulary so the assistant can ask again in its words.
+
+| Question language | Status |
+|---|---|
+| English | Preferred; the reference for all benchmarks |
+| German | Supported: question words are filtered, spelling differences to English are bridged |
+| Other Latin-script languages | Works through shared technical stems; question words such as *comment* or *qué* are not filtered and count as search terms |
+| Other scripts (Cyrillic, CJK, …) | Not measured; free-text questions are unlikely to match English code, structural tools are unaffected |
+
+In practice the assistant in front of Glasir usually phrases its tool calls in
+the code's own terms, whatever language you ask it in.
 
 ## Running it for a team
 
@@ -227,7 +352,7 @@ glasir langcheck bench/langs --check # extraction against bench/languages.txt
 ```
 
 The benchmark is a guard, not a report: a set falling below its floor fails the
-build. Two silent regressions in one session are what put it there.
+build.
 
 `langcheck` guards the other half. The recall floors read this repository, which
 is Rust, so they cannot see a scanner that stopped extracting from Julia; this
@@ -254,7 +379,10 @@ the instance.
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
 
-The dependency inventory is recorded in `Cargo.lock`. Dependencies are permissively licensed — MIT, Apache-2.0,
-BSD, ISC, Zlib, Unlicense — with no copyleft and no unclear terms. CI generates
-a CycloneDX SBOM from `Cargo.lock` on every run, so that claim is checkable
-rather than asserted.
+Every dependency linked into the binary is permissively licensed — MIT,
+Apache-2.0, ISC, BSD-3-Clause, Unicode-3.0 or Unlicense — with no copyleft.
+Each release archive carries their copyright notices and licence texts in
+`THIRD-PARTY-LICENSES.txt`, generated by `cargo about` from the tagged
+`Cargo.lock`; `about.toml` lists the accepted licences and the release fails on
+any other. CI also generates a CycloneDX SBOM on every run, so the claim is
+checkable rather than asserted.

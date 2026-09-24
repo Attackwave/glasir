@@ -26,7 +26,12 @@ impl FileFacts {
         Self::default()
     }
 
-    pub fn add_definition(&mut self, name: impl Into<String>, range: (u32, u32), doc: Option<String>) {
+    pub fn add_definition(
+        &mut self,
+        name: impl Into<String>,
+        range: (u32, u32),
+        doc: Option<String>,
+    ) {
         let name_str = name.into();
         self.defines.push(name_str.clone());
         self.ranges.push((name_str.clone(), range));
@@ -62,8 +67,14 @@ impl FileFacts {
         }
     }
 
-    pub fn add_call(&mut self, caller: impl Into<String>, callee: impl Into<String>, has_receiver: bool) {
-        self.calls.push((caller.into(), callee.into(), has_receiver));
+    pub fn add_call(
+        &mut self,
+        caller: impl Into<String>,
+        callee: impl Into<String>,
+        has_receiver: bool,
+    ) {
+        self.calls
+            .push((caller.into(), callee.into(), has_receiver));
         self.call_modules.push(None);
     }
 }

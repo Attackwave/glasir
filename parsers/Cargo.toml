@@ -2,6 +2,7 @@
 name = "native_parsers"
 version = "0.1.0"
 edition = "2021"
+publish = false
 # Written from scratch: no grammar, query or parser logic is derived from
 # tree-sitter or any other project, so nothing here carries a foreign licence.
 # What it encodes are language syntax rules — keywords, delimiters, comment

@@ -545,7 +545,7 @@ pub struct Metrics {
 }
 
 /// Every tool this server answers. A fixed list, so the label set is bounded.
-const TOOLS: [&str; 9] = [
+const TOOLS: [&str; 13] = [
     "query_graph",
     "overview",
     "shortest_path",
@@ -555,6 +555,10 @@ const TOOLS: [&str; 9] = [
     "get_code_snippet",
     "find_callers",
     "detect_changes",
+    "affected_tests",
+    "co_changes",
+    "check_architecture",
+    "find_unused",
 ];
 
 /// Upper bounds in milliseconds. Chosen around what this server measures:

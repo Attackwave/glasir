@@ -161,7 +161,14 @@ fn backticked(line: &str) -> Vec<String> {
 ///
 /// The rule is a name, not a pattern under `docs/`: the rest of that tree is
 /// documentation of the system and measured as worth indexing.
-const NOT_DOCUMENTATION: &[&str] = &["CONTRIBUTING.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md"];
+const NOT_DOCUMENTATION: &[&str] = &[
+    "CLAUDE.md",
+    "AGENTS.md",
+    "GEMINI.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+];
 
 /// Whether a path is a document this module can read.
 pub fn is_markdown(path: &std::path::Path) -> bool {

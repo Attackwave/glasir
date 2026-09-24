@@ -1,54 +1,54 @@
+pub(crate) mod ada;
+pub(crate) mod arrow;
+pub(crate) mod blockconf;
+pub(crate) mod c;
+pub(crate) mod clojure;
+pub(crate) mod cmake;
+pub(crate) mod cpp;
 pub(crate) mod csharp;
+pub(crate) mod d;
+pub(crate) mod dart;
 pub(crate) mod elixir;
-pub(crate) mod gdscript;
+pub(crate) mod elm;
 pub(crate) mod erlang;
+pub(crate) mod fortran;
+pub(crate) mod gdscript;
 pub(crate) mod haskell;
+pub(crate) mod janet;
 pub(crate) mod java;
 pub(crate) mod julia;
+pub(crate) mod keyvalue;
 pub(crate) mod kotlin;
+pub(crate) mod labelled;
+pub(crate) mod lean;
+pub(crate) mod lua;
+pub(crate) mod makefile;
+pub(crate) mod meson;
+pub(crate) mod mojo;
+pub(crate) mod nasm;
 pub(crate) mod nim;
+pub(crate) mod objc;
 pub(crate) mod ocaml;
+pub(crate) mod perl;
 pub(crate) mod php;
+pub(crate) mod plsql;
+pub(crate) mod purescript;
 pub(crate) mod python;
 pub(crate) mod r;
+pub(crate) mod reference;
 pub(crate) mod ruby;
 pub(crate) mod rust;
 pub(crate) mod scala;
+pub(crate) mod schema;
+pub(crate) mod sigil;
+pub(crate) mod smali;
+pub(crate) mod swift;
+pub(crate) mod tagged;
+pub(crate) mod tcl;
+pub(crate) mod template;
 pub(crate) mod typescript;
 pub(crate) mod vb;
-pub(crate) mod ada;
-pub(crate) mod c;
-pub(crate) mod cpp;
-pub(crate) mod clojure;
-pub(crate) mod d;
-pub(crate) mod dart;
-pub(crate) mod elm;
-pub(crate) mod fortran;
-pub(crate) mod lean;
-pub(crate) mod mojo;
-pub(crate) mod lua;
-pub(crate) mod perl;
-pub(crate) mod purescript;
-pub(crate) mod swift;
 pub(crate) mod verilog;
-pub(crate) mod cmake;
-pub(crate) mod objc;
-pub(crate) mod tcl;
-pub(crate) mod janet;
-pub(crate) mod plsql;
-pub(crate) mod makefile;
-pub(crate) mod smali;
-pub(crate) mod template;
-pub(crate) mod nasm;
-pub(crate) mod sigil;
-pub(crate) mod tagged;
-pub(crate) mod arrow;
-pub(crate) mod schema;
-pub(crate) mod reference;
-pub(crate) mod keyvalue;
-pub(crate) mod labelled;
-pub(crate) mod blockconf;
-pub(crate) mod meson;
 
 /// Dispatches a language whose syntax needs Rust. `None` means the language is
 /// driven entirely by its `[generic]` table.
@@ -172,9 +172,7 @@ pub(crate) fn parse(
         // Four formats that declare a label and refer to it by name: RST's
         // `.. _charge:`, BibTeX's `@article{charge}`, GN's
         // `source_set("charge")`, Kconfig's `config CHARGE`.
-        "rst" | "bibtex" | "requirements" | "gn" | "kconfig" => {
-            labelled::parse(src, style, calls)
-        }
+        "rst" | "bibtex" | "requirements" | "gn" | "kconfig" => labelled::parse(src, style, calls),
         // Meson and Jsonnet share a module: both define by assignment, and the
         // only difference is the token.
         "meson" | "jsonnet" => meson::parse(src, style, calls),

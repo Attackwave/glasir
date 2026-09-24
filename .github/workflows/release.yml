@@ -22,12 +22,28 @@ jobs:
     strategy:
       matrix:
         include:
+          # musl, statically linked: a glibc build from the newest runner needs
+          # that runner's glibc (2.39) and did not start on Ubuntu 22.04,
+          # Debian 12 or RHEL 9. mimalloc keeps the static build as fast.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
+            platform: macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+          # Native, like the container images: ARM Linux is Graviton and
+          # Ampere servers, and cross-compiled binaries would ship untested.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: linux-arm64
+          # The last Intel image GitHub offers; it is retired in August 2027,
+          # after which this entry has to cross-compile from Apple Silicon.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +68,10 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -62,29 +82,49 @@ jobs:
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
           "$BIN" --version | grep -q "^glasir "
 
+      - name: install cargo-about
+        run: cargo install cargo-about --locked --features cli
+
       - name: package
         shell: bash
         run: |
           BIN=target/${{ matrix.target }}/release/glasir
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
-          NAME=glasir-${{ github.ref_name }}-${{ matrix.target }}
+          # Tags carry a prefix (`v`, `control-v`); the archive names the product
+          # once and the platform the way a user would look for it.
+          VERSION="${GITHUB_REF_NAME#control-}"
+          VERSION="${VERSION#v}"
+          NAME=glasir-$VERSION-${{ matrix.platform }}
           mkdir -p "dist/$NAME"
           cp "$BIN" LICENSE NOTICE README.md SECURITY.md "dist/$NAME/"
-          cd dist && tar czf "$NAME.tar.gz" "$NAME"
+          # MIT, ISC, BSD and Unicode require their copyright and licence text
+          # to travel with a binary; about.toml fails on any licence not listed.
+          cargo about generate --locked --fail about.hbs -o "dist/$NAME/THIRD-PARTY-LICENSES.txt"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            ARCHIVE="$NAME.zip"
+            7z a -tzip "$ARCHIVE" "$NAME" >/dev/null
+          else
+            ARCHIVE="$NAME.tar.gz"
+            tar czf "$ARCHIVE" "$NAME"
+          fi
           # Checksums are per file and beside it, so a mirror cannot serve a
           # different archive under the same name unnoticed.
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
           else
-            openssl dgst -sha256 -r "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+            openssl dgst -sha256 -r "$ARCHIVE" > "$ARCHIVE.sha256"
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: dist/*.tar.gz*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
 
   # Generated from the tagged Cargo.lock, so it describes the build being
   # released rather than whatever was on the branch that day.
@@ -191,8 +231,53 @@ jobs:
         run: |
           for tag in $TAGS; do cosign sign --yes "${tag}@${DIGEST}"; done
 
+  # The Homebrew formula and the Scoop manifest, rendered from the checksums
+  # this release published. Attached to every release, so Scoop can install
+  # straight from it; pushed to the tap and the bucket only for a stable
+  # version, and only when PACKAGES_TOKEN (contents: write on both) is set.
+  packages:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - run: python3 packaging/render.py --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dist dist --out packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: packages/*
+      # An expired token costs the tap and bucket update, never the release:
+      # the step shows failed, and `publish` still runs.
+      - name: publish to the tap and the bucket
+        if: ${{ !contains(github.ref_name, '-') }}
+        continue-on-error: true
+        env:
+          TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "PACKAGES_TOKEN is not set: the formula and manifest are attached to the release only."
+            exit 0
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          publish() (
+            repo=$1 dest=$2 src=$PWD/$3
+            git clone -q "https://x-access-token:${TOKEN}@github.com/${owner}/${repo}.git" "/tmp/${repo}"
+            cd "/tmp/${repo}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$src" "$dest"
+            git add -A
+            git diff --cached --quiet && exit 0
+            git -c user.name="glasir release" -c user.email="release@users.noreply.github.com" \
+              commit -qm "glasir ${GITHUB_REF_NAME}"
+            git push -q
+          )
+          publish homebrew-glasir Formula/glasir.rb packages/glasir.rb
+          publish scoop-glasir bucket/glasir.json packages/glasir.json
+
   publish:
-    needs: [build, sbom, container]
+    needs: [build, sbom, container, packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -22,21 +22,37 @@ pub fn parse_python(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: true,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    // A newline ends a Python statement, but not inside brackets: a constant
+    // such as `STOP = frozenset({` runs to its closing brace.
+    let mut brackets = 0i32;
 
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        match tok.kind {
+            TokenKind::Symbol('(' | '[' | '{') => brackets += 1,
+            TokenKind::Symbol(')' | ']' | '}') => brackets = (brackets - 1).max(0),
+            _ => {}
+        }
+        let line_start_pos = src[..tok.start as usize]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
         let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
 
         match &tok.kind {
             TokenKind::DocComment(text) | TokenKind::LineComment(text) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
@@ -45,6 +61,12 @@ pub fn parse_python(src: &str) -> FileFacts {
                 continue;
             }
             TokenKind::Newline => {
+                // Without this a module constant stayed open to the end of
+                // the file: its range, and the snippet for it, took in every
+                // definition after it.
+                if brackets == 0 && scope.open.last().is_some_and(|o| o.statement_scoped) {
+                    scope.on_statement_end(tok.start as usize, &mut facts);
+                }
                 i += 1;
                 continue;
             }
@@ -72,13 +94,20 @@ pub fn parse_python(src: &str) -> FileFacts {
                 continue;
             }
             TokenKind::Ident(ident) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
 
                 let mut cur_ident = *ident;
-                if cur_ident == "async" && i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Ident("def") {
+                if cur_ident == "async"
+                    && i + 1 < tokens.len()
+                    && tokens[i + 1].kind == TokenKind::Ident("def")
+                {
                     i += 1;
                     cur_ident = "def";
                 }
@@ -102,7 +131,13 @@ pub fn parse_python(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = current_line_indent + 1;
                                 }
@@ -116,7 +151,13 @@ pub fn parse_python(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = current_line_indent + 1;
                                 }
@@ -133,7 +174,18 @@ pub fn parse_python(src: &str) -> FileFacts {
                         }
                         if j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
-                            && !matches!(*ident, "if" | "elif" | "while" | "for" | "return" | "with" | "assert" | "import" | "from" | "raise")
+                            && !matches!(
+                                *ident,
+                                "if" | "elif"
+                                    | "while"
+                                    | "for"
+                                    | "return"
+                                    | "with"
+                                    | "assert"
+                                    | "import"
+                                    | "from"
+                                    | "raise"
+                            )
                         {
                             scope.record_call(ident, &mut facts);
                         }
@@ -166,6 +218,7 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -176,7 +229,9 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -207,7 +262,18 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                 continue;
             }
             TokenKind::Ident(ident) => {
-                if matches!(*ident, "export" | "default" | "async" | "declare" | "public" | "private" | "protected" | "static" | "readonly") {
+                if matches!(
+                    *ident,
+                    "export"
+                        | "default"
+                        | "async"
+                        | "declare"
+                        | "public"
+                        | "private"
+                        | "protected"
+                        | "static"
+                        | "readonly"
+                ) {
                     i += 1;
                     continue;
                 }
@@ -217,7 +283,13 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -229,7 +301,13 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
                                 let opens_body = matches!(*ident, "class" | "interface" | "enum");
-                                scope.open_definition_with_body_docs(name, start_byte as usize, opens_body, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    opens_body,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -243,7 +321,11 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_statement_definition(name, start_byte as usize, &mut facts);
+                                scope.open_statement_definition(
+                                    name,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -278,10 +360,21 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident(_) | TokenKind::Symbol(':') | TokenKind::DoubleSymbol("=>"))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident(_)
+                                            | TokenKind::Symbol(':')
+                                            | TokenKind::DoubleSymbol("=>")
+                                    ))
+                            {
                                 k += 1;
                             }
-                            if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('{') && scope.depth > 0 {
+                            if k < tokens.len()
+                                && tokens[k].kind == TokenKind::Symbol('{')
+                                && scope.depth > 0
+                            {
                                 is_method_def = true;
                             }
                         }
@@ -300,7 +393,17 @@ pub fn parse_typescript_javascript(src: &str) -> FileFacts {
                         }
                         if j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
-                            && !matches!(*ident, "if" | "while" | "for" | "switch" | "catch" | "return" | "typeof" | "instanceof" | "new")
+                            && !matches!(
+                                *ident,
+                                "if" | "while"
+                                    | "for"
+                                    | "switch"
+                                    | "catch"
+                                    | "return"
+                                    | "typeof"
+                                    | "instanceof"
+                                    | "new"
+                            )
                         {
                             scope.record_call(ident, &mut facts);
                         }
@@ -341,6 +444,7 @@ pub fn parse_java(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -354,7 +458,9 @@ pub fn parse_java(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -369,7 +475,13 @@ pub fn parse_java(src: &str) -> FileFacts {
                     let start_byte = tok.start;
                     if i + 1 < tokens.len() {
                         if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                            scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(name);
                             i += 2;
                             continue;
@@ -476,7 +588,13 @@ pub fn parse_java(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -487,7 +605,10 @@ pub fn parse_java(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         let mut j = i + 1;
                         let mut pkg_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 pkg_name.push_str(part);
                             } else if let TokenKind::Symbol('.') = tokens[j].kind {
@@ -496,7 +617,13 @@ pub fn parse_java(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !pkg_name.is_empty() {
-                            scope.open_definition_with_body_docs(&pkg_name, start_byte as usize, false, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &pkg_name,
+                                start_byte as usize,
+                                false,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(&pkg_name);
                             i = j;
                             continue;
@@ -522,10 +649,19 @@ pub fn parse_java(src: &str) -> FileFacts {
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident(_) | TokenKind::Symbol(','))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident(_) | TokenKind::Symbol(',')
+                                    ))
+                            {
                                 k += 1;
                             }
-                            if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('{') && scope.depth > 0 {
+                            if k < tokens.len()
+                                && tokens[k].kind == TokenKind::Symbol('{')
+                                && scope.depth > 0
+                            {
                                 is_method_def = true;
                             }
                         }
@@ -591,6 +727,7 @@ pub fn parse_csharp(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -601,7 +738,9 @@ pub fn parse_csharp(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -667,7 +806,11 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         let mut j = i + 1;
                         let mut ns_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Symbol('{') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Symbol('{')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 ns_name.push_str(part);
                             } else if let TokenKind::Symbol('.') = tokens[j].kind {
@@ -676,8 +819,15 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !ns_name.is_empty() {
-                            let opens_body = j < tokens.len() && tokens[j].kind == TokenKind::Symbol('{');
-                            scope.open_definition_with_body_docs(&ns_name, start_byte as usize, opens_body, false, &mut facts);
+                            let opens_body =
+                                j < tokens.len() && tokens[j].kind == TokenKind::Symbol('{');
+                            scope.open_definition_with_body_docs(
+                                &ns_name,
+                                start_byte as usize,
+                                opens_body,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(&ns_name);
                             i = j;
                             continue;
@@ -700,7 +850,11 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                         }
                         if ok {
                             if let TokenKind::Ident(name) = tokens[k].kind {
-                                scope.open_statement_definition(name, tok.start as usize, &mut facts);
+                                scope.open_statement_definition(
+                                    name,
+                                    tok.start as usize,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = k + 1;
                                 continue;
@@ -710,12 +864,20 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                     "class" | "struct" | "interface" | "enum" | "record" => {
                         let start_byte = tok.start;
                         let mut j = i + 1;
-                        if j < tokens.len() && matches!(tokens[j].kind, TokenKind::Ident("class" | "struct")) {
+                        if j < tokens.len()
+                            && matches!(tokens[j].kind, TokenKind::Ident("class" | "struct"))
+                        {
                             j += 1;
                         }
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = j + 1;
                                 continue;
@@ -742,10 +904,21 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident(_) | TokenKind::Symbol(':') | TokenKind::DoubleSymbol("=>"))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident(_)
+                                            | TokenKind::Symbol(':')
+                                            | TokenKind::DoubleSymbol("=>")
+                                    ))
+                            {
                                 k += 1;
                             }
-                            if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('{') && scope.depth > 0 {
+                            if k < tokens.len()
+                                && tokens[k].kind == TokenKind::Symbol('{')
+                                && scope.depth > 0
+                            {
                                 is_method_def = true;
                             }
                         }
@@ -823,6 +996,7 @@ pub fn parse_php(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -833,7 +1007,9 @@ pub fn parse_php(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -852,7 +1028,9 @@ pub fn parse_php(src: &str) -> FileFacts {
                 i += 1;
                 continue;
             }
-            TokenKind::DoubleSymbol("->") | TokenKind::DoubleSymbol("?->") | TokenKind::DoubleSymbol("::") => {
+            TokenKind::DoubleSymbol("->")
+            | TokenKind::DoubleSymbol("?->")
+            | TokenKind::DoubleSymbol("::") => {
                 scope.on_receiver();
                 i += 1;
                 continue;
@@ -878,7 +1056,11 @@ pub fn parse_php(src: &str) -> FileFacts {
                     "const" => {
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_statement_definition(name, tok.start as usize, &mut facts);
+                                scope.open_statement_definition(
+                                    name,
+                                    tok.start as usize,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -889,7 +1071,13 @@ pub fn parse_php(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -900,7 +1088,13 @@ pub fn parse_php(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -911,7 +1105,11 @@ pub fn parse_php(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         let mut j = i + 1;
                         let mut ns_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Symbol('{') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Symbol('{')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 ns_name.push_str(part);
                             } else if let TokenKind::Symbol('\\') = tokens[j].kind {
@@ -920,7 +1118,13 @@ pub fn parse_php(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !ns_name.is_empty() {
-                            scope.open_definition_with_body_docs(&ns_name, start_byte as usize, false, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &ns_name,
+                                start_byte as usize,
+                                false,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(&ns_name);
                             i = j;
                             continue;
@@ -991,6 +1195,7 @@ pub fn parse_groovy(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1001,7 +1206,9 @@ pub fn parse_groovy(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -1046,7 +1253,9 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                 i += 1;
                 continue;
             }
-            TokenKind::Symbol('.') | TokenKind::DoubleSymbol("?.") | TokenKind::DoubleSymbol("&.") => {
+            TokenKind::Symbol('.')
+            | TokenKind::DoubleSymbol("?.")
+            | TokenKind::DoubleSymbol("&.") => {
                 scope.on_receiver();
                 i += 1;
                 continue;
@@ -1074,7 +1283,10 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         let mut j = i + 1;
                         let mut pkg_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 pkg_name.push_str(part);
                             } else if let TokenKind::Symbol('.') = tokens[j].kind {
@@ -1083,7 +1295,13 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !pkg_name.is_empty() {
-                            scope.open_definition_with_body_docs(&pkg_name, start_byte as usize, false, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &pkg_name,
+                                start_byte as usize,
+                                false,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(&pkg_name);
                             i = j;
                             continue;
@@ -1093,7 +1311,13 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -1106,7 +1330,13 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
                                 if !in_method {
-                                    scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                    scope.open_definition_with_body_docs(
+                                        name,
+                                        start_byte as usize,
+                                        true,
+                                        true,
+                                        &mut facts,
+                                    );
                                     scope.on_word(name);
                                     i += 2;
                                     continue;
@@ -1134,17 +1364,32 @@ pub fn parse_groovy(src: &str) -> FileFacts {
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident(_) | TokenKind::Symbol(','))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident(_) | TokenKind::Symbol(',')
+                                    ))
+                            {
                                 k += 1;
                             }
-                            if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('{') && scope.depth > 0 {
+                            if k < tokens.len()
+                                && tokens[k].kind == TokenKind::Symbol('{')
+                                && scope.depth > 0
+                            {
                                 is_method_def = true;
                             }
                         }
 
                         if is_method_def {
                             let start_byte = tok.start;
-                            scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                *ident,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
                             scope.on_word(ident);
                             i += 1;
                             continue;
@@ -1216,6 +1461,7 @@ pub fn parse_vb(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1271,7 +1517,18 @@ pub fn parse_vb(src: &str) -> FileFacts {
                     if i + 1 < tokens.len() {
                         if let TokenKind::Ident(kind) = tokens[i + 1].kind {
                             let k_lower = kind.to_ascii_lowercase();
-                            if matches!(k_lower.as_str(), "sub" | "function" | "class" | "module" | "structure" | "interface" | "property" | "namespace" | "enum") {
+                            if matches!(
+                                k_lower.as_str(),
+                                "sub"
+                                    | "function"
+                                    | "class"
+                                    | "module"
+                                    | "structure"
+                                    | "interface"
+                                    | "property"
+                                    | "namespace"
+                                    | "enum"
+                            ) {
                                 scope.on_close_delimiter(tokens[i + 1].end as usize, &mut facts);
                                 i += 2;
                                 continue;
@@ -1321,7 +1578,13 @@ pub fn parse_vb(src: &str) -> FileFacts {
                             j += 1;
                         }
                         if !ns_name.is_empty() {
-                            scope.open_definition_with_body_docs(&ns_name, start_byte as usize, true, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &ns_name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_open_delimiter();
                             scope.on_word(&ns_name);
                             i = j;
@@ -1332,7 +1595,13 @@ pub fn parse_vb(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_open_delimiter();
                                 scope.on_word(name);
                                 i += 2;
@@ -1344,7 +1613,13 @@ pub fn parse_vb(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_open_delimiter();
                                 scope.on_word(name);
                                 i += 2;
@@ -1439,6 +1714,7 @@ pub fn parse_cobol(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -1494,7 +1770,13 @@ pub fn parse_cobol(src: &str) -> FileFacts {
                         }
                         let prog_name = &src[name_start as usize..name_end as usize];
                         scope.close_definitions_at_or_above(0, start_byte as usize, &mut facts);
-                        scope.open_definition_with_body_docs(prog_name, start_byte as usize, true, true, &mut facts);
+                        scope.open_definition_with_body_docs(
+                            prog_name,
+                            start_byte as usize,
+                            true,
+                            true,
+                            &mut facts,
+                        );
                         scope.on_word(prog_name);
                         continue;
                     }
@@ -1516,7 +1798,10 @@ pub fn parse_cobol(src: &str) -> FileFacts {
                         }
                         let callee = &src[name_start as usize..name_end as usize];
                         let callee_upper = callee.to_ascii_uppercase();
-                        if !matches!(callee_upper.as_str(), "UNTIL" | "VARYING" | "WITH" | "TEST" | "THRU" | "TIMES") {
+                        if !matches!(
+                            callee_upper.as_str(),
+                            "UNTIL" | "VARYING" | "WITH" | "TEST" | "THRU" | "TIMES"
+                        ) {
                             scope.record_call(callee, &mut facts);
                         }
                         continue;
@@ -1549,7 +1834,8 @@ pub fn parse_cobol(src: &str) -> FileFacts {
                         }
                     }
                 } else {
-                    let is_section = i < tokens.len() && matches!(tokens[i].kind, TokenKind::Ident("SECTION" | "section"));
+                    let is_section = i < tokens.len()
+                        && matches!(tokens[i].kind, TokenKind::Ident("SECTION" | "section"));
                     let is_paragraph = i < tokens.len()
                         && tokens[i].kind == TokenKind::Symbol('.')
                         && !matches!(
@@ -1568,7 +1854,13 @@ pub fn parse_cobol(src: &str) -> FileFacts {
 
                     if is_section || is_paragraph {
                         scope.close_definitions_at_or_above(1, start_byte as usize, &mut facts);
-                        scope.open_definition_with_body_docs(full_word, start_byte as usize, true, true, &mut facts);
+                        scope.open_definition_with_body_docs(
+                            full_word,
+                            start_byte as usize,
+                            true,
+                            true,
+                            &mut facts,
+                        );
                         scope.on_word(full_word);
                         i += 1;
                         continue;

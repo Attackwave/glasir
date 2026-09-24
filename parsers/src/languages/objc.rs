@@ -122,8 +122,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 }
                 let is_message =
                     bracket > 0 && tokens.get(j).map(|t| &t.kind) == Some(&TokenKind::Symbol(':'));
-                let is_c_call =
-                    tokens.get(j).map(|t| &t.kind) == Some(&TokenKind::Symbol('('));
+                let is_c_call = tokens.get(j).map(|t| &t.kind) == Some(&TokenKind::Symbol('('));
                 if (is_message || is_c_call) && calls.allows(ident) {
                     scope.record_call(ident, &mut facts);
                 }

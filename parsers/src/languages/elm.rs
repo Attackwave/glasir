@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -30,7 +32,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -45,7 +53,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = j + 1;
                                 continue;
@@ -65,15 +79,30 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             }
                             let start_byte = tok.start;
                             scope.close_definitions_at_or_above(0, start_byte as usize, &mut facts);
-                            scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                *ident,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
                             scope.on_word(ident);
                             i = k;
                             continue;
-                        } else if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('=') && !scope.open.iter().any(|o| o.name == *ident) {
+                        } else if j < tokens.len()
+                            && tokens[j].kind == TokenKind::Symbol('=')
+                            && !scope.open.iter().any(|o| o.name == *ident)
+                        {
                             // Function definition without annotation: `name args = ...`
                             let start_byte = tok.start;
                             scope.close_definitions_at_or_above(0, start_byte as usize, &mut facts);
-                            scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                *ident,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
                             scope.on_word(ident);
                             i = j;
                             continue;

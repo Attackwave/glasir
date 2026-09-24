@@ -5,6 +5,11 @@
 use crate::parse_ast::LangExt;
 use serde_json::json;
 
+/// See the musl note in Cargo.toml.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod arena;
 mod audit;
 mod auth;
@@ -18,6 +23,7 @@ mod docs;
 mod embed;
 mod graph;
 mod guard;
+mod history;
 mod http;
 mod import_json;
 mod import_scip;
@@ -218,22 +224,193 @@ struct Target {
     /// Config file relative to the user's home, if supported.
     user: Option<&'static str>,
     format: Format,
+    /// Programs on `PATH` that show the client is installed.
+    binaries: &'static [&'static str],
+    /// Paths under the project that show the client is in use.
+    markers: &'static [&'static str],
+    /// Paths under the user's home that show the client is installed.
+    home_markers: &'static [&'static str],
+    /// What the user does next, printed after a write.
+    next: &'static str,
 }
 
+/// How a client stores MCP servers. Each shape was taken from what the client
+/// itself writes (`<cli> mcp add` under a scratch `$HOME`) or lists back, not
+/// from memory: a wrong key is a registration the client silently ignores.
 #[derive(Clone, Copy, PartialEq)]
 enum Format {
-    /// `{"mcpServers": {"<name>": {"command": ..., "args": [...]}}}`
+    /// `{"mcpServers": {"glasir": {"type": "stdio", "command", "args"}}}`
     McpJson,
+    /// The same without `type`, as Gemini CLI and Qwen Code write it.
+    McpJsonPlain,
+    /// VS Code's `{"servers": {...}}`.
+    VsCode,
+    /// OpenCode's `{"mcp": {"glasir": {"type": "local", "command": [...]}}}`.
+    OpenCode,
+    /// Codex's `[mcp_servers.glasir]` table, edited as text so the comments and
+    /// layout of the rest of the file survive.
+    CodexToml,
+}
+
+impl Format {
+    /// The JSON object holding the servers; `None` for the TOML format.
+    fn container(self) -> Option<&'static str> {
+        match self {
+            Format::McpJson | Format::McpJsonPlain => Some("mcpServers"),
+            Format::VsCode => Some("servers"),
+            Format::OpenCode => Some("mcp"),
+            Format::CodexToml => None,
+        }
+    }
+
+    fn entry(self, exe: &str, root: &str) -> serde_json::Value {
+        match self {
+            Format::OpenCode => serde_json::json!({
+                "type": "local",
+                "command": [exe, "serve", root],
+                "enabled": true,
+            }),
+            Format::McpJsonPlain => serde_json::json!({"command": exe, "args": ["serve", root]}),
+            _ => serde_json::json!({"type": "stdio", "command": exe, "args": ["serve", root]}),
+        }
+    }
+}
+
+const CODEX_HEADER: &str = "[mcp_servers.glasir]";
+
+/// The file with our `[mcp_servers.glasir]` table and its subtables removed,
+/// and whether one was there.
+fn strip_codex_block(text: &str) -> (String, bool) {
+    let mut out = String::new();
+    let mut inside = false;
+    let mut found = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            inside = t == CODEX_HEADER || t.starts_with("[mcp_servers.glasir.");
+            found |= inside;
+        }
+        if !inside {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    (out, found)
+}
+
+fn codex_block(exe: &str, root: &str) -> String {
+    // A JSON string literal is a valid TOML basic string.
+    let q = |v: &str| serde_json::Value::from(v).to_string();
+    format!(
+        "{CODEX_HEADER}\ncommand = {}\nargs = [\"serve\", {}]\n",
+        q(exe),
+        q(root)
+    )
 }
 
 /// The neutral registration is useful to deployment tooling without coupling
-/// the Core to a particular editor, assistant, or vendor configuration.
-const TARGETS: &[Target] = &[Target {
-    name: "mcp",
-    project: Some("glasir-mcp.json"),
-    user: None,
-    format: Format::McpJson,
-}];
+/// the Core to a particular editor, assistant, or vendor configuration, and it
+/// is what `install` writes when no client below is detected.
+///
+/// The clients are written only where they are found. Without them `install`
+/// ended in a file no client reads and a sentence telling the user to finish
+/// the job by hand, which is where a first-time user stops. Every client has a
+/// project-scoped file, so one tree's registration never overwrites another's.
+const TARGETS: &[Target] = &[
+    Target {
+        name: "mcp",
+        project: Some("glasir-mcp.json"),
+        user: None,
+        format: Format::McpJson,
+        binaries: &[],
+        markers: &[],
+        home_markers: &[],
+        next: "point your MCP client at the entry in glasir-mcp.json",
+    },
+    Target {
+        name: "claude",
+        project: Some(".mcp.json"),
+        user: None,
+        format: Format::McpJson,
+        binaries: &["claude"],
+        markers: &[".mcp.json", ".claude"],
+        home_markers: &[".claude"],
+        next: "Claude Code: restart it here and approve the glasir server",
+    },
+    Target {
+        name: "cursor",
+        project: Some(".cursor/mcp.json"),
+        user: Some(".cursor/mcp.json"),
+        format: Format::McpJson,
+        binaries: &["cursor", "cursor-agent"],
+        markers: &[".cursor"],
+        home_markers: &[".cursor"],
+        next: "Cursor: enable glasir under Settings > MCP",
+    },
+    Target {
+        name: "codex",
+        project: Some(".codex/config.toml"),
+        user: Some(".codex/config.toml"),
+        format: Format::CodexToml,
+        binaries: &["codex"],
+        markers: &[".codex"],
+        home_markers: &[".codex"],
+        // Measured: an untrusted project's .codex/config.toml is ignored.
+        next: "Codex: start it here and trust the project when asked",
+    },
+    Target {
+        name: "gemini",
+        project: Some(".gemini/settings.json"),
+        user: Some(".gemini/settings.json"),
+        format: Format::McpJsonPlain,
+        binaries: &["gemini"],
+        markers: &[".gemini"],
+        home_markers: &[".gemini"],
+        next: "Gemini CLI: restart it here",
+    },
+    Target {
+        name: "qwen",
+        project: Some(".qwen/settings.json"),
+        user: Some(".qwen/settings.json"),
+        format: Format::McpJsonPlain,
+        binaries: &["qwen"],
+        markers: &[".qwen"],
+        home_markers: &[".qwen"],
+        next: "Qwen Code: restart it here",
+    },
+    Target {
+        name: "vscode",
+        project: Some(".vscode/mcp.json"),
+        user: None,
+        format: Format::VsCode,
+        binaries: &["code", "code-insiders"],
+        markers: &[".vscode"],
+        home_markers: &[],
+        next: "VS Code: open this folder and start glasir from .vscode/mcp.json",
+    },
+    Target {
+        name: "opencode",
+        project: Some("opencode.json"),
+        user: None,
+        format: Format::OpenCode,
+        binaries: &["opencode"],
+        markers: &["opencode.json", ".opencode"],
+        home_markers: &[".config/opencode", ".opencode"],
+        next: "OpenCode: restart it here",
+    },
+];
+
+/// Whether a program of this name is on `PATH`.
+fn on_path(bin: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        ["", ".exe", ".cmd"]
+            .iter()
+            .any(|ext| dir.join(format!("{bin}{ext}")).is_file())
+    })
+}
 
 impl Target {
     /// Config path for the requested scope, if this target has one.
@@ -246,9 +423,21 @@ impl Target {
         }
     }
 
-    /// The neutral local registration is always available in project scope.
+    /// Whether the client is in use here: its program on `PATH`, its settings
+    /// in the home directory, or its files in the project. The neutral
+    /// registration has no markers and is always available.
     fn detected(&self, root: &std::path::Path) -> bool {
-        !root.as_os_str().is_empty()
+        if !self.is_client() {
+            return true;
+        }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        self.markers.iter().any(|m| root.join(m).exists())
+            || home.is_some_and(|h| self.home_markers.iter().any(|m| h.join(m).exists()))
+            || self.binaries.iter().any(|b| on_path(b))
+    }
+
+    fn is_client(&self) -> bool {
+        !self.markers.is_empty()
     }
 }
 
@@ -964,8 +1153,19 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
             }
             found
         }
-        // Without --platform, write the neutral project registration.
-        None => TARGETS.iter().filter(|t| t.detected(root)).collect(),
+        // Without --platform, every detected client, or the neutral file when
+        // none is found.
+        None => {
+            let clients: Vec<&Target> = TARGETS
+                .iter()
+                .filter(|t| t.is_client() && t.detected(root))
+                .collect();
+            if clients.is_empty() {
+                TARGETS.iter().filter(|t| !t.is_client()).collect()
+            } else {
+                clients
+            }
+        }
     };
 
     if selected.is_empty() && !quiet {
@@ -975,6 +1175,7 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     }
 
     let mut wrote = 0;
+    let mut next = Vec::new();
     for target in selected {
         let Some(path) = target.path(root, user_scope) else {
             if !quiet {
@@ -986,16 +1187,29 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
             }
             continue;
         };
+        // A file created here holds absolute paths to this machine, so it must
+        // not be committed; one that existed is the team's and stays tracked.
+        let created = !path.exists();
         match write_registration(target, &path, &exe, &abs, dry) {
-            Ok(true) if quiet => wrote += 1,
             Ok(true) => {
+                if created
+                    && !user_scope
+                    && !dry
+                    && let Some(rel) = target.project
+                {
+                    ignore_generated_files(&abs, &[rel]);
+                }
+                next.push(target.next);
+                wrote += 1;
+                if quiet {
+                    continue;
+                }
                 println!(
                     "{} {}: {}",
                     if dry { "would write" } else { "wrote" },
                     target.name,
                     path.display()
                 );
-                wrote += 1;
             }
             Ok(false) if quiet => {}
             Ok(false) => println!("{}: already registered", target.name),
@@ -1022,7 +1236,10 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     }
 
     if wrote > 0 && !dry && !quiet {
-        println!("\nregistration written; configure your MCP-compatible client to use it.");
+        println!("\nnext:");
+        for step in next {
+            println!("  {step}");
+        }
     }
     Ok(())
 }
@@ -1040,9 +1257,23 @@ fn write_registration(
     dry: bool,
 ) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let (exe, root) = (exe.to_string_lossy(), root.to_string_lossy());
 
-    let updated = match target.format {
-        Format::McpJson => {
+    let updated = match target.format.container() {
+        None => {
+            let (rest, _) = strip_codex_block(&existing);
+            let block = codex_block(&exe, &root);
+            if existing.contains(&block) {
+                return Ok(false);
+            }
+            let rest = rest.trim_end();
+            if rest.is_empty() {
+                block
+            } else {
+                format!("{rest}\n\n{block}")
+            }
+        }
+        Some(key) => {
             let mut doc: serde_json::Value = if existing.trim().is_empty() {
                 serde_json::json!({})
             } else {
@@ -1056,13 +1287,9 @@ fn write_registration(
             if !doc.is_object() {
                 return Err(std::io::Error::other("config root is not an object"));
             }
-            let mut entry = serde_json::json!({
-                "command": exe.to_string_lossy(),
-                "args": ["serve", root.to_string_lossy()],
-            });
-            entry["type"] = serde_json::json!("stdio");
-            let already = doc["mcpServers"]["glasir"] == entry;
-            doc["mcpServers"]["glasir"] = entry;
+            let entry = target.format.entry(&exe, &root);
+            let already = doc[key]["glasir"] == entry;
+            doc[key]["glasir"] = entry;
 
             if already {
                 return Ok(false);
@@ -1096,15 +1323,22 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
             continue;
         };
 
-        let updated = match target.format {
-            Format::McpJson => {
+        let updated = match target.format.container() {
+            None => {
+                let (rest, found) = strip_codex_block(&existing);
+                if !found {
+                    continue;
+                }
+                rest
+            }
+            Some(key) => {
                 let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&existing) else {
                     continue;
                 };
-                if doc["mcpServers"]["glasir"].is_null() {
+                if doc[key]["glasir"].is_null() {
                     continue;
                 }
-                if let Some(servers) = doc["mcpServers"].as_object_mut() {
+                if let Some(servers) = doc[key].as_object_mut() {
                     servers.remove("glasir");
                 }
                 format!("{doc:#}\n")
@@ -1136,17 +1370,32 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
         removed += notes.len();
     }
 
+    // What an analysis writes. It named a `.glasir` directory that nothing
+    // creates, so `--purge` deleted nothing. Tokens and the audit log are
+    // access records, not cache, and stay.
     if args.has("purge") {
-        let graph = root.join(".glasir");
-        if graph.exists() {
+        let generated = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == ".glasir-graph" || n.starts_with(".glasir-layout-"))
+            });
+        for path in generated {
             if !dry {
-                std::fs::remove_dir_all(&graph)?;
+                std::fs::remove_file(&path)?;
             }
-            println!(
-                "{} {}",
-                if dry { "would delete" } else { "deleted" },
-                graph.display()
-            );
+            removed += 1;
+            if !quiet {
+                println!(
+                    "{} {}",
+                    if dry { "would delete" } else { "deleted" },
+                    path.display()
+                );
+            }
         }
     }
     if removed == 0 && !quiet {
@@ -1164,9 +1413,10 @@ fn is_registered(target: &Target, path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
-    match target.format {
-        Format::McpJson => serde_json::from_str::<serde_json::Value>(&text)
-            .is_ok_and(|d| d["mcpServers"]["glasir"].is_object()),
+    match target.format.container() {
+        None => strip_codex_block(&text).1,
+        Some(key) => serde_json::from_str::<serde_json::Value>(&text)
+            .is_ok_and(|d| d[key]["glasir"].is_object()),
     }
 }
 
@@ -1188,6 +1438,8 @@ fn run_status(args: &cli::Args) -> std::io::Result<()> {
         }
         let state = if !where_.is_empty() {
             format!("registered ({})", where_.join(", "))
+        } else if !target.is_client() {
+            "available (--platform mcp)".into()
         } else if target.detected(root) {
             "detected, not registered".into()
         } else {
@@ -3257,6 +3509,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_embed();
     demo_community();
     demo_mcp();
+    demo_change_tools();
     demo_install();
     demo_search();
     demo_snapshot();
@@ -5131,7 +5384,7 @@ fn demo_mcp() {
     // client has no way to know the shape it is being handed.
     let listed = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 13);
     for t in tools {
         assert!(
             t["outputSchema"]["type"] == "object",
@@ -5230,7 +5483,7 @@ fn demo_mcp() {
     let list = tools["result"]["tools"].as_array().unwrap();
     // The count is asserted so adding a tool is a deliberate act: a client's
     // whole picture of this server is this list.
-    assert_eq!(list.len(), 9, "query_graph, overview and the other seven");
+    assert_eq!(list.len(), 13, "query_graph, overview and the other eleven");
     for t in list {
         assert!(t["name"].is_string());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -5490,6 +5743,334 @@ fn demo_mcp() {
 /// install/uninstall touch the user's editor configuration, so the property
 /// that matters is that a round trip leaves other people's settings exactly as
 /// they were.
+/// The three tools that answer what to do before a commit: which tests to run,
+/// what else usually changes, and whether a boundary breaks.
+fn demo_change_tools() {
+    use serde_json::json;
+
+    // Every language's test conventions, and the names that only look close.
+    for (symbol, want) in [
+        ("tests/pay.rs#charges", true),
+        ("app/spec/pay_spec.rb#it_charges", true),
+        ("web/__tests__/pay.js#renders", true),
+        ("pay/pay_test.go#TestPay", true),
+        ("src/pay.test.ts#charges", true),
+        ("src/Pay.spec.js#charges", true),
+        ("src/PayTest.java#charges", true),
+        ("src/PayTests.cs#Charges", true),
+        ("tools/test_pay.py#helper", true),
+        ("src/pay.rs#test_refund", true),
+        ("src/Pay.java#testRefund", true),
+        ("src/latest.rs#fetch", false),
+        ("src/contest.py#run", false),
+        ("src/pay.go#Testify", false),
+        ("src/pay.rs#testing_mode", false),
+        ("test_pay", false),
+    ] {
+        assert_eq!(mcp::is_test_symbol(symbol), want, "{symbol}");
+    }
+
+    // pay -> charge -> log, a test two hops from log and one three hops out,
+    // and a test elsewhere that must not be named.
+    let mut b = csr::CsrBuilder::new();
+    for _ in 0..16u32 {
+        b.add_node(0);
+    }
+    let e = |t| csr::Edge {
+        target: t,
+        timestamp: 1_756_600_000,
+        authority: 1.0,
+        edge_kind: 0,
+        confidence: csr::Confidence::Inferred,
+    };
+    b.add_edge(0, e(1));
+    b.add_edge(1, e(2));
+    b.add_edge(3, e(0));
+    b.add_edge(6, e(1));
+    b.add_edge(5, e(4));
+    // export -> render, and no test reaches either.
+    b.add_edge(8, e(7));
+    let g = graph::Graph::new(b.build());
+    let snap = g.load();
+    let mut reg = ingest::SymbolRegistry::new(0);
+    for (i, name) in [
+        "src/pay.rs#pay",
+        "src/charge.rs#charge",
+        "src/log.rs#log",
+        "tests/pay.rs#pays_once",
+        "src/util.rs#unrelated",
+        "tests/util.rs#unrelated_works",
+        "src/charge.rs#test_charge_twice",
+        "src/report.rs#render",
+        "src/report.rs#export",
+        "src/calc.rs#add",
+        "src/calc.rs#sub",
+        "src/calc.rs#<module>",
+        "src/tools.rs#checks_itself",
+        "src/tools.rs#helper",
+        "src/tools.rs#used_by_text",
+        "src/gen.rs#gen_fn",
+    ]
+    .iter()
+    .enumerate()
+    {
+        reg.insert((*name).to_string(), i as csr::NodeId);
+    }
+    // Read by `find_unused` below; its span is what lets the attribute above
+    // `checks_itself` be seen.
+    let tools = "#[test]\nfn checks_itself() {}\n\nfn helper() {}\n\nfn used_by_text() {}\n// see used_by_text\n";
+    let at = tools.find("fn checks_itself").unwrap() as u32;
+    reg.set_span(12, (at, at + 20));
+    let defined: std::collections::HashSet<csr::NodeId> = (0..16).collect();
+    let comms = community::detect(
+        &snap,
+        &community::Params::default(),
+        &community::Context::from_names(
+            Some(&defined),
+            snap.width(),
+            reg.entries().map(|(s, &n)| (s.as_str(), n)),
+        ),
+    );
+    let emb = embed::embed(&snap, 3);
+    let search = search::SearchIndex::build_with_docs(&reg, reg.docs());
+    let names = mcp::name_table(&reg, snap.width());
+
+    // A tree on disk with a history, for `co_changes`: charge and pay change
+    // together three times, docs twice, log once, and a sweeping commit that
+    // touches everything is left out or it would couple log too.
+    let dir = std::env::temp_dir().join(format!("glasir-changes-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    let mut round = 0;
+    let mut commit = |files: &[&str]| {
+        round += 1;
+        for f in files {
+            std::fs::write(dir.join(f), format!("{round}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "c"]);
+    };
+    commit(&["src/report.rs"]);
+    let calc = "// arithmetic\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\nfn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n";
+    std::fs::write(dir.join("src/calc.rs"), calc).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "calc"]);
+    for _ in 0..3 {
+        commit(&["src/pay.rs", "src/charge.rs"]);
+    }
+    commit(&["src/pay.rs", "docs/pay.md", "src/util.rs"]);
+    commit(&["src/pay.rs", "docs/pay.md", "src/util.rs"]);
+    commit(&["src/pay.rs", "src/log.rs"]);
+    let sweep: Vec<String> = (0..history::MAX_COMMIT_FILES)
+        .map(|i| format!("src/gen{i}.rs"))
+        .collect();
+    let mut all: Vec<&str> = sweep.iter().map(String::as_str).collect();
+    all.extend(["src/pay.rs", "src/log.rs"]);
+    commit(&all);
+
+    let served = mcp::Served {
+        snap: &snap,
+        names: &names,
+        defined: &defined,
+        search: &search,
+        registry: &reg,
+        communities: &comms,
+        embeddings: &emb,
+        physics: physics::Physics::default(),
+        now: 1_756_600_000,
+        files: None,
+        root: Some(&dir),
+    };
+    let call = |tool: &str, args: serde_json::Value| {
+        let r = mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": args}}),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false, "{tool}: {r}");
+        let text = r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (r["result"]["structuredContent"].clone(), text)
+    };
+
+    // Nearest first, the unrelated test absent, and the prose names them all.
+    let (v, text) = call("affected_tests", json!({"symbol": "src/log.rs#log"}));
+    let tests: Vec<(&str, u64)> = v["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["symbol"].as_str().unwrap(), t["hop"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        tests,
+        vec![
+            ("src/charge.rs#test_charge_twice", 2),
+            ("tests/pay.rs#pays_once", 3)
+        ],
+        "{text}"
+    );
+    for (t, _) in &tests {
+        assert!(text.contains(t), "{t} is in the JSON and not in the text");
+    }
+
+    // The history: charge 3x and in the graph, docs and util 2x and not —
+    // util is a file the graph knows, which is what makes `in_graph` a check
+    // rather than a restatement of "unknown file" — and log dropped because
+    // its second co-change was in the sweeping commit.
+    let (v, text) = call("co_changes", json!({"file": "src/pay.rs"}));
+    let coupled: Vec<(&str, u64, bool)> = v["coupled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["file"].as_str().unwrap(),
+                c["together"].as_u64().unwrap(),
+                c["in_graph"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        coupled,
+        vec![
+            ("src/charge.rs", 3, true),
+            ("docs/pay.md", 2, false),
+            ("src/util.rs", 2, false)
+        ],
+        "{text}"
+    );
+    assert!(text.contains("history only"), "{text}");
+
+    // A rule the graph breaks names the edge that breaks it; one it keeps holds.
+    let (v, text) = call(
+        "check_architecture",
+        json!({"rules": "deny src/charge.rs -> src/log.rs\ndeny src/log.rs -> src/pay.rs\n"}),
+    );
+    assert_eq!(v["rules"], 2);
+    assert_eq!(v["holds"], false);
+    let broken = v["violations"].as_array().unwrap();
+    assert_eq!(broken.len(), 1, "{text}");
+    assert!(
+        broken[0]["evidence"][0]
+            .as_str()
+            .unwrap()
+            .contains("src/charge.rs#charge"),
+        "{text}"
+    );
+
+    // A change's risk, as reasons: pay is edited without charge, which history
+    // says changes with it half the time; render has a caller and no test; and
+    // a file never added to git is still part of the change.
+    std::fs::write(dir.join("src/pay.rs"), "edited").unwrap();
+    std::fs::write(dir.join("src/report.rs"), "edited").unwrap();
+    std::fs::write(dir.join("src/new.rs"), "new").unwrap();
+    let (v, text) = call("detect_changes", json!({}));
+    assert_eq!(v["risk"]["level"], "high", "{text}");
+    assert_eq!(
+        v["risk"]["untested"],
+        json!(["src/report.rs#render"]),
+        "{text}"
+    );
+    let missed = v["risk"]["missed_partners"].as_array().unwrap();
+    assert_eq!(missed.len(), 1, "{text}");
+    assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
+    assert!(
+        v["files_without_known_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "src/new.rs"),
+        "an untracked file is part of the change: {text}"
+    );
+    assert!(
+        text.contains("src/report.rs#render") && text.contains("leaves out"),
+        "{text}"
+    );
+
+    // Line-level: a change is the definitions whose lines it touched, not the
+    // whole file. Editing sub's body is sub; a comment outside every function
+    // is <module>; deleting add is add, because its callers are what break.
+    let calc_changed = |text: &str| -> Vec<String> {
+        std::fs::write(dir.join("src/calc.rs"), text).unwrap();
+        let (v, _) = call("detect_changes", json!({}));
+        let mut c: Vec<String> = v["changed_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .filter(|s| s.starts_with("src/calc.rs#"))
+            .map(str::to_string)
+            .collect();
+        c.sort();
+        c
+    };
+    assert_eq!(
+        calc_changed(&calc.replace("a - b", "b - a")),
+        vec!["src/calc.rs#sub"]
+    );
+    assert_eq!(
+        calc_changed(&calc.replace("// arithmetic", "// integer arithmetic")),
+        vec!["src/calc.rs#<module>"]
+    );
+    assert_eq!(
+        calc_changed(&calc.replace("fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n", "")),
+        vec!["src/calc.rs#<module>", "src/calc.rs#add"]
+    );
+
+    // What nothing uses: a helper nobody names is reported; a test the
+    // harness calls, a function named only in a comment and generated code
+    // are not. The span is what lets the attribute above `checks_itself` be
+    // read.
+    std::fs::write(dir.join("src/tools.rs"), tools).unwrap();
+    std::fs::write(
+        dir.join("src/gen.rs"),
+        "// Code generated by protoc. DO NOT EDIT.\nfn gen_fn() {}\n",
+    )
+    .unwrap();
+    let (v, text) = call("find_unused", json!({"path": "src/"}));
+    let unused: Vec<&str> = v["unused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|u| u.as_str())
+        .collect();
+    assert!(unused.contains(&"src/tools.rs#helper"), "{text}");
+    for kept in [
+        "src/tools.rs#checks_itself",
+        "src/tools.rs#used_by_text",
+        "src/gen.rs#gen_fn",
+    ] {
+        assert!(!unused.contains(&kept), "{kept} is used or excused: {text}");
+    }
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("changes ok: tests to run, what changes with it, which rule breaks");
+}
+
 fn demo_install() {
     let dir = std::env::temp_dir().join(format!("glasir-install-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -5507,13 +6088,15 @@ fn demo_install() {
     };
 
     // A dry run must change nothing at all.
-    run_install(&args("install", &["--dry-run"])).unwrap();
+    run_install(&args("install", &["--platform", "mcp", "--dry-run"])).unwrap();
     assert!(
         !dir.join("glasir-mcp.json").exists(),
         "--dry-run must not write"
     );
 
-    run_install(&args("install", &[])).unwrap();
+    // Explicit, because detection also reads $HOME and this machine may have
+    // a client installed.
+    run_install(&args("install", &["--platform", "mcp"])).unwrap();
     let registration = dir.join("glasir-mcp.json");
     let mcp: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
@@ -5521,15 +6104,100 @@ fn demo_install() {
     assert_eq!(mcp["mcpServers"]["glasir"]["args"][0], "serve");
 
     // Installing twice must not duplicate anything.
-    run_install(&args("install", &[])).unwrap();
+    run_install(&args("install", &["--platform", "mcp"])).unwrap();
     let again = std::fs::read_to_string(&registration).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&again).unwrap();
     assert!(parsed["mcpServers"]["glasir"].is_object());
+
+    // A team's existing file is merged into and stays tracked.
+    std::fs::write(dir.join(".mcp.json"), r#"{"mcpServers":{"other":{}}}"#).unwrap();
+    run_install(&args("install", &["--platform", "claude"])).unwrap();
+    let claude: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+    assert!(claude["mcpServers"]["other"].is_object());
+    assert!(claude["mcpServers"]["glasir"].is_object());
+    let ignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(!ignore.lines().any(|l| l == ".mcp.json"));
+
+    // Every client's own shape, as the client writes it.
+    for (platform, file, pointer) in [
+        (
+            "gemini",
+            ".gemini/settings.json",
+            "/mcpServers/glasir/command",
+        ),
+        ("qwen", ".qwen/settings.json", "/mcpServers/glasir/command"),
+        ("vscode", ".vscode/mcp.json", "/servers/glasir/command"),
+        ("opencode", "opencode.json", "/mcp/glasir/command/0"),
+    ] {
+        run_install(&args("install", &["--platform", platform])).unwrap();
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap()).unwrap();
+        assert!(
+            doc.pointer(pointer).is_some_and(|v| v.is_string()),
+            "{platform}"
+        );
+    }
+    assert!(
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(dir.join(".gemini/settings.json")).unwrap()
+        )
+        .unwrap()["mcpServers"]["glasir"]["type"]
+            .is_null(),
+        "gemini writes no type"
+    );
+
+    // Codex is TOML edited as text: the rest of the file survives verbatim,
+    // a second install does not duplicate the table, and uninstall removes
+    // exactly it.
+    let codex = dir.join(".codex/config.toml");
+    std::fs::create_dir_all(dir.join(".codex")).unwrap();
+    let theirs = "# keep me\nmodel = \"o3\"\n\n[mcp_servers.other]\ncommand = \"x\"\n";
+    std::fs::write(&codex, theirs).unwrap();
+    run_install(&args("install", &["--platform", "codex"])).unwrap();
+    run_install(&args("install", &["--platform", "codex"])).unwrap();
+    let text = std::fs::read_to_string(&codex).unwrap();
+    assert!(text.starts_with(theirs), "{text}");
+    assert_eq!(text.matches("[mcp_servers.glasir]").count(), 1, "{text}");
+    assert!(text.contains("args = [\"serve\", "), "{text}");
+
+    // A project marker is detected without $HOME, and a file created here
+    // carries absolute paths, so it is ignored rather than committed.
+    std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+    run_install(&args("install", &[])).unwrap();
+    let cursor: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".cursor/mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(cursor["mcpServers"]["glasir"]["args"][0], "serve");
+    let ignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == ".cursor/mcp.json"));
+    assert!(ignore.lines().any(|l| l == "glasir-mcp.json"));
 
     run_uninstall(&args("uninstall", &[])).unwrap();
     let after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
     assert!(after["mcpServers"]["glasir"].is_null());
+    let claude: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+    assert!(claude["mcpServers"]["glasir"].is_null());
+    assert!(claude["mcpServers"]["other"].is_object());
+    let text = std::fs::read_to_string(&codex).unwrap();
+    assert_eq!(text.trim_end(), theirs.trim_end(), "uninstall left: {text}");
+    let vscode: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".vscode/mcp.json")).unwrap())
+            .unwrap();
+    assert!(vscode["servers"]["glasir"].is_null());
+
+    std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
+    std::fs::write(dir.join(".glasir-layout-free"), b"x").unwrap();
+    std::fs::write(dir.join(auth::TOKEN_FILE), b"x").unwrap();
+    run_uninstall(&args("uninstall", &["--purge"])).unwrap();
+    assert!(!dir.join(".glasir-graph").exists());
+    assert!(!dir.join(".glasir-layout-free").exists());
+    assert!(
+        dir.join(auth::TOKEN_FILE).exists(),
+        "--purge must keep tokens"
+    );
 
     std::fs::remove_dir_all(&dir).unwrap();
     println!("phase 5.2 ok: local MCP registration round-trips cleanly");
@@ -7401,6 +8069,19 @@ fn demo_snapshot() {
 /// query, so relying on that would mean no docs for Rust.
 fn demo_docs() {
     use parse_ast::{Lang, parse};
+
+    // See `docs::NOT_DOCUMENTATION`.
+    for (path, want) in [
+        ("CLAUDE.md", false),
+        ("AGENTS.md", false),
+        ("docs/a.md", true),
+    ] {
+        assert_eq!(
+            docs::is_markdown(std::path::Path::new(path)),
+            want,
+            "{path}"
+        );
+    }
 
     for (lang, src, want) in [
         (

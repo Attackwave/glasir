@@ -86,10 +86,33 @@ jobs:
         run: |
           cargo install cargo-cyclonedx --locked
           cargo cyclonedx --format json --all
+      # A dependency under a licence about.toml does not accept fails here,
+      # in the pull request, rather than at the release tag.
+      - name: third-party licences
+        run: |
+          cargo install cargo-about --locked --features cli
+          cargo about generate --locked --fail about.hbs -o THIRD-PARTY-LICENSES.txt
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: "**/*.cdx.json"
+
+  # The release's static Linux build, on every change rather than first at the
+  # tag, and started on an older distribution than the runner: a glibc build
+  # from ubuntu-latest did not start on Ubuntu 22.04, Debian 12 or RHEL 9.
+  musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: starts on an older distribution
+        run: |
+          docker run --rm -v "$PWD/target/x86_64-unknown-linux-musl/release:/x:ro" \
+            ubuntu:22.04 /x/glasir --version
 
   container:
     # Build the exact production Dockerfile on every change. It deliberately

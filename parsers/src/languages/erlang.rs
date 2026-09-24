@@ -35,18 +35,35 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     if let TokenKind::Ident(attr) = tokens[i + 1].kind {
                         match attr {
                             "module" => {
-                                if i + 3 < tokens.len() && tokens[i + 2].kind == TokenKind::Symbol('(') {
+                                if i + 3 < tokens.len()
+                                    && tokens[i + 2].kind == TokenKind::Symbol('(')
+                                {
                                     if let TokenKind::Ident(mod_name) = tokens[i + 3].kind {
-                                        scope.open_definition_with_body_docs(mod_name, start_byte as usize, false, false, &mut facts);
+                                        scope.open_definition_with_body_docs(
+                                            mod_name,
+                                            start_byte as usize,
+                                            false,
+                                            false,
+                                            &mut facts,
+                                        );
                                         scope.on_word(mod_name);
                                         i += 4;
                                         continue;
                                     }
                                 }
                             }
-                            "record" if i + 3 < tokens.len() && tokens[i + 2].kind == TokenKind::Symbol('(') => {
+                            "record"
+                                if i + 3 < tokens.len()
+                                    && tokens[i + 2].kind == TokenKind::Symbol('(') =>
+                            {
                                 if let TokenKind::Ident(rec_name) = tokens[i + 3].kind {
-                                    scope.open_definition_with_body_docs(rec_name, start_byte as usize, false, false, &mut facts);
+                                    scope.open_definition_with_body_docs(
+                                        rec_name,
+                                        start_byte as usize,
+                                        false,
+                                        false,
+                                        &mut facts,
+                                    );
                                     scope.on_word(rec_name);
                                     i += 4;
                                     continue;
@@ -101,9 +118,19 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     while k < tokens.len() && tokens[k].kind == TokenKind::Newline {
                         k += 1;
                     }
-                    if k < tokens.len() && (tokens[k].kind == TokenKind::DoubleSymbol("->") || matches!(tokens[k].kind, TokenKind::Ident("when"))) && scope.open.is_empty() {
+                    if k < tokens.len()
+                        && (tokens[k].kind == TokenKind::DoubleSymbol("->")
+                            || matches!(tokens[k].kind, TokenKind::Ident("when")))
+                        && scope.open.is_empty()
+                    {
                         let start_byte = tok.start;
-                        scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                        scope.open_definition_with_body_docs(
+                            *ident,
+                            start_byte as usize,
+                            true,
+                            true,
+                            &mut facts,
+                        );
                         scope.on_word(ident);
                         i += 1;
                         continue;

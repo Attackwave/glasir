@@ -158,18 +158,6 @@ impl LangExt for Lang {
     }
 }
 
-/// One tagged item: a definition or a reference, with the byte range of the
-/// construct it belongs to.
-struct Tag {
-    name: String,
-    /// See `FileFacts::calls`. Meaningless on a definition.
-    has_receiver: bool,
-    /// Byte range of the whole definition, used to nest references inside it.
-    /// References carry only their own position.
-    range: std::ops::Range<usize>,
-    is_definition: bool,
-}
-
 /// Extensions several languages claim, with a marker that proves the file is
 /// *not* the language the table guessed.
 ///

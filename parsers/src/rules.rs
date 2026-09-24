@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/14";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/16";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -198,6 +198,9 @@ struct Lexical {
     identifier_suffix_marks: bool,
     #[serde(default)]
     identifier_dashes: bool,
+    /// See `CommentStyle::raw_escapes`.
+    #[serde(default)]
+    raw_string_escapes: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,6 +393,7 @@ impl RuleFile {
             block_comment_end: block.map(|p| p.1),
             ident_suffix_marks: self.lexical.identifier_suffix_marks,
             ident_dashes: self.lexical.identifier_dashes,
+            raw_escapes: self.lexical.raw_string_escapes,
         };
         if let Some(facts) = crate::languages::parse(&self.language, src, style, &self.calls) {
             return facts;
@@ -419,6 +423,7 @@ impl RuleFile {
                 block_comment: block,
                 ident_suffix_marks: self.lexical.identifier_suffix_marks,
                 ident_dashes: self.lexical.identifier_dashes,
+                raw_escapes: self.lexical.raw_string_escapes,
                 definitions: &definitions,
                 modifiers: &modifiers,
                 not_a_call: &exclude,
@@ -538,6 +543,61 @@ mod tests {
             .collect();
         sources.insert(name.to_owned(), transform(&sources[name]));
         RuleSet::from_sources(sources).unwrap()
+    }
+
+    #[test]
+    fn a_backslash_keeps_a_python_raw_string_open_and_a_rust_one_does_not() {
+        let rules = RuleSet::load(None).unwrap();
+        // Found in graphify's cli.py: read the Rust way, the string closed at
+        // `\"`, reopened at the next quote and swallowed the rest of the file.
+        let py = "RE = re.compile(r\"(['\\\"]?)\\1\")\n\ndef after():\n    pass\n";
+        for facts in [
+            rules.parse(Language::Python, py),
+            Language::Python.parse(py),
+        ] {
+            assert!(
+                facts.defines.iter().any(|d| d == "after"),
+                "{:?}",
+                facts.defines
+            );
+        }
+        // Rust's raw strings have no escapes: `r"C:\"` ends at its second quote.
+        let rs = "const P: &str = r\"C:\\\";\nfn after() {}\n";
+        assert!(
+            rules
+                .parse(Language::Rust, rs)
+                .defines
+                .iter()
+                .any(|d| d == "after"),
+            "the Rust reading must not change"
+        );
+    }
+
+    #[test]
+    fn a_python_constant_ends_with_its_statement() {
+        let rules = RuleSet::load(None).unwrap();
+        // Found through detect_changes: an edit at the end of a file was
+        // attributed to every constant in it, because each one's range ran to
+        // the end of the file — and get_code_snippet returned all of that.
+        let py = "LIMIT = 3\nSTOP = frozenset({\n    \"a\",\n})\n\ndef after():\n    pass\n";
+        let def_at = py.find("def after").unwrap() as u32;
+        for facts in [
+            rules.parse(Language::Python, py),
+            Language::Python.parse(py),
+        ] {
+            for name in ["LIMIT", "STOP"] {
+                let (_, (_, end)) = facts.ranges.iter().find(|(n, _)| n == name).unwrap();
+                assert!(
+                    *end < def_at,
+                    "{name} runs to {end}, past `def after` at {def_at}"
+                );
+            }
+            let (_, (_, stop_end)) = facts.ranges.iter().find(|(n, _)| n == "STOP").unwrap();
+            assert!(
+                *stop_end as usize >= py.find("})").unwrap(),
+                "a bracketed constant spans its lines"
+            );
+        }
     }
 
     #[test]

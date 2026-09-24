@@ -22,7 +22,9 @@ fn declarable_head(ident: &str) -> bool {
 }
 
 /// Keywords after which the next name is a reference rather than a definition.
-const REFERS: [&str; 6] = ["require", "replace", "import", "extends", "amends", "include"];
+const REFERS: [&str; 6] = [
+    "require", "replace", "import", "extends", "amends", "include",
+];
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
@@ -113,7 +115,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     // `def X : Base<…>` is the opposite: the name comes first
                     // and what follows the colon is the parent it inherits.
                     let inherits = i > 0
-                        && matches!(tokens[i - 1].kind, TokenKind::Ident("def") | TokenKind::Ident("class"));
+                        && matches!(
+                            tokens[i - 1].kind,
+                            TokenKind::Ident("def") | TokenKind::Ident("class")
+                        );
                     if !inherits {
                         scope.open_definition(*ident, tok.start as usize, true, &mut facts);
                         scope.on_word(ident);

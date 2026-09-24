@@ -38,9 +38,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 let after_end_now = std::mem::take(&mut after_end);
                 let id_lower = ident.to_ascii_lowercase();
                 match id_lower.as_str() {
-                    "subroutine" | "function" | "module" | "program" | "type"
-                        if after_end_now =>
-                    {
+                    "subroutine" | "function" | "module" | "program" | "type" if after_end_now => {
                         i += 1;
                         if matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::Ident(_))) {
                             i += 1;
@@ -56,7 +54,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
                                 scope.on_open_delimiter();
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 // The body was opened one line above, so the
                                 // definition belongs to the level *below* the
                                 // current one — otherwise an inner `end if`,
@@ -83,7 +87,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
                                 scope.on_open_delimiter();
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 // The body was opened one line above, so the
                                 // definition belongs to the level *below* the
                                 // current one — otherwise an inner `end if`,
@@ -111,7 +121,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             if let TokenKind::Ident(name) = tokens[j].kind {
                                 if !name.eq_ignore_ascii_case("procedure") {
                                     scope.on_open_delimiter();
-                                    scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                    scope.open_definition_with_body_docs(
+                                        name,
+                                        start_byte as usize,
+                                        true,
+                                        false,
+                                        &mut facts,
+                                    );
                                     scope.on_word(name);
                                     i = j + 1;
                                     continue;

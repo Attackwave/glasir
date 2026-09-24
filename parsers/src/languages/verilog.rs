@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -29,48 +31,59 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::Ident(ident) => {
-                match *ident {
-                    "module" | "interface" | "package" | "class" | "program" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
-                                scope.on_word(name);
-                                i += 2;
-                                continue;
-                            }
+            TokenKind::Ident(ident) => match *ident {
+                "module" | "interface" | "package" | "class" | "program" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
                         }
-                    }
-                    "task" | "function" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
-                                scope.on_word(name);
-                                i += 2;
-                                continue;
-                            }
-                        }
-                    }
-                    "endmodule" | "endinterface" | "endpackage" | "endclass" | "endprogram" | "endtask" | "endfunction" => {
-                        scope.on_close_delimiter(tok.end as usize, &mut facts);
-                    }
-                    _ => {
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
-                        if j < tokens.len()
-                            && tokens[j].kind == TokenKind::Symbol('(')
-                            && calls.allows(ident)
-                        {
-                            scope.record_call(ident, &mut facts);
-                        }
-                        scope.on_word(ident);
                     }
                 }
-            }
+                "task" | "function" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                "endmodule" | "endinterface" | "endpackage" | "endclass" | "endprogram"
+                | "endtask" | "endfunction" => {
+                    scope.on_close_delimiter(tok.end as usize, &mut facts);
+                }
+                _ => {
+                    let mut j = i + 1;
+                    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+                        j += 1;
+                    }
+                    if j < tokens.len()
+                        && tokens[j].kind == TokenKind::Symbol('(')
+                        && calls.allows(ident)
+                    {
+                        scope.record_call(ident, &mut facts);
+                    }
+                    scope.on_word(ident);
+                }
+            },
             TokenKind::Number(num) => {
                 scope.on_word(num);
             }

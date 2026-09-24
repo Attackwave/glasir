@@ -14,6 +14,7 @@ pub fn parse_solidity(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -24,7 +25,9 @@ pub fn parse_solidity(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -50,7 +53,10 @@ pub fn parse_solidity(src: &str) -> FileFacts {
             }
             TokenKind::Ident(ident) => {
                 let mut cur_ident = *ident;
-                if cur_ident == "abstract" && i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Ident("contract") {
+                if cur_ident == "abstract"
+                    && i + 1 < tokens.len()
+                    && tokens[i + 1].kind == TokenKind::Ident("contract")
+                {
                     i += 1;
                     cur_ident = "contract";
                 }
@@ -60,7 +66,13 @@ pub fn parse_solidity(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -71,7 +83,13 @@ pub fn parse_solidity(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -82,7 +100,13 @@ pub fn parse_solidity(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -93,7 +117,13 @@ pub fn parse_solidity(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -104,7 +134,13 @@ pub fn parse_solidity(src: &str) -> FileFacts {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -181,6 +217,7 @@ pub fn parse_verilog(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -191,7 +228,9 @@ pub fn parse_verilog(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -205,48 +244,71 @@ pub fn parse_verilog(src: &str) -> FileFacts {
                 i += 1;
                 continue;
             }
-            TokenKind::Ident(ident) => {
-                match *ident {
-                    "module" | "interface" | "package" | "class" | "program" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
-                                scope.on_word(name);
-                                i += 2;
-                                continue;
-                            }
+            TokenKind::Ident(ident) => match *ident {
+                "module" | "interface" | "package" | "class" | "program" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
                         }
-                    }
-                    "task" | "function" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
-                                scope.on_word(name);
-                                i += 2;
-                                continue;
-                            }
-                        }
-                    }
-                    "endmodule" | "endinterface" | "endpackage" | "endclass" | "endprogram" | "endtask" | "endfunction" => {
-                        scope.on_close_delimiter(tok.end as usize, &mut facts);
-                    }
-                    _ => {
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
-                        if j < tokens.len()
-                            && tokens[j].kind == TokenKind::Symbol('(')
-                            && !matches!(*ident, "if" | "while" | "for" | "case" | "begin" | "end" | "initial" | "always" | "always_comb" | "always_ff" | "assign")
-                        {
-                            scope.record_call(ident, &mut facts);
-                        }
-                        scope.on_word(ident);
                     }
                 }
-            }
+                "task" | "function" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                "endmodule" | "endinterface" | "endpackage" | "endclass" | "endprogram"
+                | "endtask" | "endfunction" => {
+                    scope.on_close_delimiter(tok.end as usize, &mut facts);
+                }
+                _ => {
+                    let mut j = i + 1;
+                    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+                        j += 1;
+                    }
+                    if j < tokens.len()
+                        && tokens[j].kind == TokenKind::Symbol('(')
+                        && !matches!(
+                            *ident,
+                            "if" | "while"
+                                | "for"
+                                | "case"
+                                | "begin"
+                                | "end"
+                                | "initial"
+                                | "always"
+                                | "always_comb"
+                                | "always_ff"
+                                | "assign"
+                        )
+                    {
+                        scope.record_call(ident, &mut facts);
+                    }
+                    scope.on_word(ident);
+                }
+            },
             TokenKind::Number(num) => {
                 scope.on_word(num);
             }
@@ -272,6 +334,7 @@ pub fn parse_vhdl(src: &str) -> FileFacts {
         block_comment_end: None,
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -319,7 +382,13 @@ pub fn parse_vhdl(src: &str) -> FileFacts {
                                 // `architecture` closed itself at its first
                                 // inner `end` and everything after it fell to
                                 // `<module>`.
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 scope.on_open_delimiter();
                                 i = j + 1;
@@ -344,7 +413,13 @@ pub fn parse_vhdl(src: &str) -> FileFacts {
                                 // `<module>`. Eleventh occurrence of the shape
                                 // Lua, Fortran, Julia, Scheme, HCL, Tcl,
                                 // PL/SQL, ReScript and ChiaLisp each needed.
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 // Step over the parameter list, whose closing
                                 // parenthesis would otherwise end the routine.
@@ -379,7 +454,10 @@ pub fn parse_vhdl(src: &str) -> FileFacts {
                         scope.on_close_delimiter(tok.end as usize, &mut facts);
                         // Skip optional following keyword/name like `end entity foo;` or `end process;`
                         let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Newline {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Newline
+                        {
                             j += 1;
                         }
                         i = j;
@@ -394,7 +472,35 @@ pub fn parse_vhdl(src: &str) -> FileFacts {
                             && tokens[j].kind == TokenKind::Symbol('(')
                             && !matches!(
                                 id_lower.as_str(),
-                                "if" | "then" | "elsif" | "else" | "case" | "when" | "for" | "while" | "loop" | "return" | "wait" | "assert" | "report" | "severity" | "is" | "of" | "to" | "downto" | "in" | "out" | "inout" | "buffer" | "signal" | "variable" | "constant" | "type" | "subtype" | "port" | "generic" | "map"
+                                "if" | "then"
+                                    | "elsif"
+                                    | "else"
+                                    | "case"
+                                    | "when"
+                                    | "for"
+                                    | "while"
+                                    | "loop"
+                                    | "return"
+                                    | "wait"
+                                    | "assert"
+                                    | "report"
+                                    | "severity"
+                                    | "is"
+                                    | "of"
+                                    | "to"
+                                    | "downto"
+                                    | "in"
+                                    | "out"
+                                    | "inout"
+                                    | "buffer"
+                                    | "signal"
+                                    | "variable"
+                                    | "constant"
+                                    | "type"
+                                    | "subtype"
+                                    | "port"
+                                    | "generic"
+                                    | "map"
                             )
                         {
                             scope.record_call(ident, &mut facts);
@@ -428,6 +534,7 @@ pub fn parse_shader(src: &str) -> FileFacts {
         block_comment_end: Some("*/"),
         ident_suffix_marks: false,
         ident_dashes: false,
+        raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
     let tokens = lexer.collect_all_tokens();
@@ -438,7 +545,9 @@ pub fn parse_shader(src: &str) -> FileFacts {
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -490,7 +599,13 @@ pub fn parse_shader(src: &str) -> FileFacts {
                         }
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = j + 1;
                                 continue;
@@ -505,7 +620,13 @@ pub fn parse_shader(src: &str) -> FileFacts {
                         }
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i = j + 1;
                                 continue;
@@ -526,7 +647,16 @@ pub fn parse_shader(src: &str) -> FileFacts {
                                 }
                                 if k < tokens.len()
                                     && tokens[k].kind == TokenKind::Symbol('(')
-                                    && !matches!(*ident, "return" | "if" | "while" | "for" | "switch" | "case" | "discard")
+                                    && !matches!(
+                                        *ident,
+                                        "return"
+                                            | "if"
+                                            | "while"
+                                            | "for"
+                                            | "switch"
+                                            | "case"
+                                            | "discard"
+                                    )
                                 {
                                     // Find opening brace to verify function definition vs call
                                     let mut paren_depth = 1;
@@ -539,12 +669,25 @@ pub fn parse_shader(src: &str) -> FileFacts {
                                         }
                                         l += 1;
                                     }
-                                    while l < tokens.len() && (tokens[l].kind == TokenKind::Newline || matches!(tokens[l].kind, TokenKind::Ident(_) | TokenKind::Symbol(':'))) {
+                                    while l < tokens.len()
+                                        && (tokens[l].kind == TokenKind::Newline
+                                            || matches!(
+                                                tokens[l].kind,
+                                                TokenKind::Ident(_) | TokenKind::Symbol(':')
+                                            ))
+                                    {
                                         l += 1;
                                     }
-                                    if l < tokens.len() && tokens[l].kind == TokenKind::Symbol('{') {
+                                    if l < tokens.len() && tokens[l].kind == TokenKind::Symbol('{')
+                                    {
                                         let start_byte = tok.start;
-                                        scope.open_definition_with_body_docs(fn_name, start_byte as usize, true, true, &mut facts);
+                                        scope.open_definition_with_body_docs(
+                                            fn_name,
+                                            start_byte as usize,
+                                            true,
+                                            true,
+                                            &mut facts,
+                                        );
                                         scope.on_word(fn_name);
                                         i = j + 1;
                                         continue;
@@ -562,7 +705,33 @@ pub fn parse_shader(src: &str) -> FileFacts {
                             && tokens[j].kind == TokenKind::Symbol('(')
                             && !matches!(
                                 *ident,
-                                "if" | "while" | "for" | "switch" | "return" | "discard" | "vec2" | "vec3" | "vec4" | "ivec2" | "ivec3" | "ivec4" | "mat2" | "mat3" | "mat4" | "float" | "int" | "uint" | "bool" | "float2" | "float3" | "float4" | "int2" | "int3" | "int4" | "uint2" | "uint3" | "uint4"
+                                "if" | "while"
+                                    | "for"
+                                    | "switch"
+                                    | "return"
+                                    | "discard"
+                                    | "vec2"
+                                    | "vec3"
+                                    | "vec4"
+                                    | "ivec2"
+                                    | "ivec3"
+                                    | "ivec4"
+                                    | "mat2"
+                                    | "mat3"
+                                    | "mat4"
+                                    | "float"
+                                    | "int"
+                                    | "uint"
+                                    | "bool"
+                                    | "float2"
+                                    | "float3"
+                                    | "float4"
+                                    | "int2"
+                                    | "int3"
+                                    | "int4"
+                                    | "uint2"
+                                    | "uint3"
+                                    | "uint4"
                             )
                         {
                             scope.record_call(ident, &mut facts);

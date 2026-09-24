@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -37,8 +39,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     "local" if scope.depth == 0 => {
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                if i + 2 < tokens.len() && tokens[i + 2].kind == TokenKind::Symbol('=') {
-                                    scope.open_statement_definition(name, tok.start as usize, &mut facts);
+                                if i + 2 < tokens.len()
+                                    && tokens[i + 2].kind == TokenKind::Symbol('=')
+                                {
+                                    scope.open_statement_definition(
+                                        name,
+                                        tok.start as usize,
+                                        &mut facts,
+                                    );
                                     scope.on_word(name);
                                     i += 2;
                                     continue;
@@ -53,7 +61,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         while j < tokens.len() {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 fn_name.push_str(part);
-                                if j + 1 < tokens.len() && (tokens[j + 1].kind == TokenKind::Symbol('.') || tokens[j + 1].kind == TokenKind::Symbol(':')) {
+                                if j + 1 < tokens.len()
+                                    && (tokens[j + 1].kind == TokenKind::Symbol('.')
+                                        || tokens[j + 1].kind == TokenKind::Symbol(':'))
+                                {
                                     if tokens[j + 1].kind == TokenKind::Symbol('.') {
                                         fn_name.push('.');
                                     } else {
@@ -98,7 +109,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             j += 1;
                         }
                         if j < tokens.len()
-                            && (tokens[j].kind == TokenKind::Symbol('(') || matches!(tokens[j].kind, TokenKind::StringLit(_) | TokenKind::Symbol('{')))
+                            && (tokens[j].kind == TokenKind::Symbol('(')
+                                || matches!(
+                                    tokens[j].kind,
+                                    TokenKind::StringLit(_) | TokenKind::Symbol('{')
+                                ))
                             && calls.allows(ident)
                         {
                             scope.record_call(ident, &mut facts);
