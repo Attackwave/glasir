@@ -121,6 +121,7 @@ percentages or token counts.
 ```sh
 glasir benchmark .
 glasir benchmark . --check
+python3 bench/scale.py target/release/glasir --check   # 100k vs 1M lines
 ```
 
 [Benchmark methodology](docs/benchmarking.md) defines the corpus, baseline,

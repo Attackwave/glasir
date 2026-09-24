@@ -2357,6 +2357,12 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         wanted.entry(name).or_default().0 += 1;
     }
     let mut excused: std::collections::HashSet<(&str, &str)> = Default::default();
+    // By file, once: filtering the whole list per file was quadratic, 14 s on
+    // a 1M-line tree against 144 ms at 100k.
+    let mut by_file: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+    for &(file, name) in &uncalled {
+        by_file.entry(file).or_default().push(name);
+    }
     for path in text_files(root) {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
@@ -2382,7 +2388,10 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         // By characters: a byte offset can land inside one and panic.
         let head: String = text.chars().take(1024).collect();
         let generated = head.contains("DO NOT EDIT") || head.contains("@generated");
-        for &(file, name) in uncalled.iter().filter(|(f, _)| *f == rel) {
+        let Some((&file, names)) = by_file.get_key_value(rel.as_str()) else {
+            continue;
+        };
+        for &name in names {
             let annotated = served
                 .registry
                 .node_of(&format!("{file}#{name}"))
