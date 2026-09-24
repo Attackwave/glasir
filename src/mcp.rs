@@ -346,8 +346,22 @@ name, which is not the same as nothing depending on it"
     }
 }
 
-/// The tools this server exposes.
+/// The tools this server exposes. Every one reads the graph or the working
+/// tree and changes nothing, so a client in a read-only mode may call them all.
 fn tool_definitions() -> Value {
+    let mut tools = tool_list();
+    for tool in tools.as_array_mut().into_iter().flatten() {
+        tool["annotations"] = json!({
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+        });
+    }
+    tools
+}
+
+fn tool_list() -> Value {
     json!([
         {
             "name": "get_code_snippet",
@@ -517,7 +531,9 @@ fn tool_definitions() -> Value {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Weakest edge kind to follow (default ambiguous)"
-                    }
+                    },
+                    "limit": {"type": "integer", "description": "How many dependents to name (default 200)"},
+                    "offset": {"type": "integer", "description": "Skip this many, nearest first: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
             },
@@ -526,6 +542,8 @@ fn tool_definitions() -> Value {
         "properties": {
             "symbol": {"type": "string"},
             "dependents": {"type": "integer"},
+            "within": {"type": "integer", "description": "Hops the dependents span"},
+            "next_offset": {"type": "integer", "description": "Present when more remain"},
             "min_confidence": {"type": "string"},
             "hops": {"type": "array", "description": "Grouped by distance: a direct caller almost certainly breaks",
                 "items": {
@@ -544,7 +562,7 @@ fn tool_definitions() -> Value {
                     "required": ["hop", "symbols"]
                 }}
         },
-        "required": ["symbol", "dependents", "min_confidence", "hops"]
+        "required": ["symbol", "dependents", "within", "min_confidence", "hops"]
     }
         },
         {
@@ -637,7 +655,9 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
-                        "description": "Lowest provenance tier to count (default ambiguous)"}
+                        "description": "Lowest provenance tier to count (default ambiguous)"},
+                    "limit": {"type": "integer", "description": "How many callers to name (default 200)"},
+                    "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
             },
@@ -646,6 +666,7 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "symbol": {"type": "string"},
                     "count": {"type": "integer"},
+                    "next_offset": {"type": "integer", "description": "Present when more remain"},
                     "min_confidence": {"type": "string"},
                     "callers": {"type": "array", "items": {
                         "type": "object",
@@ -847,7 +868,8 @@ fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Only definitions under this path prefix"},
-                    "limit": {"type": "integer", "description": "How many to name (default 50)"}
+                    "limit": {"type": "integer", "description": "How many to name (default 50)"},
+                    "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 }
             },
             "outputSchema": {
@@ -856,6 +878,7 @@ fn tool_definitions() -> Value {
                     "path": {"type": "string"},
                     "checked": {"type": "integer", "description": "Definitions considered"},
                     "count": {"type": "integer"},
+                    "next_offset": {"type": "integer", "description": "Present when more remain"},
                     "unused": {"type": "array", "items": {"type": "string"}}
                 },
                 "required": ["path", "checked", "count", "unused"]
@@ -1462,21 +1485,35 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
     let node = served.resolve_one(symbol)?;
     let levels = reverse_levels(served, &[node], depth, floor);
+    let (offset, limit) = page(args, 200);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
-    Ok(json!({
+    let within = levels.len();
+    // Nearest first across the page boundary.
+    let mut levels_page: Vec<(usize, Vec<(NodeId, Confidence)>)> = Vec::new();
+    let flat = levels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, level)| level.iter().map(move |&e| (i + 1, e)));
+    for (hop, entry) in flat.skip(offset).take(limit) {
+        match levels_page.last_mut() {
+            Some((h, v)) if *h == hop => v.push(entry),
+            _ => levels_page.push((hop, vec![entry])),
+        }
+    }
+    let mut value = json!({
         "symbol": served.name(node),
         "dependents": total,
+        "within": within,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
         // levels would throw that away, so the nesting is the answer's shape
         // and not the prose's layout.
-        "hops": levels
+        "hops": levels_page
             .iter()
-            .enumerate()
-            .map(|(i, level)| json!({
-                "hop": i + 1,
+            .map(|(hop, level)| json!({
+                "hop": hop,
                 "symbols": level
                     .iter()
                     .map(|&(n, conf)| json!({
@@ -1486,7 +1523,35 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
                     .collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
-    }))
+    });
+    next_offset(&mut value, offset, limit, total);
+    Ok(value)
+}
+
+/// `offset` and `limit` of a paged list; the limit is clamped like every other.
+fn page(args: &Value, default: usize) -> (usize, usize) {
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = args["limit"]
+        .as_u64()
+        .unwrap_or(default as u64)
+        .clamp(1, 1000) as usize;
+    (offset, limit)
+}
+
+fn next_offset(value: &mut Value, offset: usize, limit: usize, total: usize) {
+    if offset.saturating_add(limit) < total {
+        value["next_offset"] = json!(offset + limit);
+    }
+}
+
+/// The line a paged answer ends with when more remain.
+fn more_line(v: &Value, total: u64) -> String {
+    v["next_offset"].as_u64().map_or(String::new(), |next| {
+        format!(
+            "\n… {} more: call again with `offset: {next}`\n",
+            total.saturating_sub(next)
+        )
+    })
 }
 
 /// The direct callers of one symbol. `impact` sweeps k hops and groups by
@@ -1507,11 +1572,14 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     // at its strongest confidence.
     callers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     callers.dedup_by_key(|&mut (n, _)| n);
+    let (offset, limit) = page(args, 200);
 
-    Ok(json!({
+    let mut value = json!({
         "symbol": served.name(node),
         "callers": callers
             .iter()
+            .skip(offset)
+            .take(limit)
             .map(|&(n, conf)| json!({
                 "symbol": served.name(n),
                 "file": served.name(n).split_once('#').map_or(String::new(), |(f, _)| f.to_string()),
@@ -1520,19 +1588,22 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "count": callers.len(),
         "min_confidence": confidence_label(floor),
-    }))
+    });
+    next_offset(&mut value, offset, limit, callers.len());
+    Ok(value)
 }
 
 fn render_find_callers(v: &Value) -> String {
     let sym = v["symbol"].as_str().unwrap_or("");
     let callers = v["callers"].as_array().map_or(&[][..], Vec::as_slice);
-    if callers.is_empty() {
+    if v["count"].as_u64().unwrap_or(0) == 0 {
         return format!(
             "{sym}\n\nnothing in the graph calls this. Callers in code the graph \
 does not cover are not ruled out.\n"
         );
     }
-    let mut out = format!("{sym}\n\n{} caller(s):\n", callers.len());
+    let count = v["count"].as_u64().unwrap_or(callers.len() as u64);
+    let mut out = format!("{sym}\n\n{count} caller(s):\n");
     for c in callers {
         out.push_str(&format!(
             "  [{}]  {}\n",
@@ -1540,6 +1611,7 @@ does not cover are not ruled out.\n"
             c["symbol"].as_str().unwrap_or("")
         ));
     }
+    out.push_str(&more_line(v, count));
     out
 }
 
@@ -2292,7 +2364,7 @@ const NOT_CALLED_NAMES: &[&str] = &["Makefile", "Justfile", "Dockerfile", "Rakef
 /// in several places. What it cannot see is named in the answer.
 fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     let scope = args["path"].as_str().unwrap_or("").trim_start_matches("./");
-    let limit = args["limit"].as_u64().unwrap_or(50).clamp(1, 1000) as usize;
+    let (offset, limit) = page(args, 50);
     let reverse = served.snap.reverse();
 
     let called_bare: std::collections::HashSet<&str> = served
@@ -2409,12 +2481,14 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|(file, name)| format!("{file}#{name}"))
         .collect();
     unused.sort();
-    Ok(json!({
+    let mut value = json!({
         "path": scope,
         "checked": checked,
         "count": unused.len(),
-        "unused": unused.iter().take(limit).collect::<Vec<_>>(),
-    }))
+        "unused": unused.iter().skip(offset).take(limit).collect::<Vec<_>>(),
+    });
+    next_offset(&mut value, offset, limit, unused.len());
+    Ok(value)
 }
 
 /// Whether an attribute or decorator sits on the definition starting at
@@ -2558,12 +2632,7 @@ fn render_find_unused(v: &Value) -> String {
         }
         out.push_str(&format!("  {name}\n"));
     }
-    if (unused.len() as u64) < count {
-        out.push_str(&format!(
-            "\n… and {} more (raise `limit`)\n",
-            count - unused.len() as u64
-        ));
-    }
+    out.push_str(&more_line(v, count));
     out.push_str(
         "\nNot proof of dead code: a library's public API, a framework callback, a trait \
 method called implicitly, or a name reached through reflection or a string is invisible \
@@ -2655,7 +2724,7 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
     out.push_str(&format!(
         "{} symbols depend on this, within {} hops\n",
         v["dependents"].as_u64().unwrap_or(0),
-        levels.len()
+        v["within"].as_u64().unwrap_or(0)
     ));
     for level in levels {
         let syms = level["symbols"].as_array().map_or(&[][..], Vec::as_slice);
@@ -2672,6 +2741,7 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
             ));
         }
     }
+    out.push_str(&more_line(v, v["dependents"].as_u64().unwrap_or(0)));
     out
 }
 
