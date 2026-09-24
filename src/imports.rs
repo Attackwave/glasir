@@ -32,8 +32,35 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
         Lang::Python => python(src),
         Lang::Go => go(src),
         Lang::TypeScript | Lang::JavaScript => javascript(src),
+        Lang::Elixir => elixir(src),
         _ => Vec::new(),
     }
+}
+
+/// `alias Shop.Cart` makes `Cart` mean `Shop.Cart`; `, as: C` names it `C`.
+fn elixir(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let Some(rest) = line.trim().strip_prefix("alias ") else {
+            continue;
+        };
+        let (spec, alias) = match rest.split_once(", as:") {
+            Some((spec, alias)) => (spec.trim(), alias.trim()),
+            None => (rest.trim(), rest.trim().rsplit('.').next().unwrap_or("")),
+        };
+        if !spec.is_empty()
+            && !alias.is_empty()
+            && spec
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
+        {
+            out.push(Import::Module {
+                alias: alias.to_string(),
+                spec: spec.to_string(),
+            });
+        }
+    }
+    out
 }
 
 fn python(src: &str) -> Vec<Import> {
@@ -268,6 +295,7 @@ pub fn resolve(lang: Lang, file: &str, spec: &str, root: &Path) -> Option<String
         Lang::Python => python_target(dir, spec, root),
         Lang::Go => go_target(dir, spec, root),
         Lang::TypeScript | Lang::JavaScript => js_target(dir, spec, root),
+        Lang::Elixir => module_file(lang, spec),
         _ => None,
     }
 }
@@ -365,6 +393,21 @@ fn normalize(p: &Path) -> PathBuf {
 
 fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
+}
+
+/// Where a module-qualified call goes in a language whose module *is* a file
+/// by name, wherever it lives: Erlang's `lists:map` is `map` in `lists.erl`,
+/// which the compiler enforces. `*/` marks a target matched by file name;
+/// tier 3 links it only when exactly one such file defines the name.
+///
+/// Elixir names a module by `defmodule`, not by its file: `@Shop.Cart` is the
+/// one file defining that module, which tier 3 finds by the definition.
+pub fn module_file(lang: Lang, module: &str) -> Option<String> {
+    match lang {
+        Lang::Erlang => Some(format!("*/{module}.erl")),
+        Lang::Elixir => Some(format!("@{module}")),
+        _ => None,
+    }
 }
 
 /// The placeholder for a name an import says lives at `target`: `f from

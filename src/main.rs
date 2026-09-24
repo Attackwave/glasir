@@ -5891,8 +5891,9 @@ fn demo_mcp() {
 /// that matters is that a round trip leaves other people's settings exactly as
 /// they were.
 /// A call through an import reaches the definition the import names, in each
-/// language whose imports are read: every name below is defined twice, so
-/// without the import the call is ambiguous and links nowhere.
+/// language whose imports are read — and in Erlang, where the module is the
+/// file: every name below is defined twice, so without that the call is
+/// ambiguous and links nowhere.
 fn demo_imports() {
     let dir = std::env::temp_dir().join(format!("glasir-imports-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -5917,6 +5918,29 @@ fn demo_imports() {
             "app.ts",
             "import * as x from './lib/x';\nimport {\n  run as go,\n} from './lib/y';\n\nexport function start() {\n  x.run();\n  go();\n}\n",
         ),
+        // Erlang names no import: a module is its file, wherever it lives.
+        // `twin` is two files of one name, so a call into it stays refused.
+        ("erl/lists.erl", "-module(lists).\nmap(F, L) -> F(L).\n"),
+        ("erl/other.erl", "-module(other).\nmap(F, L) -> L.\n"),
+        ("erl/a/twin.erl", "-module(twin).\nf() -> 1.\n"),
+        ("erl/b/twin.erl", "-module(twin).\nf() -> 2.\n"),
+        (
+            "erl/use.erl",
+            "-module(use).\ngo(L) -> lists:map(fun g/1, L).\npair() -> twin:f().\n",
+        ),
+        // Elixir names the module by `defmodule`, and `alias` shortens it.
+        (
+            "ex/cart.ex",
+            "defmodule Shop.Cart do\n  def total(i), do: i\nend\n",
+        ),
+        (
+            "ex/order.ex",
+            "defmodule Shop.Order do\n  def total(o), do: o\nend\n",
+        ),
+        (
+            "ex/pay.ex",
+            "defmodule Shop.Pay do\n  alias Shop.Cart, as: C\n  def full(c), do: Shop.Cart.total(c)\n  def short(c), do: C.total(c)\nend\n",
+        ),
     ] {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -5937,6 +5961,13 @@ fn demo_imports() {
         ("main.go#main", "other/o.go#Do", false),
         ("app.ts#start", "lib/x.ts#run", true),
         ("app.ts#start", "lib/y.ts#run", true),
+        ("erl/use.erl#go", "erl/lists.erl#map", true),
+        ("erl/use.erl#go", "erl/other.erl#map", false),
+        ("erl/use.erl#pair", "erl/a/twin.erl#f", false),
+        ("erl/use.erl#pair", "erl/b/twin.erl#f", false),
+        ("ex/pay.ex#full", "ex/cart.ex#total", true),
+        ("ex/pay.ex#short", "ex/cart.ex#total", true),
+        ("ex/pay.ex#full", "ex/order.ex#total", false),
     ] {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
