@@ -5272,7 +5272,7 @@ fn demo_mcp() {
     use serde_json::json;
 
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..5u32 {
+    for _ in 0..6u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -5286,6 +5286,8 @@ fn demo_mcp() {
     b.add_edge(1, e(2));
     // The placeholder resolves onto the definition, exactly as tier 3 links it.
     b.add_edge(4, e(2));
+    // A call written as the bare name, reaching `log` through the placeholder.
+    b.add_edge(5, e(4));
     let g = graph::Graph::new(b.build());
     let snap = g.load();
 
@@ -5303,7 +5305,8 @@ fn demo_mcp() {
     // `log` has two defensible answers and the caller must be told, not handed
     // whichever the registry found first.
     reg.insert("log".into(), 4);
-    let defined = std::collections::HashSet::from([0, 1, 2, 3]);
+    reg.insert("src/d.rs#audit".into(), 5);
+    let defined = std::collections::HashSet::from([0, 1, 2, 3, 5]);
     let comms = community::detect(
         &snap,
         &community::Params::default(),
@@ -5504,6 +5507,10 @@ fn demo_mcp() {
     assert!(
         !named.contains(&"src/a.rs#pay"),
         "find_callers must report direct callers only, and pay is two hops out: {named:?}"
+    );
+    assert!(
+        named.contains(&"src/d.rs#audit") && !named.contains(&"log"),
+        "a caller through the placeholder, not the placeholder: {named:?}"
     );
 
     // Ambiguity is refused here exactly as in `impact` and `explain_node`: a
@@ -5708,15 +5715,20 @@ fn demo_mcp() {
         text.contains("3 symbols depend on this"),
         "transitive, not just direct: {text}"
     );
-    // Two at one hop: the direct caller and the placeholder tier 3 linked here.
+    // Two at one hop: `charge`, and `audit` through the placeholder, which is
+    // a name and not a caller — counting it put `audit` a hop too far out.
     assert!(
         text.contains("1 hop (2)") && text.contains("2 hop (1)"),
         "{text}"
     );
     let (first, second) = text.split_once("\n2 hop (").unwrap();
     assert!(
-        first.contains("src/b.rs#charge"),
-        "direct caller first: {text}"
+        first.contains("src/b.rs#charge") && first.contains("src/d.rs#audit"),
+        "direct callers first: {text}"
+    );
+    assert!(
+        !first.contains("]  log\n"),
+        "the placeholder is not a dependent: {text}"
     );
     assert!(
         second.contains("src/a.rs#pay"),
@@ -5732,7 +5744,7 @@ fn demo_mcp() {
     let text = shallow["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
         text.contains("2 symbols depend"),
-        "depth 1 stops at charge and the placeholder: {text}"
+        "depth 1 stops at charge and audit: {text}"
     );
 
     // Pages keep the nearest-first order and add up to the whole answer.
@@ -5789,7 +5801,7 @@ fn demo_mcp() {
     let ambiguous = tool_call("impact", json!({"symbol": "src/"}));
     assert_eq!(ambiguous["result"]["isError"], true);
     let text = ambiguous["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("matches 3 symbols"), "{text}");
+    assert!(text.contains("matches 4 symbols"), "{text}");
 
     // The name is what follows the *first* `#`, not the last. Splitting at the
     // last one made `notes.md#Fixes #12: charge` an exact match for `charge`,
