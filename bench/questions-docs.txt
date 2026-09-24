@@ -25,3 +25,10 @@ which endpoint reports readiness and which endpoint exposes metrics?
 
 what information must an explicit cross-repository contract carry?
   docs/cross-repo-contracts.md#Cross-repository evidence contracts
+
+under which licence is Glasir published, and how are its dependencies' licences shipped?
+  README.md#Licence
+
+how does the Core check the control plane's client certificate?
+  README.md#Deployment boundary
+  SECURITY.md#Serving over HTTP

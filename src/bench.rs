@@ -383,9 +383,17 @@ pub fn overview_scale(served: &Served, questions: &[Question]) -> (usize, usize,
             .map(|(k, _)| k)
     };
 
+    // Code only: a Markdown section is never a subsystem member, so counting a
+    // documentation answer here moved the floor with every question added to
+    // a documentation set — two English and ten German ones took it 47% -> 44%
+    // with the partition unchanged.
     let mut want: Vec<&str> = questions
         .iter()
         .flat_map(|q| q.expected.iter().map(String::as_str))
+        .filter(|w| {
+            let file = w.split_once('#').map_or(*w, |(f, _)| f);
+            !crate::docs::is_markdown(std::path::Path::new(file))
+        })
         .collect();
     want.sort_unstable();
     want.dedup();

@@ -391,16 +391,11 @@ fn prefix(word: &str, n: usize) -> Option<&str> {
 }
 
 /// Folds the spelling differences that separate a German word from the English
-/// one it means: `Konfiguration`/`configuration`, `Funktion`/`function`,
-/// `Struktur`/`structure`. `k`/`c` and `z`/`t` are the whole list, and it buys
-/// six such pairs over the bare prefix stem where character n-grams — the
-/// standard translation-free method — buy exactly one, because a shared n-gram
-/// and a shared prefix are nearly the same set on this vocabulary.
-///
-/// Measured over this tree's 2,161 distinct five-character prefixes it collides
-/// four, and three of those are the same stem either way (`invoc`/`invok`,
-/// `revoc`/`revok`). It applies to both sides of the comparison and never to a
-/// stored posting, so the index does not change shape.
+/// one it means: German `k` and `z` both map to `c`, and that is the whole
+/// list. It applies to both sides of the comparison and never to a stored
+/// posting, so the index does not change shape. The measurements, and why the
+/// example words are not written here, are in CLAUDE.md under "Closing the
+/// language gap".
 ///
 /// **It runs only when the plain stem reaches nothing.** Unconditionally it
 /// costs four points on `questions`, as demonstrated by the `prose_only`
@@ -409,7 +404,7 @@ fn fold_spelling(stem: &str) -> String {
     stem.chars()
         .map(|c| match c {
             'k' => 'c',
-            'z' => 't',
+            'z' => 'c',
             _ => c,
         })
         .collect()

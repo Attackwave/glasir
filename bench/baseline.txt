@@ -17,11 +17,20 @@
 # measures, and CI, which checks out a clean clone, could lose that much without
 # failing. With the exclusion restored, a clean clone and a working copy agree:
 # 93 / 93 / 100 / 47 / 92, and the floors are those values again.
+#
+# questions-docs 100 -> 95: two questions added (licence, client certificate),
+# the certificate one half answered. partition 47 -> 62: it now scores code
+# answers only — a Markdown section is never a subsystem member, and counting
+# the documentation answers moved the floor with every question added.
 questions                93
 questions-identifier     93
-questions-docs           100
+questions-docs           95
+# German: the documentation questions asked in German against English
+# documentation. Without the spelling fold, or with the earlier z->t fold, it
+# reads 50%.
+questions-docs-de        65
 structural               100
-partition                47
+partition                62
 deep                     92
 
 # A tolerance of three points catches material regressions while avoiding a

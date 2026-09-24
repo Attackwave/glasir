@@ -1,0 +1,43 @@
+# The questions of questions-docs.txt, asked in German.
+#
+# Translations rather than new questions, with the same expected sections: what
+# is measured is the language, not the phrasing. The documentation they point
+# at is English, so this is the case the multilingual work exists for — a team
+# asking in German about a tree documented in English.
+#
+# Written the way a German speaker asks, not word for word: "Vertrauensgrenze"
+# rather than "trust boundary", "Endpunkt" rather than "endpoint". A question
+# that smuggles the English term back in measures nothing, because the English
+# term is what the index already has.
+
+wie findet, zerlegt, verknüpft, speichert und befragt der Core den Quellcode?
+  docs/architecture.md#Processing pipeline
+
+welche Vertrauensgrenze gilt, wenn der Core hinter der Steuerungsebene läuft?
+  docs/architecture.md#Trust boundary
+
+wie wird verhindert, dass Verknüpfungen zwischen Repositorys zu geratenen Abhängigkeiten werden?
+  docs/architecture.md#Cross-repository contracts
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts
+
+welche Betriebseigenschaften halten Schnappschüsse und Anfragen sicher?
+  docs/architecture.md#Operational properties
+
+wie werden die Token einzelner Benutzer auf einem Team-Server widerrufen?
+  README.md#Running it for a team
+
+wie sollte eine Unternehmensinstallation den Core von Glasir Control trennen?
+  README.md#Deployment boundary
+
+welcher Endpunkt meldet die Bereitschaft, und welcher stellt Metriken bereit?
+  README.md#Operating it
+
+welche Angaben muss ein ausdrücklicher Vertrag zwischen Repositorys enthalten?
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts
+
+unter welcher Lizenz steht Glasir, und wie werden die Lizenzen seiner Abhängigkeiten mitgeliefert?
+  README.md#Licence
+
+wie prüft der Core das Zertifikat der Steuerungsebene?
+  README.md#Deployment boundary
+  SECURITY.md#Serving over HTTP
