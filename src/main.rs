@@ -8651,14 +8651,6 @@ fn demo_subsystem_scale() {
     }
     let snap = graph::Graph::new(b.build()).load();
 
-    // One community per twenty nodes: a real partition of a large tree has
-    // thousands, which is what makes the per-community scan quadratic.
-    let of_node: Vec<u32> = (0..n).map(|i| (i / 20) as u32).collect();
-    let communities = community::Communities {
-        of_node,
-        hubs: Vec::new(),
-        pendants: Vec::new(),
-    };
     let defined: std::collections::HashSet<csr::NodeId> = (0..n as csr::NodeId).collect();
     let mut registry = ingest::SymbolRegistry::new(n);
     for i in 0..n {
@@ -8667,35 +8659,46 @@ fn demo_subsystem_scale() {
     let embeddings = embed::embed(&snap, 1);
     let search = search::SearchIndex::build(&registry);
     let names = mcp::name_table(&registry, snap.width());
-    let served = mcp::Served {
-        snap: &snap,
-        names: &names,
-        defined: &defined,
-        search: &search,
-        registry: &registry,
-        communities: &communities,
-        embeddings: &embeddings,
-        physics: physics::Physics::default(),
-        now: now(),
-        files: None,
-        root: None,
-    };
 
-    // A query that matches nothing takes the subsystem path — the slow one.
-    let t = std::time::Instant::now();
-    let reply = mcp::handle_for_test(
-        &served,
-        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "query_graph", "arguments": {"query": "zzqqxx"}}}),
-    );
-    let elapsed = t.elapsed();
-    assert!(reply.is_some());
-    // 1000 communities x 20000 nodes is 20 million comparisons; grouping in one
-    // pass is 20 thousand. The bound is loose on purpose — it must fail on the
-    // quadratic shape and pass on any machine for the linear one.
+    // A query that matches nothing takes the subsystem path — the slow one —
+    // timed over a partition of `per` nodes per community.
+    let missed_query = |per: usize| {
+        let communities = community::Communities {
+            of_node: (0..n).map(|i| (i / per) as u32).collect(),
+            hubs: Vec::new(),
+            pendants: Vec::new(),
+        };
+        let served = mcp::Served {
+            snap: &snap,
+            names: &names,
+            defined: &defined,
+            search: &search,
+            registry: &registry,
+            communities: &communities,
+            embeddings: &embeddings,
+            physics: physics::Physics::default(),
+            now: now(),
+            files: None,
+            root: None,
+        };
+        let t = std::time::Instant::now();
+        let reply = mcp::handle_for_test(
+            &served,
+            &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "query_graph", "arguments": {"query": "zzqqxx"}}}),
+        );
+        assert!(reply.is_some());
+        t.elapsed()
+    };
+    // One community against three thousand, on the same machine: grouping in
+    // one pass costs about the same for both, a scan per community about three
+    // thousand times as much. A fixed bound in milliseconds measured the
+    // machine instead — 130 ms here, 514 ms on a macOS runner against 500.
+    let one = missed_query(n);
+    let many = missed_query(20);
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
-        "a missed query walked the partition per community ({elapsed:?})"
+        many < one * 10 + std::time::Duration::from_millis(50),
+        "a missed query walked the partition per community ({many:?} against {one:?} for one)"
     );
 
     println!("phase A ok: a missed query costs one pass, not one per community");
