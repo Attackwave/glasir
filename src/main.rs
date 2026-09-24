@@ -1588,6 +1588,7 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     let also = [
         root.join("bench/questions-identifier.txt"),
         root.join("bench/questions-docs.txt"),
+        root.join("bench/questions-docs-de.txt"),
     ];
     let questions = bench::load_questions(&questions_path)?;
     if questions.is_empty() {
@@ -7338,21 +7339,23 @@ fn demo_baseline() {
         println!("phase D.2 skipped: bench/baseline.txt not readable from here");
         return;
     };
-    assert_eq!(base.floors.len(), 6, "one floor per ground truth");
+    assert_eq!(base.floors.len(), 7, "one floor per ground truth");
     for set in [
         "questions",
         "questions-identifier",
         "questions-docs",
+        // The same documentation questions in German, against English docs.
+        "questions-docs-de",
         // Not a question file: the partition scores against the same answer
         // symbols through `bench::overview_scale`. It gets a floor because the
         // four above are blind to it — `query_graph` never reads communities,
         // so a partition that collapses into one lump measures identically on
         // every one of them, which is how it stayed unseen for five sessions.
         "partition",
-        // A different tree, not a different phrasing:  is analysed
+        // A different tree, not a different phrasing: `bench/deep` is analysed
         // on its own so the four sets above keep measuring this repository.
         "deep",
-        // Scored by calling  and , not by expanding
+        // Scored by calling `impact` and `shortest_path`, not by expanding
         // seeds — the half of the tool a grep baseline cannot reach.
         "structural",
     ] {
