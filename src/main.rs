@@ -552,10 +552,8 @@ fn build_graph(
                 ingest::apply_facts_into(snap, d, &mut arena, &mut reg, &path, root, facts, now);
             }
         }
+        ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, root, &markdown, now);
     });
-    for (path, src) in markdown {
-        ingest::ingest_markdown(&g, &mut arena, &mut reg, &path, root, &src, now);
-    }
     link_placeholders_quiet(&g, &reg);
     Ok((g, reg, arena))
 }
@@ -597,9 +595,9 @@ pub(crate) fn read_source(path: &std::path::Path) -> Option<String> {
     match std::fs::metadata(path) {
         Ok(m) if m.len() > MAX_SOURCE_BYTES => {
             eprintln!(
-                "glasir: skipping {} — {} MB exceeds the {} MB limit for one file",
+                "glasir: skipping {} — {:.1} MB exceeds the {} MB limit for one file",
                 path.display(),
-                m.len() / (1024 * 1024),
+                m.len() as f64 / (1024.0 * 1024.0),
                 MAX_SOURCE_BYTES / (1024 * 1024)
             );
             return None;
@@ -951,10 +949,8 @@ fn refresh_files(
                 ingest::apply_facts_into(snap, d, &mut arena, reg, path, root, facts, now());
             }
         }
+        ingest::ingest_markdown_into(snap, d, &mut arena, reg, root, &markdown, now());
     });
-    for (path, src) in markdown {
-        ingest::ingest_markdown(g, &mut arena, reg, &path, root, &src, now());
-    }
 
     // Tier 3 runs over the whole registry, not per file: a call is routinely
     // parsed before the file defining it, and its links are re-applied as a set
@@ -8605,6 +8601,13 @@ fn demo_batch_build() {
                 format!("fn run{i}() {{ shared(); helper{i}(); }}\nfn shared() {{}}\n"),
             )
             .unwrap();
+            if i % 16 == 0 {
+                std::fs::write(
+                    dir.join(format!("d{i:04}.md")),
+                    format!("## R{i}\n\n`run{i}`\n"),
+                )
+                .unwrap();
+            }
         }
         let t = Instant::now();
         let a = analyse(&dir).unwrap();
@@ -8634,14 +8637,20 @@ fn demo_batch_build() {
     let mut reg = ingest::SymbolRegistry::new(0);
     let mut files = walk(&dir);
     files.sort();
+    let mut markdown = Vec::new();
     for path in &files {
         let src = std::fs::read_to_string(path).unwrap();
-        if let Some(facts) =
+        if docs::is_markdown(path) {
+            markdown.push((path.clone(), src));
+        } else if let Some(facts) =
             parse_ast::Lang::from_path(path).and_then(|l| parse_ast::parse_file(path, &src, l))
         {
             ingest::apply_facts(&g, &mut arena, &mut reg, path, &dir, facts, 1);
         }
     }
+    g.update_batch(|snap, d| {
+        ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, &dir, &markdown, 1);
+    });
     link_placeholders_quiet(&g, &reg);
     let snap = g.load();
 
@@ -9303,7 +9312,10 @@ A worker folds the delta back through `compact`.
         let mut arena = arena::SymbolArena::new();
         let mut reg = ingest::SymbolRegistry::new(0);
         let src = std::fs::read_to_string(&md).unwrap();
-        ingest::ingest_markdown(&g, &mut arena, &mut reg, &md, &dir, &src, now());
+        let batch = [(md.clone(), src)];
+        g.update_batch(|snap, d| {
+            ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, &dir, &batch, now());
+        });
         let kept: usize = reg
             .docs()
             .values()
@@ -9318,6 +9330,34 @@ A worker folds the delta back through `compact`.
             "the last part's prose must survive too"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    // Scale: the name table is built once per batch rather than per document.
+    // Timed against itself, never against a clock; the single publish is
+    // `demo_batch_build`'s.
+    {
+        let dir = std::path::Path::new("/m");
+        let run = |docs: usize| {
+            let g = std::sync::Arc::new(graph::Graph::new(csr::CsrBuilder::new().build()));
+            let mut arena = arena::SymbolArena::new();
+            let mut reg = ingest::SymbolRegistry::new(0);
+            for i in 0..100_000 {
+                reg.get_or_mint(&format!("src/f{i}.rs#s{i}"));
+            }
+            let batch: Vec<(std::path::PathBuf, String)> = (0..docs)
+                .map(|i| (dir.join(format!("d{i}.md")), format!("## T{i}\n\n`s{i}`\n")))
+                .collect();
+            let t = std::time::Instant::now();
+            g.update_batch(|snap, d| {
+                ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, dir, &batch, now());
+            });
+            t.elapsed()
+        };
+        let one = run(1);
+        let many = run(200);
+        assert!(
+            many < one * 20,
+            "200 documents took {many:?} against {one:?} for one: the name table is rebuilt per document"
+        );
     }
     assert!(
         split
