@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -39,45 +41,43 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::Ident(ident) => {
-                match *ident {
-                    "sub" | "method" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(fn_name) = tokens[i + 1].kind {
-                                scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
-                                scope.on_word(fn_name);
-                                i += 2;
-                                continue;
-                            }
+            TokenKind::Ident(ident) => match *ident {
+                "sub" | "method" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(fn_name) = tokens[i + 1].kind {
+                            scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
+                            scope.on_word(fn_name);
+                            i += 2;
+                            continue;
                         }
-                    }
-                    "package" | "class" => {
-                        let start_byte = tok.start;
-                        if i + 1 < tokens.len() {
-                            if let TokenKind::Ident(pkg_name) = tokens[i + 1].kind {
-                                scope.open_definition(pkg_name, start_byte as usize, true, &mut facts);
-                                scope.on_word(pkg_name);
-                                i += 2;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
-                        if j < tokens.len()
-                            && tokens[j].kind == TokenKind::Symbol('(')
-                            && calls.allows(ident)
-                        {
-                            scope.record_call(ident, &mut facts);
-                        }
-                        scope.on_word(ident);
                     }
                 }
-            }
+                "package" | "class" => {
+                    let start_byte = tok.start;
+                    if i + 1 < tokens.len() {
+                        if let TokenKind::Ident(pkg_name) = tokens[i + 1].kind {
+                            scope.open_definition(pkg_name, start_byte as usize, true, &mut facts);
+                            scope.on_word(pkg_name);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                _ => {
+                    let mut j = i + 1;
+                    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+                        j += 1;
+                    }
+                    if j < tokens.len()
+                        && tokens[j].kind == TokenKind::Symbol('(')
+                        && calls.allows(ident)
+                    {
+                        scope.record_call(ident, &mut facts);
+                    }
+                    scope.on_word(ident);
+                }
+            },
             TokenKind::Number(num) => {
                 scope.on_word(num);
             }

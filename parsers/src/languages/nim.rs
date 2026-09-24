@@ -14,12 +14,21 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let line_start_pos = src[..tok.start as usize]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
         let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
 
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.push_comment(text);
@@ -36,17 +45,27 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Ident(ident) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
 
                 match *ident {
-                    "proc" | "func" | "method" | "iterator" | "template" | "macro" | "converter" => {
+                    "proc" | "func" | "method" | "iterator" | "template" | "macro"
+                    | "converter" => {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(raw_name) = tokens[i + 1].kind {
                                 let clean_name = raw_name.trim_end_matches('*');
-                                scope.open_definition(clean_name, start_byte as usize, true, &mut facts);
+                                scope.open_definition(
+                                    clean_name,
+                                    start_byte as usize,
+                                    true,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = current_line_indent + 1;
                                 }
@@ -117,7 +136,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(raw_name) = tokens[i + 1].kind {
                                 let clean_name = raw_name.trim_end_matches('*');
-                                scope.open_definition(clean_name, start_byte as usize, false, &mut facts);
+                                scope.open_definition(
+                                    clean_name,
+                                    start_byte as usize,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(clean_name);
                                 i += 2;
                                 if i < tokens.len() && tokens[i].kind == TokenKind::Symbol('*') {
@@ -132,7 +156,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
                             j += 1;
                         }
-                        if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('(') && calls.allows(ident) {
+                        if j < tokens.len()
+                            && tokens[j].kind == TokenKind::Symbol('(')
+                            && calls.allows(ident)
+                        {
                             scope.record_call(ident, &mut facts);
                         }
                         scope.on_word(ident);

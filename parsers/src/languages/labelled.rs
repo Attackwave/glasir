@@ -114,7 +114,9 @@ pub(crate) fn parse(
             }
             if let Some(after) = trimmed.strip_prefix("crossref") {
                 if let Some((_, value)) = after.split_once('{') {
-                    let target = value.trim_end_matches([',', '}', ' ']).trim_end_matches('}');
+                    let target = value
+                        .trim_end_matches([',', '}', ' '])
+                        .trim_end_matches('}');
                     let target = target.trim();
                     if !target.is_empty() {
                         facts.add_call(owner, target.to_string(), false);

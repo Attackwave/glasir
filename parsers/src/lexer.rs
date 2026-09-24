@@ -311,15 +311,29 @@ impl<'a, 's> Lexer<'a, 's> {
                     has_close_quote = true;
                     break;
                 }
-                if self.bytes[j] == b',' || self.bytes[j] == b'>' || self.bytes[j] == b')' || self.bytes[j] == b']' || self.bytes[j] == b';' || self.bytes[j] == b' ' || self.bytes[j] == b'\t' {
+                if self.bytes[j] == b','
+                    || self.bytes[j] == b'>'
+                    || self.bytes[j] == b')'
+                    || self.bytes[j] == b']'
+                    || self.bytes[j] == b';'
+                    || self.bytes[j] == b' '
+                    || self.bytes[j] == b'\t'
+                {
                     break;
                 }
                 j += 1;
             }
 
-            if !has_close_quote && self.pos + 1 < self.bytes.len() && (self.bytes[self.pos + 1].is_ascii_alphabetic() || self.bytes[self.pos + 1] == b'_') {
+            if !has_close_quote
+                && self.pos + 1 < self.bytes.len()
+                && (self.bytes[self.pos + 1].is_ascii_alphabetic()
+                    || self.bytes[self.pos + 1] == b'_')
+            {
                 self.pos += 1;
-                while self.pos < self.bytes.len() && (self.bytes[self.pos].is_ascii_alphanumeric() || self.bytes[self.pos] == b'_') {
+                while self.pos < self.bytes.len()
+                    && (self.bytes[self.pos].is_ascii_alphanumeric()
+                        || self.bytes[self.pos] == b'_')
+                {
                     self.pos += 1;
                 }
                 let end = self.pos.min(self.bytes.len());
@@ -337,7 +351,11 @@ impl<'a, 's> Lexer<'a, 's> {
             while self.pos < self.bytes.len() {
                 let cur = self.bytes[self.pos];
                 if cur == b'\\' {
-                    if self.pos + 1 < self.bytes.len() && self.bytes[self.pos + 1] == b'\r' && self.pos + 2 < self.bytes.len() && self.bytes[self.pos + 2] == b'\n' {
+                    if self.pos + 1 < self.bytes.len()
+                        && self.bytes[self.pos + 1] == b'\r'
+                        && self.pos + 2 < self.bytes.len()
+                        && self.bytes[self.pos + 2] == b'\n'
+                    {
                         self.pos += 3;
                     } else if self.pos + 1 < self.bytes.len() {
                         self.pos += 2;
@@ -397,7 +415,10 @@ impl<'a, 's> Lexer<'a, 's> {
             // Check if followed by '.' for float:
             // A '.' is part of a float if and only if it is followed by a digit (e.g. 1.0, 0.5)
             // If followed by an ident (0.publish) or range (0..10) or space (0. ), the '.' is NOT part of the number!
-            if self.pos + 1 < self.bytes.len() && self.bytes[self.pos] == b'.' && self.bytes[self.pos + 1].is_ascii_digit() {
+            if self.pos + 1 < self.bytes.len()
+                && self.bytes[self.pos] == b'.'
+                && self.bytes[self.pos + 1].is_ascii_digit()
+            {
                 self.pos += 1; // Consume '.'
                 while self.pos < self.bytes.len() {
                     let c = self.bytes[self.pos];
@@ -410,14 +431,20 @@ impl<'a, 's> Lexer<'a, 's> {
             }
 
             // Check for exponent: e.g. 1e10, 1.0e-5, 1E+3
-            if self.pos < self.bytes.len() && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E') {
+            if self.pos < self.bytes.len()
+                && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E')
+            {
                 let mut exp_pos = self.pos + 1;
-                if exp_pos < self.bytes.len() && (self.bytes[exp_pos] == b'+' || self.bytes[exp_pos] == b'-') {
+                if exp_pos < self.bytes.len()
+                    && (self.bytes[exp_pos] == b'+' || self.bytes[exp_pos] == b'-')
+                {
                     exp_pos += 1;
                 }
                 if exp_pos < self.bytes.len() && self.bytes[exp_pos].is_ascii_digit() {
                     self.pos = exp_pos + 1;
-                    while self.pos < self.bytes.len() && (self.bytes[self.pos].is_ascii_digit() || self.bytes[self.pos] == b'_') {
+                    while self.pos < self.bytes.len()
+                        && (self.bytes[self.pos].is_ascii_digit() || self.bytes[self.pos] == b'_')
+                    {
                         self.pos += 1;
                     }
                 }
@@ -428,15 +455,34 @@ impl<'a, 's> Lexer<'a, 's> {
                 let c = self.bytes[self.pos];
                 if c.is_ascii_alphabetic() || c == b'_' {
                     let mut s_pos = self.pos;
-                    while s_pos < self.bytes.len() && (self.bytes[s_pos].is_ascii_alphanumeric() || self.bytes[s_pos] == b'_') {
+                    while s_pos < self.bytes.len()
+                        && (self.bytes[s_pos].is_ascii_alphanumeric() || self.bytes[s_pos] == b'_')
+                    {
                         s_pos += 1;
                     }
                     let suffix = self.slice(self.pos, s_pos);
                     if matches!(
                         suffix,
-                        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-                            | "f32" | "f64" | "f" | "d" | "l" | "ul" | "ull" | "lu" | "llu"
+                        "u8" | "u16"
+                            | "u32"
+                            | "u64"
+                            | "u128"
+                            | "usize"
+                            | "i8"
+                            | "i16"
+                            | "i32"
+                            | "i64"
+                            | "i128"
+                            | "isize"
+                            | "f32"
+                            | "f64"
+                            | "f"
+                            | "d"
+                            | "l"
+                            | "ul"
+                            | "ull"
+                            | "lu"
+                            | "llu"
                     ) {
                         self.pos = s_pos;
                     }
@@ -451,7 +497,10 @@ impl<'a, 's> Lexer<'a, 's> {
         }
 
         // Rust raw identifiers: r#ident
-        if self.starts_with("r#") && self.pos + 2 < self.bytes.len() && (self.bytes[self.pos + 2].is_ascii_alphabetic() || self.bytes[self.pos + 2] == b'_') {
+        if self.starts_with("r#")
+            && self.pos + 2 < self.bytes.len()
+            && (self.bytes[self.pos + 2].is_ascii_alphabetic() || self.bytes[self.pos + 2] == b'_')
+        {
             self.pos += 2;
             while self.pos < self.bytes.len() {
                 let c = self.bytes[self.pos];
@@ -477,7 +526,8 @@ impl<'a, 's> Lexer<'a, 's> {
                 let suffix = self.comment_style.ident_suffix_marks && (c == b'!' || c == b'?');
                 // A Lisp's `commit-entry` is one name; everywhere else `a-b`
                 // is subtraction and must stay three tokens.
-                let dash = self.comment_style.ident_dashes && (c == b'-' || c == b'?' || c == b'*' || c == b'!');
+                let dash = self.comment_style.ident_dashes
+                    && (c == b'-' || c == b'?' || c == b'*' || c == b'!');
                 if c.is_ascii_alphanumeric() || c == b'_' || suffix || dash || c > 127 {
                     self.pos += 1;
                 } else {
@@ -569,7 +619,8 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.pos = k + target_quotes;
 
                 while self.pos < bytes.len() {
-                    if self.comment_style.raw_escapes && hash_count == 0 && bytes[self.pos] == b'\\' {
+                    if self.comment_style.raw_escapes && hash_count == 0 && bytes[self.pos] == b'\\'
+                    {
                         self.pos += 2;
                         continue;
                     }
@@ -655,8 +706,8 @@ impl<'a, 's> Lexer<'a, 's> {
 
         // 3. Prefixed string literals (Python/Julia/Scala/C#): f"...", b"...", u"...", raw"...", $""...
         let prefixes = [
-            "raw", "RAW", "fr", "FR", "rf", "RF", "br", "BR", "rb", "RB",
-            "f", "F", "b", "B", "u", "U", "c", "C", "s", "S", "$$$", "$$", "$",
+            "raw", "RAW", "fr", "FR", "rf", "RF", "br", "BR", "rb", "RB", "f", "F", "b", "B", "u",
+            "U", "c", "C", "s", "S", "$$$", "$$", "$",
         ];
         for &pfx in &prefixes {
             if let Some(after) = remaining.strip_prefix(pfx) {

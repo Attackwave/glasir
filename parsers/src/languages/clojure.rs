@@ -17,8 +17,13 @@ fn get_lisp_ident<'a>(tokens: &[Token<'a>], idx: &mut usize, src: &'a str) -> Op
         *idx += 1;
         while *idx < tokens.len() {
             match tokens[*idx].kind {
-                TokenKind::Symbol('-') | TokenKind::Symbol('.') | TokenKind::Symbol('/') | TokenKind::Symbol('_') => {
-                    if *idx + 1 < tokens.len() && matches!(tokens[*idx + 1].kind, TokenKind::Ident(_)) {
+                TokenKind::Symbol('-')
+                | TokenKind::Symbol('.')
+                | TokenKind::Symbol('/')
+                | TokenKind::Symbol('_') => {
+                    if *idx + 1 < tokens.len()
+                        && matches!(tokens[*idx + 1].kind, TokenKind::Ident(_))
+                    {
                         end = tokens[*idx + 1].end as usize;
                         *idx += 2;
                     } else {
@@ -67,9 +72,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         // multimethod implementation's and every test's body.
                         // `defcurried` and `def-aset` appear eight times each
                         // and are this project's own macros, not the language.
-                        "defn" | "defn-" | "defmacro" | "defmethod" | "defmulti" | "defprotocol"
-                        | "defrecord" | "deftype" | "defonce" | "definline" | "defstruct"
-                        | "deftest" | "defspec" | "def" => {
+                        "defn" | "defn-" | "defmacro" | "defmethod" | "defmulti"
+                        | "defprotocol" | "defrecord" | "deftype" | "defonce" | "definline"
+                        | "defstruct" | "deftest" | "defspec" | "def" => {
                             let start_byte = tok.start;
                             if let Some(name) = get_lisp_ident(&tokens, &mut next_idx, src) {
                                 let is_fn = matches!(
@@ -81,7 +86,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                         | "definline"
                                         | "deftest"
                                 );
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, is_fn, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    is_fn,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = scope.depth - 1;
                                 }
@@ -96,7 +107,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         "ns" => {
                             let start_byte = tok.start;
                             if let Some(name) = get_lisp_ident(&tokens, &mut next_idx, src) {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = scope.depth - 1;
                                 }

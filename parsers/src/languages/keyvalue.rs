@@ -11,7 +11,11 @@
 
 use crate::facts::FileFacts;
 
-pub(crate) fn parse(src: &str, style: crate::lexer::CommentStyle<'_>, _calls: &crate::rules::Calls) -> FileFacts {
+pub(crate) fn parse(
+    src: &str,
+    style: crate::lexer::CommentStyle<'_>,
+    _calls: &crate::rules::Calls,
+) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut section: Option<String> = None;
     let mut pending: Vec<String> = Vec::new();

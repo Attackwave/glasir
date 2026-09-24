@@ -61,7 +61,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     if i + 1 < tokens.len() {
                         if let TokenKind::Ident(kind) = tokens[i + 1].kind {
                             let k_lower = kind.to_ascii_lowercase();
-                            if matches!(k_lower.as_str(), "sub" | "function" | "class" | "module" | "structure" | "interface" | "property" | "namespace" | "enum") {
+                            if matches!(
+                                k_lower.as_str(),
+                                "sub"
+                                    | "function"
+                                    | "class"
+                                    | "module"
+                                    | "structure"
+                                    | "interface"
+                                    | "property"
+                                    | "namespace"
+                                    | "enum"
+                            ) {
                                 scope.on_close_delimiter(tokens[i + 1].end as usize, &mut facts);
                                 i += 2;
                                 continue;
@@ -111,7 +122,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             j += 1;
                         }
                         if !ns_name.is_empty() {
-                            scope.open_definition_with_body_docs(&ns_name, start_byte as usize, true, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &ns_name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_open_delimiter();
                             scope.on_word(&ns_name);
                             i = j;
@@ -122,7 +139,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_open_delimiter();
                                 scope.on_word(name);
                                 i += 2;
@@ -134,7 +157,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_open_delimiter();
                                 scope.on_word(name);
                                 i += 2;

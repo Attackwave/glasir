@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/15";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/16";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -551,15 +551,53 @@ mod tests {
         // Found in graphify's cli.py: read the Rust way, the string closed at
         // `\"`, reopened at the next quote and swallowed the rest of the file.
         let py = "RE = re.compile(r\"(['\\\"]?)\\1\")\n\ndef after():\n    pass\n";
-        for facts in [rules.parse(Language::Python, py), Language::Python.parse(py)] {
-            assert!(facts.defines.iter().any(|d| d == "after"), "{:?}", facts.defines);
+        for facts in [
+            rules.parse(Language::Python, py),
+            Language::Python.parse(py),
+        ] {
+            assert!(
+                facts.defines.iter().any(|d| d == "after"),
+                "{:?}",
+                facts.defines
+            );
         }
         // Rust's raw strings have no escapes: `r"C:\"` ends at its second quote.
         let rs = "const P: &str = r\"C:\\\";\nfn after() {}\n";
         assert!(
-            rules.parse(Language::Rust, rs).defines.iter().any(|d| d == "after"),
+            rules
+                .parse(Language::Rust, rs)
+                .defines
+                .iter()
+                .any(|d| d == "after"),
             "the Rust reading must not change"
         );
+    }
+
+    #[test]
+    fn a_python_constant_ends_with_its_statement() {
+        let rules = RuleSet::load(None).unwrap();
+        // Found through detect_changes: an edit at the end of a file was
+        // attributed to every constant in it, because each one's range ran to
+        // the end of the file — and get_code_snippet returned all of that.
+        let py = "LIMIT = 3\nSTOP = frozenset({\n    \"a\",\n})\n\ndef after():\n    pass\n";
+        let def_at = py.find("def after").unwrap() as u32;
+        for facts in [
+            rules.parse(Language::Python, py),
+            Language::Python.parse(py),
+        ] {
+            for name in ["LIMIT", "STOP"] {
+                let (_, (_, end)) = facts.ranges.iter().find(|(n, _)| n == name).unwrap();
+                assert!(
+                    *end < def_at,
+                    "{name} runs to {end}, past `def after` at {def_at}"
+                );
+            }
+            let (_, (_, stop_end)) = facts.ranges.iter().find(|(n, _)| n == "STOP").unwrap();
+            assert!(
+                *stop_end as usize >= py.find("})").unwrap(),
+                "a bracketed constant spans its lines"
+            );
+        }
     }
 
     #[test]

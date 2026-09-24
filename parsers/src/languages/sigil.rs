@@ -52,12 +52,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if tokens[j].kind == TokenKind::Symbol('@') {
                             if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind)
                             {
-                                scope.open_definition(
-                                    *name,
-                                    tok.start as usize,
-                                    true,
-                                    &mut facts,
-                                );
+                                scope.open_definition(*name, tok.start as usize, true, &mut facts);
                                 scope.on_word(name);
                                 i = j + 2;
                                 break;
@@ -91,8 +86,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                         j += 1;
                     }
-                    if tokens.get(j + 1).map(|t| &t.kind) == Some(&TokenKind::DoubleSymbol(":="))
-                    {
+                    if tokens.get(j + 1).map(|t| &t.kind) == Some(&TokenKind::DoubleSymbol(":=")) {
                         scope.open_definition(*ident, tok.start as usize, true, &mut facts);
                         scope.on_word(ident);
                         scope.on_open_delimiter();

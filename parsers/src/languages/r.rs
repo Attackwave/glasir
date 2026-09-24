@@ -45,7 +45,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     j += 1;
                 }
                 if j < tokens.len() {
-                    let is_assign = matches!(&tokens[j].kind, TokenKind::DoubleSymbol("<-") | TokenKind::Symbol('='));
+                    let is_assign = matches!(
+                        &tokens[j].kind,
+                        TokenKind::DoubleSymbol("<-") | TokenKind::Symbol('=')
+                    );
                     if is_assign {
                         let mut k = j + 1;
                         while k < tokens.len() && tokens[k].kind == TokenKind::Newline {

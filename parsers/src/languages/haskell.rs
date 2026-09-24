@@ -18,7 +18,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -63,7 +65,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::DoubleSymbol(s) if matches!(*s, "++" | "==" | "/=" | "<=" | ">=" | "||" | "&&" | ">>" | "->") => {
+            TokenKind::DoubleSymbol(s)
+                if matches!(
+                    *s,
+                    "++" | "==" | "/=" | "<=" | ">=" | "||" | "&&" | ">>" | "->"
+                ) =>
+            {
                 expect_callee = true;
                 i += 1;
                 continue;
@@ -71,9 +78,25 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             TokenKind::Ident(ident) => {
                 let is_keyword = matches!(
                     *ident,
-                    "module" | "import" | "data" | "type" | "newtype" | "class" | "instance"
-                        | "deriving" | "where" | "let" | "in" | "do" | "case" | "of" | "if"
-                        | "then" | "else" | "default" | "foreign"
+                    "module"
+                        | "import"
+                        | "data"
+                        | "type"
+                        | "newtype"
+                        | "class"
+                        | "instance"
+                        | "deriving"
+                        | "where"
+                        | "let"
+                        | "in"
+                        | "do"
+                        | "case"
+                        | "of"
+                        | "if"
+                        | "then"
+                        | "else"
+                        | "default"
+                        | "foreign"
                 );
 
                 if !in_equation {
@@ -82,8 +105,17 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             let start_byte = tok.start;
                             if i + 1 < tokens.len() {
                                 if let TokenKind::Ident(mod_name) = tokens[i + 1].kind {
-                                    scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                    scope.open_definition(mod_name, start_byte as usize, false, &mut facts);
+                                    scope.close_definitions_at_or_above(
+                                        scope.depth,
+                                        start_byte as usize,
+                                        &mut facts,
+                                    );
+                                    scope.open_definition(
+                                        mod_name,
+                                        start_byte as usize,
+                                        false,
+                                        &mut facts,
+                                    );
                                     scope.on_word(mod_name);
                                     i += 2;
                                     continue;
@@ -94,11 +126,24 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             let start_byte = tok.start;
                             if i + 1 < tokens.len() {
                                 if let TokenKind::Ident(type_name) = tokens[i + 1].kind {
-                                    scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                    scope.open_definition_with_body_docs(type_name, start_byte as usize, true, false, &mut facts);
+                                    scope.close_definitions_at_or_above(
+                                        scope.depth,
+                                        start_byte as usize,
+                                        &mut facts,
+                                    );
+                                    scope.open_definition_with_body_docs(
+                                        type_name,
+                                        start_byte as usize,
+                                        true,
+                                        false,
+                                        &mut facts,
+                                    );
                                     scope.on_word(type_name);
                                     let mut j = i + 2;
-                                    while j < tokens.len() && tokens[j].kind != TokenKind::Newline && tokens[j].kind != TokenKind::Symbol('=') {
+                                    while j < tokens.len()
+                                        && tokens[j].kind != TokenKind::Newline
+                                        && tokens[j].kind != TokenKind::Symbol('=')
+                                    {
                                         j += 1;
                                     }
                                     i = j;
@@ -108,10 +153,21 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                         _ => {
                             let start_byte = tok.start;
-                            if i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::DoubleSymbol("::") {
+                            if i + 1 < tokens.len()
+                                && tokens[i + 1].kind == TokenKind::DoubleSymbol("::")
+                            {
                                 if !facts.defines.contains(&ident.to_string()) {
-                                    scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                    scope.open_definition(*ident, start_byte as usize, true, &mut facts);
+                                    scope.close_definitions_at_or_above(
+                                        scope.depth,
+                                        start_byte as usize,
+                                        &mut facts,
+                                    );
+                                    scope.open_definition(
+                                        *ident,
+                                        start_byte as usize,
+                                        true,
+                                        &mut facts,
+                                    );
                                 } else {
                                     scope.enclosing.push((ident.to_string(), scope.depth));
                                 }
@@ -121,13 +177,28 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             }
 
                             let mut j = i + 1;
-                            while j < tokens.len() && tokens[j].kind != TokenKind::Newline && tokens[j].kind != TokenKind::Symbol('=') {
+                            while j < tokens.len()
+                                && tokens[j].kind != TokenKind::Newline
+                                && tokens[j].kind != TokenKind::Symbol('=')
+                            {
                                 j += 1;
                             }
-                            if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('=') && !is_keyword {
+                            if j < tokens.len()
+                                && tokens[j].kind == TokenKind::Symbol('=')
+                                && !is_keyword
+                            {
                                 if !facts.defines.contains(&ident.to_string()) {
-                                    scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                    scope.open_definition(*ident, start_byte as usize, true, &mut facts);
+                                    scope.close_definitions_at_or_above(
+                                        scope.depth,
+                                        start_byte as usize,
+                                        &mut facts,
+                                    );
+                                    scope.open_definition(
+                                        *ident,
+                                        start_byte as usize,
+                                        true,
+                                        &mut facts,
+                                    );
                                 } else {
                                     scope.enclosing.push((ident.to_string(), scope.depth));
                                 }

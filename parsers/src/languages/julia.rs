@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -36,7 +38,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::Ident("mutable") | TokenKind::Ident("abstract") | TokenKind::Ident("primitive") => {
+            TokenKind::Ident("mutable")
+            | TokenKind::Ident("abstract")
+            | TokenKind::Ident("primitive") => {
                 i += 1;
                 continue;
             }
@@ -50,7 +54,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 // The test is a name, a balanced parenthesis group, then a
                 // single `=`. `==` is a comparison and `(a, b) = f()` is
                 // destructuring, so both are left alone.
-                if scope.depth == 0 && i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Symbol('(') {
+                if scope.depth == 0
+                    && i + 1 < tokens.len()
+                    && tokens[i + 1].kind == TokenKind::Symbol('(')
+                {
                     let mut k = i + 1;
                     let mut paren = 0i32;
                     while k < tokens.len() {
@@ -58,7 +65,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             TokenKind::Symbol('(') => paren += 1,
                             TokenKind::Symbol(')') => {
                                 paren -= 1;
-                                if paren == 0 { break; }
+                                if paren == 0 {
+                                    break;
+                                }
                             }
                             TokenKind::Newline => break,
                             _ => {}
@@ -68,7 +77,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     if paren == 0
                         && k + 1 < tokens.len()
                         && tokens[k + 1].kind == TokenKind::Symbol('=')
-                        && !matches!(tokens.get(k + 2).map(|t| &t.kind), Some(TokenKind::Symbol('=')))
+                        && !matches!(
+                            tokens.get(k + 2).map(|t| &t.kind),
+                            Some(TokenKind::Symbol('='))
+                        )
                     {
                         scope.open_statement_definition(*ident, tok.start as usize, &mut facts);
                         scope.on_word(ident);
@@ -82,7 +94,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(fn_name) = tokens[i + 1].kind {
-                                scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
+                                scope.open_definition(
+                                    fn_name,
+                                    start_byte as usize,
+                                    true,
+                                    &mut facts,
+                                );
                                 // The body opens a level its `end` closes.
                                 // `open_definition` records the depth it was
                                 // called at and does not raise it, so without
@@ -107,7 +124,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
                                 let opens_body = matches!(*ident, "struct" | "module");
-                                scope.open_definition(name, start_byte as usize, opens_body, &mut facts);
+                                scope.open_definition(
+                                    name,
+                                    start_byte as usize,
+                                    opens_body,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;

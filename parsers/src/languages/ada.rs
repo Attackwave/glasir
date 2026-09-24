@@ -42,11 +42,17 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     "package" => {
                         let start_byte = tok.start;
                         let mut j = i + 1;
-                        if j < tokens.len() && matches!(tokens[j].kind, TokenKind::Ident("body" | "BODY")) {
+                        if j < tokens.len()
+                            && matches!(tokens[j].kind, TokenKind::Ident("body" | "BODY"))
+                        {
                             j += 1;
                         }
                         let mut pkg_name = String::new();
-                        while j < tokens.len() && tokens[j].kind != TokenKind::Symbol(';') && tokens[j].kind != TokenKind::Newline && !matches!(tokens[j].kind, TokenKind::Ident("is" | "IS")) {
+                        while j < tokens.len()
+                            && tokens[j].kind != TokenKind::Symbol(';')
+                            && tokens[j].kind != TokenKind::Newline
+                            && !matches!(tokens[j].kind, TokenKind::Ident("is" | "IS"))
+                        {
                             if let TokenKind::Ident(part) = tokens[j].kind {
                                 pkg_name.push_str(part);
                             } else if let TokenKind::Symbol('.') = tokens[j].kind {
@@ -55,7 +61,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             j += 1;
                         }
                         if !pkg_name.is_empty() {
-                            scope.open_definition_with_body_docs(&pkg_name, start_byte as usize, true, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                &pkg_name,
+                                start_byte as usize,
+                                true,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_open_delimiter();
                             scope.on_word(&pkg_name);
                             i = j;
@@ -66,7 +78,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_open_delimiter();
                                 scope.on_word(name);
                                 i += 2;
@@ -78,7 +96,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;

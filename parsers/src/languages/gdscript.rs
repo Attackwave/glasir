@@ -14,12 +14,19 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let line_start_pos = src[..tok.start as usize]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
         let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
 
         match &tok.kind {
             TokenKind::DocComment(text) | TokenKind::LineComment(text) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
@@ -37,7 +44,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Ident(ident) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
@@ -51,7 +62,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -62,8 +79,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.close_definitions_at_or_above(0, start_byte as usize, &mut facts);
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    0,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -74,8 +101,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.close_definitions_at_or_above(1, start_byte as usize, &mut facts);
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    1,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -98,16 +135,23 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         // what expresses it.
                         let top_level = scope.depth == 0;
                         if top_level {
-                            if let Some(TokenKind::Ident(name)) =
-                                tokens.get(i + 1).map(|t| &t.kind)
+                            if let Some(TokenKind::Ident(name)) = tokens.get(i + 1).map(|t| &t.kind)
                             {
                                 let start_byte = tok.start;
-                                scope.close_definitions_at_or_above(1, start_byte as usize, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    1,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
                                 // A statement, not a body: the declaration ends
                                 // at its line, so a call in an initialiser
                                 // belongs to it and the next `func` is not
                                 // swallowed.
-                                scope.open_statement_definition(*name, start_byte as usize, &mut facts);
+                                scope.open_statement_definition(
+                                    *name,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 i += 2;
                                 continue;

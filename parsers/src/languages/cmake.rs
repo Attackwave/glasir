@@ -51,8 +51,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
                     j += 1;
                 }
-                let has_paren =
-                    j < tokens.len() && tokens[j].kind == TokenKind::Symbol('(');
+                let has_paren = j < tokens.len() && tokens[j].kind == TokenKind::Symbol('(');
 
                 if opens && has_paren {
                     if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind) {

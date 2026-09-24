@@ -99,7 +99,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::DoubleSymbol(s) if matches!(*s, "==" | "!=" | "<=" | ">=" | "||" | "&&" | "::" | "->" | ":=") => {
+            TokenKind::DoubleSymbol(s)
+                if matches!(
+                    *s,
+                    "==" | "!=" | "<=" | ">=" | "||" | "&&" | "::" | "->" | ":="
+                ) =>
+            {
                 expect_callee = true;
                 i += 1;
                 continue;
@@ -107,9 +112,33 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             TokenKind::Ident(ident) => {
                 let is_keyword = matches!(
                     *ident,
-                    "let" | "rec" | "in" | "and" | "type" | "match" | "with" | "fun" | "function"
-                        | "if" | "then" | "else" | "module" | "open" | "struct" | "sig" | "end"
-                        | "val" | "exception" | "for" | "to" | "do" | "done" | "while" | "begin" | "try" | "as"
+                    "let"
+                        | "rec"
+                        | "in"
+                        | "and"
+                        | "type"
+                        | "match"
+                        | "with"
+                        | "fun"
+                        | "function"
+                        | "if"
+                        | "then"
+                        | "else"
+                        | "module"
+                        | "open"
+                        | "struct"
+                        | "sig"
+                        | "end"
+                        | "val"
+                        | "exception"
+                        | "for"
+                        | "to"
+                        | "do"
+                        | "done"
+                        | "while"
+                        | "begin"
+                        | "try"
+                        | "as"
                 );
 
                 match *ident {
@@ -122,17 +151,31 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
                                 if is_top_level_let(i) {
-                                    scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                    scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                    scope.close_definitions_at_or_above(
+                                        scope.depth,
+                                        start_byte as usize,
+                                        &mut facts,
+                                    );
+                                    scope.open_definition_with_body_docs(
+                                        name,
+                                        start_byte as usize,
+                                        true,
+                                        true,
+                                        &mut facts,
+                                    );
                                     scope.on_word(name);
                                     in_let_body = false;
                                     expect_callee = false;
                                     // Advance to '=' if present
                                     let mut k = j + 1;
-                                    while k < tokens.len() && tokens[k].kind != TokenKind::Symbol('=') && tokens[k].kind != TokenKind::Newline {
+                                    while k < tokens.len()
+                                        && tokens[k].kind != TokenKind::Symbol('=')
+                                        && tokens[k].kind != TokenKind::Newline
+                                    {
                                         k += 1;
                                     }
-                                    if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('=') {
+                                    if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('=')
+                                    {
                                         in_let_body = true;
                                         expect_callee = true;
                                         i = k + 1;
@@ -143,10 +186,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 } else {
                                     // Local let binding: let x = ...
                                     let mut k = j + 1;
-                                    while k < tokens.len() && tokens[k].kind != TokenKind::Symbol('=') && tokens[k].kind != TokenKind::Newline {
+                                    while k < tokens.len()
+                                        && tokens[k].kind != TokenKind::Symbol('=')
+                                        && tokens[k].kind != TokenKind::Newline
+                                    {
                                         k += 1;
                                     }
-                                    if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('=') {
+                                    if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('=')
+                                    {
                                         expect_callee = true;
                                         i = k + 1;
                                         continue;
@@ -159,8 +206,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                scope.open_definition_with_body_docs(name, start_byte as usize, false, false, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    scope.depth,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    false,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 in_let_body = false;
                                 expect_callee = false;
@@ -177,8 +234,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                         if j < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[j].kind {
-                                scope.close_definitions_at_or_above(scope.depth, start_byte as usize, &mut facts);
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.close_definitions_at_or_above(
+                                    scope.depth,
+                                    start_byte as usize,
+                                    &mut facts,
+                                );
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 scope.on_word(name);
                                 in_let_body = false;
                                 expect_callee = false;
@@ -220,7 +287,17 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 expect_callee = false;
                             }
                             scope.on_word(ident);
-                        } else if matches!(*ident, "in" | "then" | "else" | "do" | "match" | "with" | "try" | "function" | "fun") {
+                        } else if matches!(
+                            *ident,
+                            "in" | "then"
+                                | "else"
+                                | "do"
+                                | "match"
+                                | "with"
+                                | "try"
+                                | "function"
+                                | "fun"
+                        ) {
                             expect_callee = true;
                             scope.on_word(ident);
                         } else {

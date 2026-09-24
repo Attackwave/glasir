@@ -63,7 +63,10 @@ impl ScopeStack {
         }
         self.pending_docs.push(text.to_string());
 
-        let inside = self.open.iter().rposition(|o| o.collects_body_docs && o.depth < self.depth);
+        let inside = self
+            .open
+            .iter()
+            .rposition(|o| o.collects_body_docs && o.depth < self.depth);
         if let Some(first) = inside {
             for o in self.open.iter_mut().take(first + 1) {
                 if o.collects_body_docs && o.depth < self.depth {
@@ -82,9 +85,10 @@ impl ScopeStack {
     pub fn on_statement_end(&mut self, current_byte: usize, facts: &mut FileFacts) {
         while self.open.last().is_some_and(|o| o.statement_scoped) {
             let def = self.open.pop().expect("checked");
-            facts
-                .ranges
-                .push((def.name.clone(), (def.start_byte as u32, current_byte as u32)));
+            facts.ranges.push((
+                def.name.clone(),
+                (def.start_byte as u32, current_byte as u32),
+            ));
             let cleaned = clean_doc(&def.doc_raw);
             if !cleaned.is_empty() {
                 facts.docs.push((def.name.clone(), cleaned));
@@ -177,7 +181,10 @@ impl ScopeStack {
             .is_some_and(|o| !o.statement_scoped && o.depth >= self.depth)
         {
             let def = self.open.pop().unwrap();
-            facts.ranges.push((def.name.clone(), (def.start_byte as u32, current_byte as u32)));
+            facts.ranges.push((
+                def.name.clone(),
+                (def.start_byte as u32, current_byte as u32),
+            ));
             let cleaned = clean_doc(&def.doc_raw);
             if !cleaned.is_empty() {
                 facts.docs.push((def.name, cleaned));
@@ -207,10 +214,18 @@ impl ScopeStack {
 
     /// Close all definitions at or above the specified depth without decrementing depth.
     /// Used when a new definition at the same level starts in languages without explicit closing braces.
-    pub fn close_definitions_at_or_above(&mut self, depth: i32, current_byte: usize, facts: &mut FileFacts) {
+    pub fn close_definitions_at_or_above(
+        &mut self,
+        depth: i32,
+        current_byte: usize,
+        facts: &mut FileFacts,
+    ) {
         while self.open.last().is_some_and(|o| o.depth >= depth) {
             let def = self.open.pop().unwrap();
-            facts.ranges.push((def.name.clone(), (def.start_byte as u32, current_byte as u32)));
+            facts.ranges.push((
+                def.name.clone(),
+                (def.start_byte as u32, current_byte as u32),
+            ));
             let cleaned = clean_doc(&def.doc_raw);
             if !cleaned.is_empty() {
                 facts.docs.push((def.name, cleaned));
@@ -237,9 +252,7 @@ impl ScopeStack {
         // file the receiver names, while `Instant::now()` and its 84 siblings
         // are upper case and stay receivers.
         self.module_receiver = match self.last_word.as_deref() {
-            Some(w) if !is_self && w.starts_with(|c: char| c.is_lowercase()) => {
-                Some(w.to_string())
-            }
+            Some(w) if !is_self && w.starts_with(|c: char| c.is_lowercase()) => Some(w.to_string()),
             _ => None,
         };
     }
@@ -256,7 +269,9 @@ impl ScopeStack {
             .last()
             .map(|(n, _)| n.clone())
             .unwrap_or_else(|| "<module>".to_string());
-        facts.calls.push((caller, callee.to_string(), self.had_receiver));
+        facts
+            .calls
+            .push((caller, callee.to_string(), self.had_receiver));
         facts.call_modules.push(self.module_receiver.take());
         self.had_receiver = false;
         self.module_receiver = None;
@@ -267,7 +282,9 @@ impl ScopeStack {
     /// and sort docs/ranges by defines order for deterministic fact layout.
     pub fn finish(&mut self, file_len: usize, facts: &mut FileFacts) {
         for def in self.open.drain(..) {
-            facts.ranges.push((def.name.clone(), (def.start_byte as u32, file_len as u32)));
+            facts
+                .ranges
+                .push((def.name.clone(), (def.start_byte as u32, file_len as u32)));
             let cleaned = clean_doc(&def.doc_raw);
             if !cleaned.is_empty() {
                 facts.docs.push((def.name, cleaned));
@@ -284,8 +301,12 @@ impl ScopeStack {
             .map(|(i, name)| (name.as_str(), i))
             .collect();
 
-        facts.docs.sort_by_key(|(name, _)| def_order.get(name.as_str()).copied().unwrap_or(usize::MAX));
-        facts.ranges.sort_by_key(|(name, _)| def_order.get(name.as_str()).copied().unwrap_or(usize::MAX));
+        facts
+            .docs
+            .sort_by_key(|(name, _)| def_order.get(name.as_str()).copied().unwrap_or(usize::MAX));
+        facts
+            .ranges
+            .sort_by_key(|(name, _)| def_order.get(name.as_str()).copied().unwrap_or(usize::MAX));
     }
 }
 

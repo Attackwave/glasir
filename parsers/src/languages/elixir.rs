@@ -70,66 +70,74 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 }
                 continue;
             }
-            TokenKind::Ident(ident) => {
-                match *ident {
-                    "do" => {
-                        scope.on_open_delimiter();
-                    }
-                    "end" => {
-                        scope.on_close_delimiter(tok.end as usize, &mut facts);
-                    }
-                    "defmodule" | "defprotocol" | "defimpl" => {
-                        let start_byte = tok.start;
-                        let mut mod_name = String::new();
-                        let mut j = i + 1;
-                        while j < tokens.len() {
-                            if let TokenKind::Ident(part) = tokens[j].kind {
-                                mod_name.push_str(part);
-                                if j + 1 < tokens.len() && tokens[j + 1].kind == TokenKind::Symbol('.') {
-                                    mod_name.push('.');
-                                    j += 2;
-                                    continue;
-                                }
-                                j += 1;
-                                break;
-                            } else {
-                                break;
+            TokenKind::Ident(ident) => match *ident {
+                "do" => {
+                    scope.on_open_delimiter();
+                }
+                "end" => {
+                    scope.on_close_delimiter(tok.end as usize, &mut facts);
+                }
+                "defmodule" | "defprotocol" | "defimpl" => {
+                    let start_byte = tok.start;
+                    let mut mod_name = String::new();
+                    let mut j = i + 1;
+                    while j < tokens.len() {
+                        if let TokenKind::Ident(part) = tokens[j].kind {
+                            mod_name.push_str(part);
+                            if j + 1 < tokens.len() && tokens[j + 1].kind == TokenKind::Symbol('.')
+                            {
+                                mod_name.push('.');
+                                j += 2;
+                                continue;
                             }
+                            j += 1;
+                            break;
+                        } else {
+                            break;
                         }
-                        if !mod_name.is_empty() {
-                            scope.open_definition_with_body_docs(&mod_name, start_byte as usize, true, false, &mut facts);
-                            scope.on_word(&mod_name);
-                            i = j;
+                    }
+                    if !mod_name.is_empty() {
+                        scope.open_definition_with_body_docs(
+                            &mod_name,
+                            start_byte as usize,
+                            true,
+                            false,
+                            &mut facts,
+                        );
+                        scope.on_word(&mod_name);
+                        i = j;
+                        continue;
+                    }
+                }
+                "def" | "defp" | "defmacro" | "defguard" | "defdelegate" => {
+                    let start_byte = tok.start;
+                    let mut j = i + 1;
+                    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+                        j += 1;
+                    }
+                    if j < tokens.len() {
+                        if let TokenKind::Ident(fn_name) = tokens[j].kind {
+                            scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
+                            scope.on_word(fn_name);
+                            i = j + 1;
                             continue;
                         }
                     }
-                    "def" | "defp" | "defmacro" | "defguard" | "defdelegate" => {
-                        let start_byte = tok.start;
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
-                        if j < tokens.len() {
-                            if let TokenKind::Ident(fn_name) = tokens[j].kind {
-                                scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
-                                scope.on_word(fn_name);
-                                i = j + 1;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => {
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
-                        if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('(') && calls.allows(ident) {
-                            scope.record_call(ident, &mut facts);
-                        }
-                        scope.on_word(ident);
-                    }
                 }
-            }
+                _ => {
+                    let mut j = i + 1;
+                    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+                        j += 1;
+                    }
+                    if j < tokens.len()
+                        && tokens[j].kind == TokenKind::Symbol('(')
+                        && calls.allows(ident)
+                    {
+                        scope.record_call(ident, &mut facts);
+                    }
+                    scope.on_word(ident);
+                }
+            },
             _ => {
                 if !matches!(tok.kind, TokenKind::StringLit(_) | TokenKind::Number(_)) {
                     scope.had_receiver = false;

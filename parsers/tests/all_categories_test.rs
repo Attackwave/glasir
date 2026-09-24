@@ -34,14 +34,22 @@ pub fn parse_data<'a, 'b>(src: &'a str, tag: &'b str) -> &'a str {
 }
 "#;
     let rs_facts = Language::Rust.parse(rs_code);
-    assert_eq!(rs_facts.defines, vec!["calculate_total", "Order", "Status", "parse_data"]);
+    assert_eq!(
+        rs_facts.defines,
+        vec!["calculate_total", "Order", "Status", "parse_data"]
+    );
     assert_eq!(rs_facts.docs.len(), 3);
     assert!(rs_facts.docs[0].1.contains("Calculates the total"));
     assert!(rs_facts.docs[0].1.contains("currency conversion"));
     assert!(rs_facts.docs[1].1.contains("Order entity"));
-    assert!(rs_facts.docs[2].1.contains("Parses input buffer with lifetime"));
+    assert!(rs_facts.docs[2]
+        .1
+        .contains("Parses input buffer with lifetime"));
     assert_eq!(rs_facts.calls.len(), 3);
-    assert_eq!(rs_facts.calls[2], ("parse_data".to_string(), "helper".to_string(), false));
+    assert_eq!(
+        rs_facts.calls[2],
+        ("parse_data".to_string(), "helper".to_string(), false)
+    );
 
     // 2. Go with standard // comments
     let go_code = r#"
@@ -162,7 +170,9 @@ Vector :: struct {
     let odin_facts = Language::Odin.parse(odin_code);
     assert_eq!(odin_facts.defines, vec!["matrix_mult", "Vector"]);
     assert_eq!(odin_facts.docs.len(), 2);
-    assert!(odin_facts.docs[0].1.contains("Performs matrix multiplication"));
+    assert!(odin_facts.docs[0]
+        .1
+        .contains("Performs matrix multiplication"));
 }
 
 #[test]
@@ -199,7 +209,10 @@ defmodule App.Accounts do
 end
 "#;
     let ex_facts = Language::Elixir.parse(elixir_code);
-    assert_eq!(ex_facts.defines, vec!["App.Accounts", "is_valid_id", "create_user"]);
+    assert_eq!(
+        ex_facts.defines,
+        vec!["App.Accounts", "is_valid_id", "create_user"]
+    );
     assert_eq!(ex_facts.docs.len(), 3);
     assert!(ex_facts.docs[0].1.contains("Core business logic"));
     assert!(ex_facts.docs[1].1.contains("Validates positive"));
@@ -339,7 +352,10 @@ SELECT * FROM users;
     assert_eq!(sql_facts.defines, vec!["users", "active_subscribers"]);
     assert_eq!(sql_facts.docs.len(), 2);
     assert!(sql_facts.docs[0].1.contains("Stores registered customer"));
-    assert!(sql_facts.calls.iter().any(|c| c.0 == "active_subscribers" && c.1 == "users"));
+    assert!(sql_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "active_subscribers" && c.1 == "users"));
 
     // 2. Protobuf
     let proto_code = r#"
@@ -354,7 +370,10 @@ service UserService {
 }
 "#;
     let proto_facts = Language::Protobuf.parse(proto_code);
-    assert_eq!(proto_facts.defines, vec!["CreateUserRequest", "UserService", "GetUser"]);
+    assert_eq!(
+        proto_facts.defines,
+        vec!["CreateUserRequest", "UserService", "GetUser"]
+    );
     assert_eq!(proto_facts.docs.len(), 2);
 }
 
@@ -483,7 +502,10 @@ fn test_category_10_documents() {
 ## Architecture Overview
 "#;
     let md_facts = Language::Markdown.parse(md_code);
-    assert_eq!(md_facts.defines, vec!["h1:Project Glasir", "h2:Architecture Overview"]);
+    assert_eq!(
+        md_facts.defines,
+        vec!["h1:Project Glasir", "h2:Architecture Overview"]
+    );
     assert_eq!(md_facts.docs.len(), 1);
     assert!(md_facts.docs[0].1.contains("Document main title"));
 
@@ -504,18 +526,14 @@ fn test_category_10_documents() {
     assert!(typst_facts.defines.contains(&"primary_color".to_string()));
     assert_eq!(typst_facts.defines.len(), 2);
     assert_eq!(typst_facts.docs.len(), 2);
-    assert!(
-        typst_facts
-            .docs
-            .iter()
-            .any(|(_, d)| d.contains("Document heading"))
-    );
-    assert!(
-        typst_facts
-            .docs
-            .iter()
-            .any(|(_, d)| d.contains("Primary theme color"))
-    );
+    assert!(typst_facts
+        .docs
+        .iter()
+        .any(|(_, d)| d.contains("Document heading")));
+    assert!(typst_facts
+        .docs
+        .iter()
+        .any(|(_, d)| d.contains("Primary theme color")));
 
     // 3. LaTeX
     let latex_code = r#"
@@ -526,9 +544,14 @@ fn test_category_10_documents() {
 \newcommand{\myVector}[1]{\mathbf{#1}}
 "#;
     let latex_facts = Language::Latex.parse(latex_code);
-    assert!(latex_facts.defines.contains(&"section:Introduction".to_string()));
+    assert!(latex_facts
+        .defines
+        .contains(&"section:Introduction".to_string()));
     assert!(latex_facts.defines.contains(&"myVector".to_string()));
-    assert!(latex_facts.docs.iter().any(|(n, d)| n == "section:Introduction" && d.contains("Top-level introduction section")));
+    assert!(latex_facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "section:Introduction" && d.contains("Top-level introduction section")));
 }
 
 #[test]
@@ -757,7 +780,13 @@ fn test_extension_dispatch_all_languages() {
 
     for (ext, expected_lang) in cases {
         let lang = Language::from_extension(ext);
-        assert_eq!(lang, Some(expected_lang), "Extension {} should map to {:?}", ext, expected_lang);
+        assert_eq!(
+            lang,
+            Some(expected_lang),
+            "Extension {} should map to {:?}",
+            ext,
+            expected_lang
+        );
     }
 }
 
@@ -774,9 +803,18 @@ fn run() {
     let facts = Language::Rust.parse(rs);
     assert_eq!(facts.defines, vec!["run"]);
     assert_eq!(facts.calls.len(), 3);
-    assert_eq!(facts.calls[0], ("run".to_string(), "local_func".to_string(), false));
-    assert_eq!(facts.calls[1], ("run".to_string(), "remote_call".to_string(), true));
-    assert_eq!(facts.calls[2], ("run".to_string(), "connect".to_string(), true));
+    assert_eq!(
+        facts.calls[0],
+        ("run".to_string(), "local_func".to_string(), false)
+    );
+    assert_eq!(
+        facts.calls[1],
+        ("run".to_string(), "remote_call".to_string(), true)
+    );
+    assert_eq!(
+        facts.calls[2],
+        ("run".to_string(), "connect".to_string(), true)
+    );
 }
 
 #[test]
@@ -800,7 +838,11 @@ pub fn process_payment(amount: u64) -> bool {
     assert!(doc.contains("Step 1: Validate customer credit balance"));
     assert!(doc.contains("Step 2: Invoke billing gateway with timeout"));
     // Verify full length (over 68 characters, not just the 15 char head)
-    assert!(doc.len() >= 68, "Doc length was {} but expected >= 68", doc.len());
+    assert!(
+        doc.len() >= 68,
+        "Doc length was {} but expected >= 68",
+        doc.len()
+    );
 
     // 2. Python body comments and docstrings
     let py = r#"
@@ -824,7 +866,11 @@ class BillingController:
     assert!(method_doc.contains("Executes monthly invoice run"));
     assert!(method_doc.contains("Step A: collect pending accounts"));
     assert!(method_doc.contains("Step B: dispatch payment tasks"));
-    assert!(method_doc.len() >= 68, "Method doc length was {} but expected >= 68", method_doc.len());
+    assert!(
+        method_doc.len() >= 68,
+        "Method doc length was {} but expected >= 68",
+        method_doc.len()
+    );
 }
 
 #[test]
@@ -842,11 +888,29 @@ impl Checkout {
     let facts = Language::Rust.parse(rs);
     assert_eq!(facts.defines, vec!["Checkout", "pay"]);
     // self.charge() -> false
-    assert!(facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "charge" && !c.2), "self.charge() must have has_receiver=false");
+    assert!(
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "charge" && !c.2),
+        "self.charge() must have has_receiver=false"
+    );
     // Self::log_info() -> false
-    assert!(facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "log_info" && !c.2), "Self::log_info() must have has_receiver=false");
+    assert!(
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "log_info" && !c.2),
+        "Self::log_info() must have has_receiver=false"
+    );
     // gateway.process() -> true
-    assert!(facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "process" && c.2), "gateway.process() must have has_receiver=true");
+    assert!(
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "process" && c.2),
+        "gateway.process() must have has_receiver=true"
+    );
 
     // 2. TypeScript/JavaScript: this.f() must have has_receiver: false, api.f() must have has_receiver: true
     let ts = r#"
@@ -859,8 +923,20 @@ class Checkout {
 }
 "#;
     let ts_facts = Language::TypeScript.parse(ts);
-    assert!(ts_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "charge" && !c.2), "this.charge() must have has_receiver=false");
-    assert!(ts_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "process" && c.2), "api.process() must have has_receiver=true");
+    assert!(
+        ts_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "charge" && !c.2),
+        "this.charge() must have has_receiver=false"
+    );
+    assert!(
+        ts_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "process" && c.2),
+        "api.process() must have has_receiver=true"
+    );
 
     // 3. Python: self.f() must have has_receiver: false, repo.f() must have has_receiver: true
     let py = r#"
@@ -870,8 +946,20 @@ class Checkout:
         repo.save()
 "#;
     let py_facts = Language::Python.parse(py);
-    assert!(py_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "charge" && !c.2), "self.charge() in Python must have has_receiver=false");
-    assert!(py_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "save" && c.2), "repo.save() in Python must have has_receiver=true");
+    assert!(
+        py_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "charge" && !c.2),
+        "self.charge() in Python must have has_receiver=false"
+    );
+    assert!(
+        py_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "save" && c.2),
+        "repo.save() in Python must have has_receiver=true"
+    );
 }
 
 #[test]
@@ -886,8 +974,22 @@ charge t = t
 "#;
     let hs_facts = Language::Haskell.parse(hs);
     assert!(hs_facts.defines.contains(&"pay".to_string()));
-    assert!(hs_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "charge" && !c.2), "Haskell: pay must call charge, got {:?}", hs_facts.calls);
-    assert!(hs_facts.calls.iter().any(|c| c.0 == "pay" && c.1 == "total" && !c.2), "Haskell: pay must call total, got {:?}", hs_facts.calls);
+    assert!(
+        hs_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "charge" && !c.2),
+        "Haskell: pay must call charge, got {:?}",
+        hs_facts.calls
+    );
+    assert!(
+        hs_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "pay" && c.1 == "total" && !c.2),
+        "Haskell: pay must call total, got {:?}",
+        hs_facts.calls
+    );
 
     // 2. OCaml juxtaposition and pipeline call extraction
     let ml = r#"
@@ -897,9 +999,30 @@ let eval expr =
 "#;
     let ml_facts = Language::OCaml.parse(ml);
     assert!(ml_facts.defines.contains(&"eval".to_string()));
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "eval" && c.1 == "compute" && !c.2), "OCaml: eval must call compute, got {:?}", ml_facts.calls);
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "eval" && c.1 == "transform" && !c.2), "OCaml: eval must call transform, got {:?}", ml_facts.calls);
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "eval" && c.1 == "map" && c.2), "OCaml: eval must call List.map with receiver, got {:?}", ml_facts.calls);
+    assert!(
+        ml_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "eval" && c.1 == "compute" && !c.2),
+        "OCaml: eval must call compute, got {:?}",
+        ml_facts.calls
+    );
+    assert!(
+        ml_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "eval" && c.1 == "transform" && !c.2),
+        "OCaml: eval must call transform, got {:?}",
+        ml_facts.calls
+    );
+    assert!(
+        ml_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "eval" && c.1 == "map" && c.2),
+        "OCaml: eval must call List.map with receiver, got {:?}",
+        ml_facts.calls
+    );
 
     // 3. R function calls, method calls, and pipelines
     let r = r#"
@@ -910,8 +1033,22 @@ fit_model <- function(df) {
 "#;
     let r_facts = Language::R.parse(r);
     assert!(r_facts.defines.contains(&"fit_model".to_string()));
-    assert!(r_facts.calls.iter().any(|c| c.0 == "fit_model" && c.1 == "clean_data" && !c.2), "R: fit_model must call clean_data, got {:?}", r_facts.calls);
-    assert!(r_facts.calls.iter().any(|c| c.0 == "fit_model" && c.1 == "transform" && c.2), "R: fit_model must call obj$transform with receiver, got {:?}", r_facts.calls);
+    assert!(
+        r_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "fit_model" && c.1 == "clean_data" && !c.2),
+        "R: fit_model must call clean_data, got {:?}",
+        r_facts.calls
+    );
+    assert!(
+        r_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "fit_model" && c.1 == "transform" && c.2),
+        "R: fit_model must call obj$transform with receiver, got {:?}",
+        r_facts.calls
+    );
 
     // 4. SQL function and procedure calls
     let sql = r#"
@@ -924,8 +1061,22 @@ $$;
 "#;
     let sql_facts = Language::Sql.parse(sql);
     assert!(sql_facts.defines.contains(&"calculate_tax".to_string()));
-    assert!(sql_facts.calls.iter().any(|c| c.0 == "calculate_tax" && c.1 == "audit_log"), "SQL: calculate_tax must call audit_log, got {:?}", sql_facts.calls);
-    assert!(sql_facts.calls.iter().any(|c| c.0 == "calculate_tax" && c.1 == "round_val"), "SQL: calculate_tax must call round_val, got {:?}", sql_facts.calls);
+    assert!(
+        sql_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "calculate_tax" && c.1 == "audit_log"),
+        "SQL: calculate_tax must call audit_log, got {:?}",
+        sql_facts.calls
+    );
+    assert!(
+        sql_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "calculate_tax" && c.1 == "round_val"),
+        "SQL: calculate_tax must call round_val, got {:?}",
+        sql_facts.calls
+    );
 
     // 5. HCL/Terraform functions and references
     let hcl = r#"
@@ -935,7 +1086,14 @@ resource "aws_s3_bucket" "main" {
 "#;
     let hcl_facts = Language::HclTerraform.parse(hcl);
     assert!(hcl_facts.defines.contains(&"main".to_string()));
-    assert!(hcl_facts.calls.iter().any(|c| c.0 == "main" && c.1 == "templatefile" && !c.2), "HCL: resource must call templatefile, got {:?}", hcl_facts.calls);
+    assert!(
+        hcl_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "main" && c.1 == "templatefile" && !c.2),
+        "HCL: resource must call templatefile, got {:?}",
+        hcl_facts.calls
+    );
 }
 
 #[test]
@@ -960,13 +1118,19 @@ pub struct S {
     let hs_code = "pay c = charge c\n";
     let hs_facts = Language::Haskell.parse(hs_code);
     assert_eq!(hs_facts.defines, vec!["pay"]);
-    assert_eq!(hs_facts.calls, vec![("pay".to_string(), "charge".to_string(), false)]);
+    assert_eq!(
+        hs_facts.calls,
+        vec![("pay".to_string(), "charge".to_string(), false)]
+    );
 
     // 3. OCaml top-level `let` definitions (2 defines: pay and charge, 1 call: pay -> charge)
     let ml_code = "let pay c = charge c\nlet charge t = t\n";
     let ml_facts = Language::OCaml.parse(ml_code);
     assert_eq!(ml_facts.defines, vec!["pay", "charge"]);
-    assert_eq!(ml_facts.calls, vec![("pay".to_string(), "charge".to_string(), false)]);
+    assert_eq!(
+        ml_facts.calls,
+        vec![("pay".to_string(), "charge".to_string(), false)]
+    );
 
     // 4. Solidity: returns keyword excluded from calls, bare name Checkout
     let sol_code = r#"
@@ -977,7 +1141,10 @@ contract Checkout {
 "#;
     let sol_facts = Language::Solidity.parse(sol_code);
     assert_eq!(sol_facts.defines, vec!["Checkout", "pay", "charge"]);
-    assert_eq!(sol_facts.calls, vec![("pay".to_string(), "charge".to_string(), false)]);
+    assert_eq!(
+        sol_facts.calls,
+        vec![("pay".to_string(), "charge".to_string(), false)]
+    );
 
     // 5. SQL and HCL edge extraction & bare symbols
     let sql_code = r#"
@@ -986,7 +1153,10 @@ CREATE VIEW active AS SELECT * FROM contacts WHERE id > 0;
 "#;
     let sql_facts = Language::Sql.parse(sql_code);
     assert_eq!(sql_facts.defines, vec!["contacts", "active"]);
-    assert_eq!(sql_facts.calls, vec![("active".to_string(), "contacts".to_string(), false)]);
+    assert_eq!(
+        sql_facts.calls,
+        vec![("active".to_string(), "contacts".to_string(), false)]
+    );
 
     let hcl_code = r#"
 resource "aws_instance" "web" { ami = var.ami_id }
@@ -995,7 +1165,10 @@ module "vpc" { source = "./vpc" }
     let hcl_facts = Language::HclTerraform.parse(hcl_code);
     assert_eq!(hcl_facts.defines, vec!["web", "vpc"]);
     assert!(
-        hcl_facts.calls.iter().any(|c| c.0 == "web" && c.1 == "ami_id" && c.2),
+        hcl_facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "web" && c.1 == "ami_id" && c.2),
         "HCL: web must have receiver edge to ami_id, got: {:?}",
         hcl_facts.calls
     );
@@ -1015,11 +1188,23 @@ fn a() {
 fn b() { /* Kommentar in b. */ }
 "###;
     let facts = Language::Rust.parse(rs);
-    assert_eq!(facts.defines, vec!["a", "b"], "Must not contain phantom definition fake");
-    
-    let a_doc = facts.docs.iter().find(|(name, _)| name == "a").map(|(_, d)| d.as_str());
-    let b_doc = facts.docs.iter().find(|(name, _)| name == "b").map(|(_, d)| d.as_str());
-    
+    assert_eq!(
+        facts.defines,
+        vec!["a", "b"],
+        "Must not contain phantom definition fake"
+    );
+
+    let a_doc = facts
+        .docs
+        .iter()
+        .find(|(name, _)| name == "a")
+        .map(|(_, d)| d.as_str());
+    let b_doc = facts
+        .docs
+        .iter()
+        .find(|(name, _)| name == "b")
+        .map(|(_, d)| d.as_str());
+
     assert_eq!(a_doc, Some("Kommentar in a."));
     assert_eq!(b_doc, Some("Kommentar in b."));
 
@@ -1038,8 +1223,16 @@ fn after_odd() {
 "###;
     let facts_odd = Language::Rust.parse(rs_odd);
     assert_eq!(facts_odd.defines, vec!["process", "after_odd"]);
-    let proc_doc = facts_odd.docs.iter().find(|(name, _)| name == "process").map(|(_, d)| d.as_str());
-    let after_doc = facts_odd.docs.iter().find(|(name, _)| name == "after_odd").map(|(_, d)| d.as_str());
+    let proc_doc = facts_odd
+        .docs
+        .iter()
+        .find(|(name, _)| name == "process")
+        .map(|(_, d)| d.as_str());
+    let after_doc = facts_odd
+        .docs
+        .iter()
+        .find(|(name, _)| name == "after_odd")
+        .map(|(_, d)| d.as_str());
     assert_eq!(proc_doc, Some("Real body comment for process."));
     assert_eq!(after_doc, Some("Comment for after_odd."));
 
@@ -1059,7 +1252,11 @@ fn parse_buffers() {
 "###;
     let facts_byte = Language::Rust.parse(rs_byte);
     assert_eq!(facts_byte.defines, vec!["parse_buffers"]);
-    let buf_doc = facts_byte.docs.iter().find(|(name, _)| name == "parse_buffers").map(|(_, d)| d.as_str());
+    let buf_doc = facts_byte
+        .docs
+        .iter()
+        .find(|(name, _)| name == "parse_buffers")
+        .map(|(_, d)| d.as_str());
     assert_eq!(buf_doc, Some("Genuine comment for parse_buffers."));
 
     // 4. Python raw multiline strings
@@ -1076,8 +1273,16 @@ def second_fn():
 "###;
     let facts_py = Language::Python.parse(py);
     assert_eq!(facts_py.defines, vec!["real_fn", "second_fn"]);
-    let r1 = facts_py.docs.iter().find(|(name, _)| name == "real_fn").map(|(_, d)| d.as_str());
-    let r2 = facts_py.docs.iter().find(|(name, _)| name == "second_fn").map(|(_, d)| d.as_str());
+    let r1 = facts_py
+        .docs
+        .iter()
+        .find(|(name, _)| name == "real_fn")
+        .map(|(_, d)| d.as_str());
+    let r2 = facts_py
+        .docs
+        .iter()
+        .find(|(name, _)| name == "second_fn")
+        .map(|(_, d)| d.as_str());
     assert_eq!(r1, Some("Real comment for real_fn"));
     assert_eq!(r2, Some("Real comment for second_fn"));
 }
@@ -1117,22 +1322,31 @@ fn outer() {
 "###;
     let facts = Language::Rust.parse(rs);
     assert_eq!(facts.defines, vec!["outer"]);
-    
+
     // busy.0.publish -> has_receiver = true
     assert!(
-        facts.calls.iter().any(|c| c.0 == "outer" && c.1 == "publish" && c.2),
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "outer" && c.1 == "publish" && c.2),
         "busy.0.publish must have has_receiver=true, got: {:?}",
         facts.calls
     );
     // self.0.flush -> has_receiver = true
     assert!(
-        facts.calls.iter().any(|c| c.0 == "outer" && c.1 == "flush" && c.2),
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "outer" && c.1 == "flush" && c.2),
         "self.0.flush must have has_receiver=true, got: {:?}",
         facts.calls
     );
     // self.direct -> has_receiver = false
     assert!(
-        facts.calls.iter().any(|c| c.0 == "outer" && c.1 == "direct" && !c.2),
+        facts
+            .calls
+            .iter()
+            .any(|c| c.0 == "outer" && c.1 == "direct" && !c.2),
         "self.direct must have has_receiver=false, got: {:?}",
         facts.calls
     );
@@ -1150,10 +1364,22 @@ calcTax amt = roundVal (amt * 0.19)
 "#;
     let hs_facts = Language::Haskell.parse(hs);
     assert_eq!(hs_facts.defines, vec!["processOrder", "calcTax"]);
-    assert!(hs_facts.calls.iter().any(|c| c.0 == "processOrder" && c.1 == "logEvent" && !c.2));
-    assert!(hs_facts.calls.iter().any(|c| c.0 == "processOrder" && c.1 == "validateOrder" && !c.2));
-    assert!(hs_facts.calls.iter().any(|c| c.0 == "calcTax" && c.1 == "roundVal" && !c.2));
-    assert!(!hs_facts.calls.iter().any(|c| c.1 == "o" || c.1 == "amt"), "Args o and amt must not be callees");
+    assert!(hs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "processOrder" && c.1 == "logEvent" && !c.2));
+    assert!(hs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "processOrder" && c.1 == "validateOrder" && !c.2));
+    assert!(hs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "calcTax" && c.1 == "roundVal" && !c.2));
+    assert!(
+        !hs_facts.calls.iter().any(|c| c.1 == "o" || c.1 == "amt"),
+        "Args o and amt must not be callees"
+    );
 
     // 2. OCaml multiple top-level let bindings and local let bindings
     let ml = r#"
@@ -1165,10 +1391,22 @@ let identity x = x
 "#;
     let ml_facts = Language::OCaml.parse(ml);
     assert_eq!(ml_facts.defines, vec!["add", "mult", "identity"]);
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "add" && c.1 == "compute" && !c.2));
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "mult" && c.1 == "multiply" && !c.2));
-    assert!(ml_facts.calls.iter().any(|c| c.0 == "mult" && c.1 == "display" && !c.2));
-    assert!(!ml_facts.calls.iter().any(|c| c.0 == "identity"), "Identity must have 0 calls");
+    assert!(ml_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "add" && c.1 == "compute" && !c.2));
+    assert!(ml_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "mult" && c.1 == "multiply" && !c.2));
+    assert!(ml_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "mult" && c.1 == "display" && !c.2));
+    assert!(
+        !ml_facts.calls.iter().any(|c| c.0 == "identity"),
+        "Identity must have 0 calls"
+    );
 
     // 3. Solidity contract with multiple returns and types
     let sol = r#"
@@ -1188,10 +1426,28 @@ contract PaymentGateway {
 }
 "#;
     let sol_facts = Language::Solidity.parse(sol);
-    assert_eq!(sol_facts.defines, vec!["PaymentGateway", "Config", "process", "charge", "calculateFee"]);
-    assert!(!sol_facts.calls.iter().any(|c| c.1 == "returns" || c.1 == "public" || c.1 == "internal" || c.1 == "pure"));
-    assert!(sol_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "charge" && !c.2));
-    assert!(sol_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "calculateFee" && !c.2));
+    assert_eq!(
+        sol_facts.defines,
+        vec![
+            "PaymentGateway",
+            "Config",
+            "process",
+            "charge",
+            "calculateFee"
+        ]
+    );
+    assert!(!sol_facts
+        .calls
+        .iter()
+        .any(|c| c.1 == "returns" || c.1 == "public" || c.1 == "internal" || c.1 == "pure"));
+    assert!(sol_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "charge" && !c.2));
+    assert!(sol_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "calculateFee" && !c.2));
 
     // 4. SQL schema with foreign keys and view references
     let sql = r#"
@@ -1200,9 +1456,18 @@ CREATE TABLE transactions (id INT PRIMARY KEY, account_id INT REFERENCES account
 CREATE VIEW large_transactions AS SELECT * FROM transactions WHERE amount > 1000;
 "#;
     let sql_facts = Language::Sql.parse(sql);
-    assert_eq!(sql_facts.defines, vec!["accounts", "transactions", "large_transactions"]);
-    assert!(sql_facts.calls.iter().any(|c| c.0 == "transactions" && c.1 == "accounts"));
-    assert!(sql_facts.calls.iter().any(|c| c.0 == "large_transactions" && c.1 == "transactions"));
+    assert_eq!(
+        sql_facts.defines,
+        vec!["accounts", "transactions", "large_transactions"]
+    );
+    assert!(sql_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "transactions" && c.1 == "accounts"));
+    assert!(sql_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "large_transactions" && c.1 == "transactions"));
 
     // 5. HCL resources and dependencies
     let hcl = r#"
@@ -1212,8 +1477,14 @@ resource "aws_subnet" "subnet" { vpc_id = aws_vpc.vpc.id }
 "#;
     let hcl_facts = Language::HclTerraform.parse(hcl);
     assert_eq!(hcl_facts.defines, vec!["region", "vpc", "subnet"]);
-    assert!(hcl_facts.calls.iter().any(|c| c.0 == "vpc" && c.1 == "region" && c.2));
-    assert!(hcl_facts.calls.iter().any(|c| c.0 == "subnet" && c.1 == "vpc" && c.2));
+    assert!(hcl_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "vpc" && c.1 == "region" && c.2));
+    assert!(hcl_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "subnet" && c.1 == "vpc" && c.2));
 }
 
 #[test]
@@ -1250,20 +1521,45 @@ public class AccountService {
 }
 "#;
     let java_facts = Language::Java.parse(java);
-    assert_eq!(java_facts.defines, vec!["com.example.service", "AccountService", "transfer", "checkFunds"]);
-    let cls_doc = java_facts.docs.iter().find(|(n, _)| n == "AccountService").map(|(_, d)| d.as_str());
+    assert_eq!(
+        java_facts.defines,
+        vec![
+            "com.example.service",
+            "AccountService",
+            "transfer",
+            "checkFunds"
+        ]
+    );
+    let cls_doc = java_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "AccountService")
+        .map(|(_, d)| d.as_str());
     assert_eq!(cls_doc, Some("Account management service"));
-    let m_doc = java_facts.docs.iter().find(|(n, _)| n == "transfer").map(|(_, d)| d.as_str());
+    let m_doc = java_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "transfer")
+        .map(|(_, d)| d.as_str());
     assert!(m_doc.unwrap().contains("Transfers money between accounts"));
     assert!(m_doc.unwrap().contains("Step 1: validate funds"));
     assert!(m_doc.unwrap().contains("Step 2: process debit"));
     assert!(m_doc.unwrap().contains("Step 3: external notification"));
     // this.checkFunds -> has_receiver: false
-    assert!(java_facts.calls.iter().any(|c| c.0 == "transfer" && c.1 == "checkFunds" && !c.2));
+    assert!(java_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "transfer" && c.1 == "checkFunds" && !c.2));
     // super.auditTransfer -> has_receiver: false
-    assert!(java_facts.calls.iter().any(|c| c.0 == "transfer" && c.1 == "auditTransfer" && !c.2));
+    assert!(java_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "transfer" && c.1 == "auditTransfer" && !c.2));
     // notifier.sendAlert -> has_receiver: true
-    assert!(java_facts.calls.iter().any(|c| c.0 == "transfer" && c.1 == "sendAlert" && c.2));
+    assert!(java_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "transfer" && c.1 == "sendAlert" && c.2));
 
     // 2. C: Macro, Struct, Enum, Function, Calls
     let c = r#"
@@ -1292,17 +1588,41 @@ int init_socket(struct socket_cfg *cfg) {
 }
 "#;
     let c_facts = Language::C.parse(c);
-    assert_eq!(c_facts.defines, vec!["MAX_BUFFER", "socket_cfg", "init_socket"]);
-    let s_doc = c_facts.docs.iter().find(|(n, _)| n == "socket_cfg").map(|(_, d)| d.as_str());
+    assert_eq!(
+        c_facts.defines,
+        vec!["MAX_BUFFER", "socket_cfg", "init_socket"]
+    );
+    let s_doc = c_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "socket_cfg")
+        .map(|(_, d)| d.as_str());
     assert_eq!(s_doc, Some("Socket configuration struct"));
-    let f_doc = c_facts.docs.iter().find(|(n, _)| n == "init_socket").map(|(_, d)| d.as_str());
-    assert!(f_doc.unwrap().contains("Initializes network socket connection"));
-    assert!(f_doc.unwrap().contains("Step 1: allocate socket descriptor"));
+    let f_doc = c_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "init_socket")
+        .map(|(_, d)| d.as_str());
+    assert!(f_doc
+        .unwrap()
+        .contains("Initializes network socket connection"));
+    assert!(f_doc
+        .unwrap()
+        .contains("Step 1: allocate socket descriptor"));
     assert!(f_doc.unwrap().contains("Step 2: configure options"));
     assert!(f_doc.unwrap().contains("Step 3: remote logging"));
-    assert!(c_facts.calls.iter().any(|c| c.0 == "init_socket" && c.1 == "create_socket" && !c.2));
-    assert!(c_facts.calls.iter().any(|c| c.0 == "init_socket" && c.1 == "set_options" && !c.2));
-    assert!(c_facts.calls.iter().any(|c| c.0 == "init_socket" && c.1 == "log_connect" && c.2));
+    assert!(c_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "init_socket" && c.1 == "create_socket" && !c.2));
+    assert!(c_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "init_socket" && c.1 == "set_options" && !c.2));
+    assert!(c_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "init_socket" && c.1 == "log_connect" && c.2));
 
     // 3. C++: Class, Namespace, Methods, this-> disambiguation
     let cpp = r#"
@@ -1332,15 +1652,28 @@ namespace Net {
 }
 "#;
     let cpp_facts = Language::Cpp.parse(cpp);
-    assert_eq!(cpp_facts.defines, vec!["DEFAULT_TIMEOUT", "Net", "HttpClient", "get", "validate"]);
-    let get_doc = cpp_facts.docs.iter().find(|(n, _)| n == "get").map(|(_, d)| d.as_str());
+    assert_eq!(
+        cpp_facts.defines,
+        vec!["DEFAULT_TIMEOUT", "Net", "HttpClient", "get", "validate"]
+    );
+    let get_doc = cpp_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "get")
+        .map(|(_, d)| d.as_str());
     assert!(get_doc.unwrap().contains("Sends HTTP GET request"));
     assert!(get_doc.unwrap().contains("Validate URL format"));
     assert!(get_doc.unwrap().contains("Execute request via socket"));
     // this->validate -> has_receiver: false
-    assert!(cpp_facts.calls.iter().any(|c| c.0 == "get" && c.1 == "validate" && !c.2));
+    assert!(cpp_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "get" && c.1 == "validate" && !c.2));
     // socket.send -> has_receiver: true
-    assert!(cpp_facts.calls.iter().any(|c| c.0 == "get" && c.1 == "send" && c.2));
+    assert!(cpp_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "get" && c.1 == "send" && c.2));
 
     // 4. C#: Namespace, Class, Attributes, base/this calls
     let cs = r#"
@@ -1371,18 +1704,39 @@ public class PaymentService : BaseService {
 }
 "#;
     let cs_facts = Language::CSharp.parse(cs);
-    assert_eq!(cs_facts.defines, vec!["Core.Services", "PaymentService", "PayAsync", "VerifyRequest"]);
-    let pay_doc = cs_facts.docs.iter().find(|(n, _)| n == "PayAsync").map(|(_, d)| d.as_str());
+    assert_eq!(
+        cs_facts.defines,
+        vec![
+            "Core.Services",
+            "PaymentService",
+            "PayAsync",
+            "VerifyRequest"
+        ]
+    );
+    let pay_doc = cs_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "PayAsync")
+        .map(|(_, d)| d.as_str());
     assert!(pay_doc.unwrap().contains("Executes transaction"));
     assert!(pay_doc.unwrap().contains("Step A: Base initialization"));
     assert!(pay_doc.unwrap().contains("Step B: Local verification"));
     assert!(pay_doc.unwrap().contains("Step C: Remote charge"));
     // base.InitContext -> has_receiver: false
-    assert!(cs_facts.calls.iter().any(|c| c.0 == "PayAsync" && c.1 == "InitContext" && !c.2));
+    assert!(cs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "PayAsync" && c.1 == "InitContext" && !c.2));
     // this.VerifyRequest -> has_receiver: false
-    assert!(cs_facts.calls.iter().any(|c| c.0 == "PayAsync" && c.1 == "VerifyRequest" && !c.2));
+    assert!(cs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "PayAsync" && c.1 == "VerifyRequest" && !c.2));
     // gateway.ChargeAsync -> has_receiver: true
-    assert!(cs_facts.calls.iter().any(|c| c.0 == "PayAsync" && c.1 == "ChargeAsync" && c.2));
+    assert!(cs_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "PayAsync" && c.1 == "ChargeAsync" && c.2));
 
     // 5. Ruby: Module, Class, Def, self.method calls
     let rb = r#"
@@ -1407,15 +1761,28 @@ module Billing
 end
 "#;
     let rb_facts = Language::Ruby.parse(rb);
-    assert_eq!(rb_facts.defines, vec!["Billing", "InvoiceController", "issue_invoice", "calc_tax"]);
-    let inv_doc = rb_facts.docs.iter().find(|(n, _)| n == "issue_invoice").map(|(_, d)| d.as_str());
+    assert_eq!(
+        rb_facts.defines,
+        vec!["Billing", "InvoiceController", "issue_invoice", "calc_tax"]
+    );
+    let inv_doc = rb_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "issue_invoice")
+        .map(|(_, d)| d.as_str());
     assert!(inv_doc.unwrap().contains("Issues an invoice"));
     assert!(inv_doc.unwrap().contains("Step 1: local calculation"));
     assert!(inv_doc.unwrap().contains("Step 2: notify billing gateway"));
     // self.calc_tax -> has_receiver: false
-    assert!(rb_facts.calls.iter().any(|c| c.0 == "issue_invoice" && c.1 == "calc_tax" && !c.2));
+    assert!(rb_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "issue_invoice" && c.1 == "calc_tax" && !c.2));
     // Stripe.charge -> has_receiver: true
-    assert!(rb_facts.calls.iter().any(|c| c.0 == "issue_invoice" && c.1 == "charge" && c.2));
+    assert!(rb_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "issue_invoice" && c.1 == "charge" && c.2));
 
     // 6. PHP: Namespace, Class, Trait, $this-> / self:: calls
     let php = r#"
@@ -1448,17 +1815,41 @@ class AuthService {
 }
 "#;
     let php_facts = Language::Php.parse(php);
-    assert_eq!(php_facts.defines, vec!["App\\Services", "AuthService", "login", "verifyPassword", "checkCache"]);
-    let login_doc = php_facts.docs.iter().find(|(n, _)| n == "login").map(|(_, d)| d.as_str());
-    assert!(login_doc.unwrap().contains("Authenticates user credentials"));
+    assert_eq!(
+        php_facts.defines,
+        vec![
+            "App\\Services",
+            "AuthService",
+            "login",
+            "verifyPassword",
+            "checkCache"
+        ]
+    );
+    let login_doc = php_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "login")
+        .map(|(_, d)| d.as_str());
+    assert!(login_doc
+        .unwrap()
+        .contains("Authenticates user credentials"));
     assert!(login_doc.unwrap().contains("Step 1: verify hash locally"));
     assert!(login_doc.unwrap().contains("Step 2: check static cache"));
     // $this->verifyPassword -> has_receiver: false
-    assert!(php_facts.calls.iter().any(|c| c.0 == "login" && c.1 == "verifyPassword" && !c.2));
+    assert!(php_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "login" && c.1 == "verifyPassword" && !c.2));
     // self::checkCache -> has_receiver: false
-    assert!(php_facts.calls.iter().any(|c| c.0 == "login" && c.1 == "checkCache" && !c.2));
+    assert!(php_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "login" && c.1 == "checkCache" && !c.2));
     // $this->jwt->createToken -> has_receiver: true
-    assert!(php_facts.calls.iter().any(|c| c.0 == "login" && c.1 == "createToken" && c.2));
+    assert!(php_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "login" && c.1 == "createToken" && c.2));
 
     // 7. Swift: Class, Actor, Protocol, self./super. calls, print() call
     let swift = r#"
@@ -1483,19 +1874,40 @@ public class UserManager {
 }
 "#;
     let swift_facts = Language::Swift.parse(swift);
-    assert_eq!(swift_facts.defines, vec!["UserManager", "loadProfile", "checkCache"]);
-    let lp_doc = swift_facts.docs.iter().find(|(n, _)| n == "loadProfile").map(|(_, d)| d.as_str());
-    assert!(lp_doc.unwrap().contains("Loads user data from remote repository"));
+    assert_eq!(
+        swift_facts.defines,
+        vec!["UserManager", "loadProfile", "checkCache"]
+    );
+    let lp_doc = swift_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "loadProfile")
+        .map(|(_, d)| d.as_str());
+    assert!(lp_doc
+        .unwrap()
+        .contains("Loads user data from remote repository"));
     assert!(lp_doc.unwrap().contains("Step 1: check local cache"));
     assert!(lp_doc.unwrap().contains("Step 2: audit log"));
     // self.checkCache -> has_receiver: false
-    assert!(swift_facts.calls.iter().any(|c| c.0 == "loadProfile" && c.1 == "checkCache" && !c.2));
+    assert!(swift_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "loadProfile" && c.1 == "checkCache" && !c.2));
     // super.recordAccess -> has_receiver: false
-    assert!(swift_facts.calls.iter().any(|c| c.0 == "loadProfile" && c.1 == "recordAccess" && !c.2));
+    assert!(swift_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "loadProfile" && c.1 == "recordAccess" && !c.2));
     // apiClient.fetchUser -> has_receiver: true
-    assert!(swift_facts.calls.iter().any(|c| c.0 == "loadProfile" && c.1 == "fetchUser" && c.2));
+    assert!(swift_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "loadProfile" && c.1 == "fetchUser" && c.2));
     // print("Loaded user profile") -> has_receiver: false
-    assert!(swift_facts.calls.iter().any(|c| c.0 == "loadProfile" && c.1 == "print" && !c.2));
+    assert!(swift_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "loadProfile" && c.1 == "print" && !c.2));
 
     // 8. Scala: Package, Object, Class, Def, Val, type, Calls
     let scala = r#"
@@ -1526,17 +1938,42 @@ object MetricsEngine {
 }
 "#;
     let scala_facts = Language::Scala.parse(scala);
-    assert_eq!(scala_facts.defines, vec!["com.example.analytics", "MetricsEngine", "Version", "Score", "computeScore", "normalize"]);
-    let cs_doc = scala_facts.docs.iter().find(|(n, _)| n == "computeScore").map(|(_, d)| d.as_str());
+    assert_eq!(
+        scala_facts.defines,
+        vec![
+            "com.example.analytics",
+            "MetricsEngine",
+            "Version",
+            "Score",
+            "computeScore",
+            "normalize"
+        ]
+    );
+    let cs_doc = scala_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "computeScore")
+        .map(|(_, d)| d.as_str());
     assert!(cs_doc.unwrap().contains("Computes aggregate score"));
     assert!(cs_doc.unwrap().contains("Step 1: normalize dataset"));
-    assert!(cs_doc.unwrap().contains("Step 2: compute mean via math library"));
+    assert!(cs_doc
+        .unwrap()
+        .contains("Step 2: compute mean via math library"));
     // this.normalize -> has_receiver: false
-    assert!(scala_facts.calls.iter().any(|c| c.0 == "computeScore" && c.1 == "normalize" && !c.2));
+    assert!(scala_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "computeScore" && c.1 == "normalize" && !c.2));
     // Math.sqrt -> has_receiver: true
-    assert!(scala_facts.calls.iter().any(|c| c.0 == "computeScore" && c.1 == "sqrt" && c.2));
+    assert!(scala_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "computeScore" && c.1 == "sqrt" && c.2));
     // println -> has_receiver: false
-    assert!(scala_facts.calls.iter().any(|c| c.0 == "computeScore" && c.1 == "println" && !c.2));
+    assert!(scala_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "computeScore" && c.1 == "println" && !c.2));
 
     // 9. Kotlin: Package, Class, Companion Object, Fun, Val, Typealias, Calls
     let kt = r#"
@@ -1574,20 +2011,50 @@ class DataProcessor {
 }
 "#;
     let kt_facts = Language::Kotlin.parse(kt);
-    assert_eq!(kt_facts.defines, vec!["com.example.data", "DataId", "DataProcessor", "timeout", "process", "validate", "Factory", "create"]);
-    let proc_doc = kt_facts.docs.iter().find(|(n, _)| n == "process").map(|(_, d)| d.as_str());
-    assert!(proc_doc.unwrap().contains("Executes data processing pipeline"));
+    assert_eq!(
+        kt_facts.defines,
+        vec![
+            "com.example.data",
+            "DataId",
+            "DataProcessor",
+            "timeout",
+            "process",
+            "validate",
+            "Factory",
+            "create"
+        ]
+    );
+    let proc_doc = kt_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "process")
+        .map(|(_, d)| d.as_str());
+    assert!(proc_doc
+        .unwrap()
+        .contains("Executes data processing pipeline"));
     assert!(proc_doc.unwrap().contains("Step A: validate ID"));
     assert!(proc_doc.unwrap().contains("Step B: super log"));
     assert!(proc_doc.unwrap().contains("Step C: database update"));
     // this.validate -> has_receiver: false
-    assert!(kt_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "validate" && !c.2));
+    assert!(kt_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "validate" && !c.2));
     // super.logStart -> has_receiver: false
-    assert!(kt_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "logStart" && !c.2));
+    assert!(kt_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "logStart" && !c.2));
     // db.save -> has_receiver: true
-    assert!(kt_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "save" && c.2));
+    assert!(kt_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "save" && c.2));
     // println -> has_receiver: false
-    assert!(kt_facts.calls.iter().any(|c| c.0 == "process" && c.1 == "println" && !c.2));
+    assert!(kt_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "process" && c.1 == "println" && !c.2));
 
     // 10. Dart: Class, Mixin, Extension, Methods, Calls, Cascades
     let dart = r#"
@@ -1612,20 +2079,39 @@ class CustomButton {
 }
 "#;
     let dart_facts = Language::Dart.parse(dart);
-    assert_eq!(dart_facts.defines, vec!["core.widgets", "CustomButton", "render", "applyTheme"]);
-    let render_doc = dart_facts.docs.iter().find(|(n, _)| n == "render").map(|(_, d)| d.as_str());
+    assert_eq!(
+        dart_facts.defines,
+        vec!["core.widgets", "CustomButton", "render", "applyTheme"]
+    );
+    let render_doc = dart_facts
+        .docs
+        .iter()
+        .find(|(n, _)| n == "render")
+        .map(|(_, d)| d.as_str());
     assert!(render_doc.unwrap().contains("Renders button UI"));
     assert!(render_doc.unwrap().contains("Step 1: local theme setup"));
     assert!(render_doc.unwrap().contains("Step 2: super lifecycle"));
     assert!(render_doc.unwrap().contains("Step 3: remote analytics"));
     // this.applyTheme -> has_receiver: false
-    assert!(dart_facts.calls.iter().any(|c| c.0 == "render" && c.1 == "applyTheme" && !c.2));
+    assert!(dart_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "render" && c.1 == "applyTheme" && !c.2));
     // super.initState -> has_receiver: false
-    assert!(dart_facts.calls.iter().any(|c| c.0 == "render" && c.1 == "initState" && !c.2));
+    assert!(dart_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "render" && c.1 == "initState" && !c.2));
     // analytics.trackEvent -> has_receiver: true
-    assert!(dart_facts.calls.iter().any(|c| c.0 == "render" && c.1 == "trackEvent" && c.2));
+    assert!(dart_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "render" && c.1 == "trackEvent" && c.2));
     // print -> has_receiver: false
-    assert!(dart_facts.calls.iter().any(|c| c.0 == "render" && c.1 == "print" && !c.2));
+    assert!(dart_facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "render" && c.1 == "print" && !c.2));
 }
 
 #[test]
@@ -1646,8 +2132,14 @@ class DiscountService {
     let facts = Language::Groovy.parse(groovy);
     assert!(facts.defines.contains(&"DiscountService".to_string()));
     assert!(facts.defines.contains(&"calculateRebate".to_string()));
-    assert!(facts.calls.iter().any(|c| c.0 == "calculateRebate" && c.1 == "validate" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "calculateRebate" && c.1 == "info" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "calculateRebate" && c.1 == "validate" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "calculateRebate" && c.1 == "info" && c.2));
 
     // 2. VB.NET
     let vb = r#"
@@ -1663,7 +2155,10 @@ End Module
     let facts = Language::Vb.parse(vb);
     assert!(facts.defines.contains(&"AccountModule".to_string()));
     assert!(facts.defines.contains(&"ComputeTax".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "ComputeTax" && d.contains("Computes tax")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "ComputeTax" && d.contains("Computes tax")));
 
     // 3. COBOL
     let cobol = r#"
@@ -1681,7 +2176,10 @@ End Module
     assert!(facts.defines.contains(&"HELLO-WORLD".to_string()));
     assert!(facts.defines.contains(&"MAIN-PROC".to_string()));
     assert!(facts.defines.contains(&"CALC-SUB".to_string()));
-    assert!(facts.calls.iter().any(|c| c.0 == "MAIN-PROC" && c.1 == "CALC-SUB"));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "MAIN-PROC" && c.1 == "CALC-SUB"));
 
     // 4. Ada
     let ada = r#"
@@ -1698,8 +2196,14 @@ end Math_Utils;
     let facts = Language::Ada.parse(ada);
     assert!(facts.defines.contains(&"Math_Utils".to_string()));
     assert!(facts.defines.contains(&"Factorial".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "Factorial" && d.contains("Computes factorial")));
-    assert!(facts.calls.iter().any(|c| c.0 == "Factorial" && c.1 == "Info" && c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "Factorial" && d.contains("Computes factorial")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "Factorial" && c.1 == "Info" && c.2));
 
     // 5. D
     let d = r#"
@@ -1714,7 +2218,10 @@ double calc_sqrt(double x) {
     let facts = Language::D.parse(d);
     assert!(facts.defines.contains(&"math.algo".to_string()));
     assert!(facts.defines.contains(&"calc_sqrt".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "calc_sqrt" && d.contains("Computes square root")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "calc_sqrt" && d.contains("Computes square root")));
 
     // 6. WebAssembly Text (WAT)
     let wat = r#"
@@ -1747,7 +2254,10 @@ loop(State) ->
     assert!(facts.defines.contains(&"server".to_string()));
     assert!(facts.defines.contains(&"start".to_string()));
     assert!(facts.defines.contains(&"loop".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "start" && d.contains("Starts the server")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "start" && d.contains("Starts the server")));
     assert!(facts.calls.iter().any(|c| c.0 == "start" && c.1 == "init"));
 
     // 8. F#
@@ -1765,7 +2275,10 @@ module Solver =
     assert!(facts.defines.contains(&"MathApp".to_string()));
     assert!(facts.defines.contains(&"Solver".to_string()));
     assert!(facts.defines.contains(&"solve".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "solve" && d.contains("Computes roots")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "solve" && d.contains("Computes roots")));
 
     // 9. Clojure
     let clj = r#"
@@ -1779,7 +2292,10 @@ module Solver =
     let facts = Language::Clojure.parse(clj);
     assert!(facts.defines.contains(&"my-project.core".to_string()));
     assert!(facts.defines.contains(&"calculate-sum".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "calculate-sum" && d.contains("Calculates sum")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "calculate-sum" && d.contains("Calculates sum")));
 
     // 10. Elm
     let elm = r#"
@@ -1795,7 +2311,10 @@ update msg model =
     let facts = Language::Elm.parse(elm);
     assert!(facts.defines.contains(&"Main".to_string()));
     assert!(facts.defines.contains(&"update".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "update" && d.contains("Updates model state")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "update" && d.contains("Updates model state")));
 
     // 11. Gleam
     let gleam = r#"
@@ -1809,9 +2328,18 @@ pub fn main() {
 "#;
     let facts = Language::Gleam.parse(gleam);
     assert!(facts.defines.contains(&"main".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "main" && d.contains("Main entry point")));
-    assert!(facts.calls.iter().any(|c| c.0 == "main" && c.1 == "println" && c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "main" && c.1 == "process_data" && !c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "main" && d.contains("Main entry point")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "main" && c.1 == "println" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "main" && c.1 == "process_data" && !c.2));
 
     // 12. PureScript
     let purs = r#"
@@ -1825,7 +2353,10 @@ fib n =
     let facts = Language::PureScript.parse(purs);
     assert!(facts.defines.contains(&"App.Main".to_string()));
     assert!(facts.defines.contains(&"fib".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "fib" && d.contains("Computes fibonacci")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "fib" && d.contains("Computes fibonacci")));
 
     // 13. Lisp / Scheme / Racket
     let lisp = r#"
@@ -1837,7 +2368,10 @@ fib n =
 "#;
     let facts = Language::Lisp.parse(lisp);
     assert!(facts.defines.contains(&"factorial".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "factorial" && d.contains("Compute factorial")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "factorial" && d.contains("Compute factorial")));
 
     // 14. Lean
     let lean = r#"
@@ -1847,7 +2381,10 @@ theorem add_comm (n m : Nat) : n + m = m + n := by
 "#;
     let facts = Language::Lean.parse(lean);
     assert!(facts.defines.contains(&"add_comm".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "add_comm" && d.contains("Proves theorem")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "add_comm" && d.contains("Proves theorem")));
 
     // 15. Nix
     let nix = r#"
@@ -1862,7 +2399,10 @@ in myApp
 "#;
     let facts = Language::Nix.parse(nix);
     assert!(facts.defines.contains(&"myApp".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "myApp" && d.contains("Standard package configuration")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "myApp" && d.contains("Standard package configuration")));
 
     // 16. JSON
     let json = r#"
@@ -1898,8 +2438,14 @@ export default {
 "#;
     let facts = Language::Vue.parse(vue);
     assert!(facts.defines.contains(&"handleClick".to_string()));
-    assert!(facts.calls.iter().any(|c| c.0 == "handleClick" && c.1 == "track" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handleClick" && c.1 == "send" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handleClick" && c.1 == "track" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handleClick" && c.1 == "send" && c.2));
 
     // 18. Svelte
     let svelte = r#"
@@ -1915,8 +2461,14 @@ export default {
 "#;
     let facts = Language::Svelte.parse(svelte);
     assert!(facts.defines.contains(&"handleClick".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "handleClick" && d.contains("Handles click event")));
-    assert!(facts.calls.iter().any(|c| c.0 == "handleClick" && c.1 == "notify"));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "handleClick" && d.contains("Handles click event")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handleClick" && c.1 == "notify"));
 
     // 19. XML / SVG / XAML
     let xml = r#"
@@ -1929,7 +2481,10 @@ export default {
     let facts = Language::Xml.parse(xml);
     assert!(facts.defines.contains(&"User".to_string()));
     assert!(facts.defines.contains(&"Role".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "User" && d.contains("User entity definition")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "User" && d.contains("User entity definition")));
 
     // 20. GraphQL
     let gql = r#"
@@ -1948,7 +2503,10 @@ type Query {
     let facts = Language::GraphQL.parse(gql);
     assert!(facts.defines.contains(&"User".to_string()));
     assert!(facts.defines.contains(&"Query".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "User" && d.contains("User entity representing")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "User" && d.contains("User entity representing")));
 
     // 21. Thrift
     let thrift = r#"
@@ -1976,7 +2534,10 @@ table Monster {
     let facts = Language::FlatBuffers.parse(fbs);
     assert!(facts.defines.contains(&"Game.Sample".to_string()));
     assert!(facts.defines.contains(&"Monster".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "Monster" && d.contains("Monster table definition")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "Monster" && d.contains("Monster table definition")));
 
     // 23. Cap'n Proto
     let capnp = r#"
@@ -1990,7 +2551,10 @@ struct Person {
 "#;
     let facts = Language::CapnProto.parse(capnp);
     assert!(facts.defines.contains(&"Person".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "Person" && d.contains("Person structure")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "Person" && d.contains("Person structure")));
 
     // 24. Cypher (Neo4j)
     let cypher = r#"
@@ -2002,7 +2566,10 @@ RETURN u;
 "#;
     let facts = Language::Cypher.parse(cypher);
     assert!(facts.defines.contains(&"User".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "User" && d.contains("Create user node")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "User" && d.contains("Create user node")));
 
     // 25. PowerShell
     let ps = r#"
@@ -2021,9 +2588,18 @@ function Deploy-Service {
 "#;
     let facts = Language::PowerShell.parse(ps);
     assert!(facts.defines.contains(&"Deploy-Service".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "Deploy-Service" && d.contains("Deploys the service")));
-    assert!(facts.calls.iter().any(|c| c.0 == "Deploy-Service" && c.1 == "Validate" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "Deploy-Service" && c.1 == "Deploy" && c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "Deploy-Service" && d.contains("Deploys the service")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "Deploy-Service" && c.1 == "Validate" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "Deploy-Service" && c.1 == "Deploy" && c.2));
 
     // 26. GDScript (Godot)
     let gd = r#"
@@ -2036,9 +2612,18 @@ func move_player(delta):
 "#;
     let facts = Language::GdScript.parse(gd);
     assert!(facts.defines.contains(&"move_player".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "move_player" && d.contains("Handles player movement")));
-    assert!(facts.calls.iter().any(|c| c.0 == "move_player" && c.1 == "check_collision" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "move_player" && c.1 == "play_sound" && c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "move_player" && d.contains("Handles player movement")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "move_player" && c.1 == "check_collision" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "move_player" && c.1 == "play_sound" && c.2));
 
     // 27. Batch
     let bat = r#"
@@ -2054,7 +2639,10 @@ echo "Building..."
     let facts = Language::Batch.parse(bat);
     assert!(facts.defines.contains(&"SETUP".to_string()));
     assert!(facts.defines.contains(&"BUILD_STEP".to_string()));
-    assert!(facts.calls.iter().any(|c| c.0 == "SETUP" && c.1 == "BUILD_STEP"));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "SETUP" && c.1 == "BUILD_STEP"));
 
     // 28. Fish Shell
     let fish = r#"
@@ -2066,8 +2654,14 @@ end
 "#;
     let facts = Language::Fish.parse(fish);
     assert!(facts.defines.contains(&"format_logs".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "format_logs" && d.contains("Greps and formats")));
-    assert!(facts.calls.iter().any(|c| c.0 == "format_logs" && c.1 == "parse_entry" && !c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "format_logs" && d.contains("Greps and formats")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "format_logs" && c.1 == "parse_entry" && !c.2));
 
     // 29. MATLAB
     let matlab = r#"
@@ -2080,9 +2674,18 @@ end
 "#;
     let facts = Language::Matlab.parse(matlab);
     assert!(facts.defines.contains(&"calc_magnitude".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "calc_magnitude" && d.contains("Calculates vector magnitude")));
-    assert!(facts.calls.iter().any(|c| c.0 == "calc_magnitude" && c.1 == "validate_vector"));
-    assert!(facts.calls.iter().any(|c| c.0 == "calc_magnitude" && c.1 == "norm"));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "calc_magnitude" && d.contains("Calculates vector magnitude")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "calc_magnitude" && c.1 == "validate_vector"));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "calc_magnitude" && c.1 == "norm"));
 
     // 30. Mojo
     let mojo = r#"
@@ -2096,9 +2699,18 @@ struct MatrixMultiplier:
     let facts = Language::Mojo.parse(mojo);
     assert!(facts.defines.contains(&"MatrixMultiplier".to_string()));
     assert!(facts.defines.contains(&"multiply".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "multiply" && d.contains("Performs multiplication")));
-    assert!(facts.calls.iter().any(|c| c.0 == "multiply" && c.1 == "check_dims" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "multiply" && c.1 == "compute_gemm" && !c.2));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "multiply" && d.contains("Performs multiplication")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "multiply" && c.1 == "check_dims" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "multiply" && c.1 == "compute_gemm" && !c.2));
 
     // 31. Fortran
     let fortran = r#"
@@ -2115,9 +2727,18 @@ end module SolverModule
     let facts = Language::Fortran.parse(fortran);
     assert!(facts.defines.contains(&"SolverModule".to_string()));
     assert!(facts.defines.contains(&"SolveSystem".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "SolveSystem" && d.contains("Solves equation")));
-    assert!(facts.calls.iter().any(|c| c.0 == "SolveSystem" && c.1 == "ValidateMatrix"));
-    assert!(facts.calls.iter().any(|c| c.0 == "SolveSystem" && c.1 == "Factorize"));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "SolveSystem" && d.contains("Solves equation")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "SolveSystem" && c.1 == "ValidateMatrix"));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "SolveSystem" && c.1 == "Factorize"));
 
     // 32. VHDL
     let vhdl = r#"
@@ -2140,8 +2761,14 @@ end Behavioral;
     assert!(facts.defines.contains(&"Counter".to_string()));
     assert!(facts.defines.contains(&"Behavioral".to_string()));
     assert!(facts.defines.contains(&"Increment".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "Counter" && d.contains("Counter entity")));
-    assert!(facts.calls.iter().any(|c| c.0 == "Increment" && c.1 == "Validate"));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "Counter" && d.contains("Counter entity")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "Increment" && c.1 == "Validate"));
 
     // 33. Shader (WGSL & GLSL/HLSL)
     let wgsl = r#"
@@ -2161,8 +2788,14 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let facts = Language::Shader.parse(wgsl);
     assert!(facts.defines.contains(&"VertexOutput".to_string()));
     assert!(facts.defines.contains(&"vs_main".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "vs_main" && d.contains("Computes vertex transform")));
-    assert!(facts.calls.iter().any(|c| c.0 == "vs_main" && c.1 == "transform_pos"));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "vs_main" && d.contains("Computes vertex transform")));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "vs_main" && c.1 == "transform_pos"));
 
     // 34. LaTeX
     let tex = r#"
@@ -2175,7 +2808,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let facts = Language::Latex.parse(tex);
     assert!(facts.defines.contains(&"myTheorem".to_string()));
     assert!(facts.defines.contains(&"section:Abstract".to_string()));
-    assert!(facts.docs.iter().any(|(n, d)| n == "myTheorem" && d.contains("Global document theorem environment")));
+    assert!(facts
+        .docs
+        .iter()
+        .any(|(n, d)| n == "myTheorem" && d.contains("Global document theorem environment")));
 }
 
 #[test]
@@ -2192,17 +2828,47 @@ fun handle(req: Request): Response {
     let facts = Language::Kotlin.parse(kotlin_code);
     assert_eq!(facts.defines, vec!["handle"]);
     // Must NOT contain type names as calls
-    assert!(!facts.calls.iter().any(|c| c.1 == "Response"), "Response must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "Request"), "Request must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "body"), "body must not be in calls: {:?}", facts.calls);
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Response"),
+        "Response must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Request"),
+        "Request must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "body"),
+        "body must not be in calls: {:?}",
+        facts.calls
+    );
     // Field access order.total must not be in calls
-    assert!(!facts.calls.iter().any(|c| c.1 == "total"), "order.total must not be in calls: {:?}", facts.calls);
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "total"),
+        "order.total must not be in calls: {:?}",
+        facts.calls
+    );
     // Real call edges
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
     // Exact 3 calls, no duplicates
-    assert_eq!(facts.calls.len(), 3, "Expected exactly 3 calls, got: {:?}", facts.calls);
+    assert_eq!(
+        facts.calls.len(),
+        3,
+        "Expected exactly 3 calls, got: {:?}",
+        facts.calls
+    );
 
     // 2. Scala: Return type isolation and field access vs method call
     let scala_code = r#"
@@ -2215,13 +2881,39 @@ def handle(req: Request): Response = {
 "#;
     let facts = Language::Scala.parse(scala_code);
     assert_eq!(facts.defines, vec!["handle"]);
-    assert!(!facts.calls.iter().any(|c| c.1 == "Response"), "Response must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "Request"), "Request must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "total"), "order.total must not be in calls: {:?}", facts.calls);
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
-    assert_eq!(facts.calls.len(), 3, "Expected exactly 3 calls, got: {:?}", facts.calls);
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Response"),
+        "Response must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Request"),
+        "Request must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "total"),
+        "order.total must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
+    assert_eq!(
+        facts.calls.len(),
+        3,
+        "Expected exactly 3 calls, got: {:?}",
+        facts.calls
+    );
 
     // 3. Dart: Return type isolation and field access vs method call
     let dart_code = r#"
@@ -2234,17 +2926,37 @@ Response handle(Request req) {
 "#;
     let facts = Language::Dart.parse(dart_code);
     assert_eq!(facts.defines, vec!["handle"]);
-    assert!(!facts.calls.iter().any(|c| c.1 == "Response"), "Response must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "Request"), "Request must not be in calls: {:?}", facts.calls);
-    assert!(!facts.calls.iter().any(|c| c.1 == "total"), "order.total must not be in calls: {:?}", facts.calls);
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
-    assert!(facts.calls.iter().any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
-    assert_eq!(facts.calls.len(), 3, "Expected exactly 3 calls, got: {:?}", facts.calls);
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Response"),
+        "Response must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "Request"),
+        "Request must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(
+        !facts.calls.iter().any(|c| c.1 == "total"),
+        "order.total must not be in calls: {:?}",
+        facts.calls
+    );
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "parse" && !c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "pay" && c.2));
+    assert!(facts
+        .calls
+        .iter()
+        .any(|c| c.0 == "handle" && c.1 == "respond" && !c.2));
+    assert_eq!(
+        facts.calls.len(),
+        3,
+        "Expected exactly 3 calls, got: {:?}",
+        facts.calls
+    );
 }
-
-
-
-
-
-

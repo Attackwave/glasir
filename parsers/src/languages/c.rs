@@ -15,7 +15,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
-            TokenKind::DocComment(text) | TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+            TokenKind::DocComment(text)
+            | TokenKind::LineComment(text)
+            | TokenKind::BlockComment(text) => {
                 scope.push_comment(text);
                 i += 1;
                 continue;
@@ -30,7 +32,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     let start_byte = tok.start;
                     if i + 1 < tokens.len() {
                         if let TokenKind::Ident(macro_name) = tokens[i + 1].kind {
-                            scope.open_definition_with_body_docs(macro_name, start_byte as usize, false, false, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                macro_name,
+                                start_byte as usize,
+                                false,
+                                false,
+                                &mut facts,
+                            );
                             scope.on_word(macro_name);
                             i += 2;
                             continue;
@@ -104,7 +112,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     j += 1;
                                 }
                                 if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('{') {
-                                    scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                    scope.open_definition_with_body_docs(
+                                        name,
+                                        start_byte as usize,
+                                        true,
+                                        false,
+                                        &mut facts,
+                                    );
                                     scope.on_word(name);
                                     i = j;
                                     continue;
@@ -133,7 +147,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 }
                                 k += 1;
                             }
-                            while k < tokens.len() && (tokens[k].kind == TokenKind::Newline || matches!(tokens[k].kind, TokenKind::Ident(_) | TokenKind::Symbol('*'))) {
+                            while k < tokens.len()
+                                && (tokens[k].kind == TokenKind::Newline
+                                    || matches!(
+                                        tokens[k].kind,
+                                        TokenKind::Ident(_) | TokenKind::Symbol('*')
+                                    ))
+                            {
                                 k += 1;
                             }
                             if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('{') {
@@ -143,7 +163,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
                         if is_fn_def {
                             let start_byte = tok.start;
-                            scope.open_definition_with_body_docs(*ident, start_byte as usize, true, true, &mut facts);
+                            scope.open_definition_with_body_docs(
+                                *ident,
+                                start_byte as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
                             scope.on_word(ident);
                             i += 1;
                             continue;

@@ -11,15 +11,30 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    // A newline ends a Python statement, but not inside brackets: a constant
+    // such as `STOP = frozenset({` runs to its closing brace.
+    let mut brackets = 0i32;
 
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        match tok.kind {
+            TokenKind::Symbol('(' | '[' | '{') => brackets += 1,
+            TokenKind::Symbol(')' | ']' | '}') => brackets = (brackets - 1).max(0),
+            _ => {}
+        }
+        let line_start_pos = src[..tok.start as usize]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
         let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
 
         match &tok.kind {
             TokenKind::DocComment(text) | TokenKind::LineComment(text) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
@@ -28,6 +43,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Newline => {
+                // Without this a module constant stayed open to the end of
+                // the file: its range, and the snippet for it, took in every
+                // definition after it.
+                if brackets == 0 && scope.open.last().is_some_and(|o| o.statement_scoped) {
+                    scope.on_statement_end(tok.start as usize, &mut facts);
+                }
                 i += 1;
                 continue;
             }
@@ -55,13 +76,20 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Ident(ident) => {
-                while scope.open.last().is_some_and(|o| o.depth > current_line_indent) {
+                while scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.depth > current_line_indent)
+                {
                     scope.on_close_delimiter(tok.start as usize, &mut facts);
                 }
                 scope.depth = current_line_indent;
 
                 let mut cur_ident = *ident;
-                if cur_ident == "async" && i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Ident("def") {
+                if cur_ident == "async"
+                    && i + 1 < tokens.len()
+                    && tokens[i + 1].kind == TokenKind::Ident("def")
+                {
                     i += 1;
                     cur_ident = "def";
                 }
@@ -85,7 +113,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, true, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    true,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = current_line_indent + 1;
                                 }
@@ -99,7 +133,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
-                                scope.open_definition_with_body_docs(name, start_byte as usize, true, false, &mut facts);
+                                scope.open_definition_with_body_docs(
+                                    name,
+                                    start_byte as usize,
+                                    true,
+                                    false,
+                                    &mut facts,
+                                );
                                 if let Some(last) = scope.open.last_mut() {
                                     last.depth = current_line_indent + 1;
                                 }

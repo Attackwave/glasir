@@ -63,12 +63,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         Some(TokenKind::StringLit(name)) => {
                             let clean = name.trim_matches('"').trim_matches('\'');
                             if !clean.is_empty() {
-                                scope.open_definition(
-                                    clean,
-                                    tok.start as usize,
-                                    true,
-                                    &mut facts,
-                                );
+                                scope.open_definition(clean, tok.start as usize, true, &mut facts);
                                 scope.on_word(clean);
                                 scope.on_open_delimiter();
                                 i = at + 1;
