@@ -664,8 +664,11 @@ fn tool_definitions() -> Value {
             "name": "detect_changes",
             "title": "What a diff puts at risk",
             "description": "Maps a git diff to the symbols the changed files \
-    define, then to what depends on those. Reads the working tree as well as the \
-    graph. Defaults to uncommitted changes against HEAD; \
+    define, then to what depends on those, with a risk level and its reasons: \
+    changed code that has callers but no test reaching it, and files the git \
+    history says usually change too but this change leaves out. Reads the working \
+    tree as well as the graph, new untracked files included. Defaults to \
+    uncommitted changes against HEAD; \
     pass a revision to compare that revision to HEAD.\n\nA changed file the graph \
     does not carry yet — added since the last analysis — is named rather than \
     silently ignored, because \"defines nothing\" and \"not indexed\" are different \
@@ -680,6 +683,26 @@ fn tool_definitions() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "risk": {
+                        "type": "object",
+                        "description": "high: a changed symbol has callers and no test reaches it, or a file history says usually changes too is left out. medium: something depends on the change. low: nothing does.",
+                        "properties": {
+                            "level": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "untested": {"type": "array", "items": {"type": "string"}},
+                            "evaluated": {"type": "integer", "description": "Changed symbols checked for a reaching test"},
+                            "missed_partners": {"type": "array", "items": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {"type": "string"},
+                                    "partner": {"type": "string"},
+                                    "together": {"type": "integer"},
+                                    "commits": {"type": "integer"}
+                                },
+                                "required": ["file", "partner", "together", "commits"]
+                            }}
+                        },
+                        "required": ["level", "untested", "evaluated", "missed_partners"]
+                    },
                     "changed_files": {"type": "integer"},
                     "changed_symbols": {"type": "array", "items": {"type": "string"}},
                     "files_without_known_symbols": {"type": "array", "items": {"type": "string"}},
@@ -693,7 +716,7 @@ fn tool_definitions() -> Value {
                         "required": ["hop", "symbols"]
                     }}
                 },
-                "required": ["changed_files", "changed_symbols",
+                "required": ["risk", "changed_files", "changed_symbols",
                              "files_without_known_symbols", "dependents", "hops"]
             }
         },
@@ -1503,15 +1526,18 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
     let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
     let seeds: Vec<NodeId> = diff.touched.iter().map(|&(_, n)| n).collect();
     let levels = reverse_levels(served, &seeds, depth, Confidence::Ambiguous);
+    let dependents: usize = levels.iter().map(Vec::len).sum();
+    let risk = assess(served, &diff, dependents);
 
     Ok(json!({
+        "risk": risk,
         "changed_files": diff.files.len(),
         "changed_symbols": diff.touched.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
         // Named rather than counted: a file the graph does not carry is the
         // case where "nothing depends on this" is a wrong answer, so the
         // caller has to see which files those are.
         "files_without_known_symbols": diff.unknown,
-        "dependents": levels.iter().map(Vec::len).sum::<usize>(),
+        "dependents": dependents,
         "hops": levels
             .iter()
             .enumerate()
@@ -1521,6 +1547,134 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
             }))
             .collect::<Vec<_>>(),
     }))
+}
+
+/// How often a file must change with another, and in what share of its own
+/// commits, before leaving the other out of a change is worth a warning.
+const PARTNER_MIN: usize = 3;
+const PARTNER_SHARE: f64 = 0.5;
+/// Changed symbols checked for a reaching test; a sweeping diff stops here.
+const RISK_SYMBOL_LIMIT: usize = 200;
+
+/// Why a change is risky, as reasons rather than a score. A number says
+/// "0.7"; a reason says which function has callers and no test, which is what
+/// someone can act on. Three signals no graph alone has together: callers,
+/// the tests that reach them, and the files history says usually change too.
+fn assess(served: &Served, diff: &Diff, dependents: usize) -> Value {
+    let mut untested = Vec::new();
+    let candidates: Vec<&(String, NodeId)> = diff
+        .touched
+        .iter()
+        .filter(|(s, _)| !is_test_symbol(s))
+        .collect();
+    for &&(ref symbol, node) in candidates.iter().take(RISK_SYMBOL_LIMIT) {
+        let has_callers = reverse_levels(served, &[node], 2, Confidence::Ambiguous)
+            .iter()
+            .flatten()
+            .any(|(n, _)| served.defined.contains(n));
+        if has_callers && !reaches_test(served, node) {
+            untested.push(symbol.clone());
+        }
+    }
+
+    let mut missed: Vec<Value> = Vec::new();
+    if let Some(root) = served.root
+        && let Ok(commits) = crate::history::commits(root, 500)
+    {
+        let mut named: std::collections::HashSet<String> = Default::default();
+        for file in &diff.files {
+            let (own, pairs) = crate::history::coupled(&commits, file);
+            for (partner, together) in pairs {
+                if together >= PARTNER_MIN
+                    && together as f64 >= PARTNER_SHARE * own as f64
+                    && !diff.files.contains(&partner)
+                    && root.join(&partner).exists()
+                    && named.insert(partner.clone())
+                {
+                    missed.push(json!({
+                        "file": file,
+                        "partner": partner,
+                        "together": together,
+                        "commits": own,
+                    }));
+                }
+            }
+        }
+    }
+
+    let level = if !untested.is_empty() || !missed.is_empty() {
+        "high"
+    } else if dependents > 0 {
+        "medium"
+    } else {
+        "low"
+    };
+    json!({
+        "level": level,
+        "untested": untested,
+        "evaluated": candidates.len().min(RISK_SYMBOL_LIMIT),
+        "missed_partners": missed,
+    })
+}
+
+/// Whether any test reaches `node`, stopping at the first one found.
+fn reaches_test(served: &Served, node: NodeId) -> bool {
+    let reverse = served.snap.reverse();
+    let mut seen = std::collections::HashSet::from([node]);
+    let mut frontier = vec![node];
+    for _ in 0..TEST_DEPTH {
+        let mut next = Vec::new();
+        for &n in &frontier {
+            for (caller, _) in reverse.callers(n) {
+                if !seen.insert(caller) {
+                    continue;
+                }
+                if served.defined.contains(&caller) && is_test_symbol(&served.name(caller)) {
+                    return true;
+                }
+                next.push(caller);
+            }
+        }
+        if next.is_empty() {
+            return false;
+        }
+        frontier = next;
+    }
+    false
+}
+
+fn render_risk(v: &Value) -> String {
+    let level = v["level"].as_str().unwrap_or("low");
+    let mut out = format!("risk: {level}\n");
+    let untested = v["untested"].as_array().map_or(&[][..], Vec::as_slice);
+    if !untested.is_empty() {
+        out.push_str(&format!(
+            "  {} changed symbol(s) have callers and no test reaches them:\n",
+            untested.len()
+        ));
+        for s in untested.iter().take(CHANGE_LIST_LIMIT) {
+            out.push_str(&format!("    {}\n", s.as_str().unwrap_or("")));
+        }
+        if untested.len() > CHANGE_LIST_LIMIT {
+            out.push_str(&format!(
+                "    … and {} more\n",
+                untested.len() - CHANGE_LIST_LIMIT
+            ));
+        }
+    }
+    for m in v["missed_partners"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+    {
+        out.push_str(&format!(
+            "  {} usually changes with {} ({} of {} commits), which this change leaves out\n",
+            m["file"].as_str().unwrap_or(""),
+            m["partner"].as_str().unwrap_or(""),
+            m["together"].as_u64().unwrap_or(0),
+            m["commits"].as_u64().unwrap_or(0)
+        ));
+    }
+    out
 }
 
 /// A git diff read against the served graph.
@@ -1537,19 +1691,23 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     let rev = rev.trim();
     // Same default as the CLI: the working tree against HEAD is what someone
     // asking mid-change means.
-    let range: Vec<&str> = if rev.is_empty() || rev == "." {
-        vec!["diff", "--name-only", "HEAD"]
+    let working = rev.is_empty() || rev == ".";
+    let against: Vec<&str> = if working {
+        vec!["HEAD"]
     } else {
-        vec!["diff", "--name-only", rev, "HEAD"]
+        vec![rev, "HEAD"]
     };
     let root = served
         .root
         .ok_or("this server has no tree on disk to diff")?;
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(&range)
-        .output()
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+    };
+    let out = git(&[&["diff", "--name-only"][..], &against].concat())
         .map_err(|e| format!("git could not run: {e}"))?;
     if !out.status.success() {
         return Err(format!(
@@ -1557,24 +1715,60 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect();
+    let lines_of = |bytes: &[u8]| -> Vec<String> {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::trim)
+            // What Glasir writes beside the tree is never part of a change.
+            .filter(|l| !l.is_empty() && !l.rsplit('/').next().unwrap_or(l).starts_with(".glasir-"))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut files = lines_of(&out.stdout);
+    // `git diff HEAD` leaves out a file that was never added, so a new module
+    // went unreported until it was committed.
+    if working && let Ok(new) = git(&["ls-files", "--others", "--exclude-standard"]) {
+        files.extend(lines_of(&new.stdout));
+    }
+
+    // Per changed file, the definitions the diff actually touches. `None`
+    // falls back to every symbol of the file: a new, deleted or unparsable one.
+    let mut narrowed: std::collections::HashMap<&str, std::collections::HashSet<String>> =
+        Default::default();
+    for file in &files {
+        let new_src = if working {
+            std::fs::read_to_string(root.join(file)).ok()
+        } else {
+            git(&["show", &format!("HEAD:{file}")])
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        let hunks = git(&[&["diff", "-U0", "--no-color"][..], &against, &["--", file]].concat())
+            .ok()
+            .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
+        if let (Some(src), Some(hunks)) = (new_src, hunks)
+            && let Some(names) = touched_names(served, file, &src, &hunks)
+        {
+            narrowed.insert(file.as_str(), names);
+        }
+    }
 
     // Symbols defined in a changed file. The file is the name's prefix, so no
     // file-to-node map is needed — the property incremental indexing relies on.
+    // A file is known to the graph whether or not its change touched a
+    // definition: a comment edit is a change to a known file.
     let mut touched: Vec<(String, NodeId)> = Vec::new();
     let mut known: std::collections::HashSet<&str> = Default::default();
     for (symbol, &node) in served.registry.entries() {
-        if let Some((file, _)) = symbol.split_once('#')
+        if let Some((file, name)) = symbol.split_once('#')
             && let Some(f) = files.iter().find(|c| *c == file)
             && served.defined.contains(&node)
         {
-            touched.push((symbol.clone(), node));
             known.insert(f.as_str());
+            if narrowed.get(file).is_none_or(|names| names.contains(name)) {
+                touched.push((symbol.clone(), node));
+            }
         }
     }
     touched.sort();
@@ -1588,6 +1782,92 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         touched,
         unknown,
     })
+}
+
+/// New-side line ranges of `git diff -U0`, 1-based and inclusive. A pure
+/// deletion has no new lines and is a point between two: it comes back as
+/// `(line after, line before)`, start past end, and touches only a definition
+/// that contains the point — not the one that happens to begin right there.
+fn hunk_lines(diff: &str) -> Vec<(u32, u32)> {
+    diff.lines()
+        .filter_map(|l| l.strip_prefix("@@ "))
+        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with('+')))
+        .filter_map(|w| {
+            let (start, count) = w[1..].split_once(',').unwrap_or((&w[1..], "1"));
+            let (start, count): (u32, u32) = (start.parse().ok()?, count.parse().ok()?);
+            Some(if count == 0 {
+                (start + 1, start)
+            } else {
+                (start, start + count - 1)
+            })
+        })
+        .collect()
+}
+
+/// The names in one changed file the diff touches: definitions whose lines
+/// changed, `<module>` when a change fell outside every definition, and every
+/// definition the graph has for the file that the new content no longer
+/// defines — a deleted or renamed function is the change whose callers break.
+/// Parsed from the new content rather than read from the stored graph, which
+/// may describe an older version of the file. `None` when the file's language
+/// is unknown here, which falls back to the whole file.
+fn touched_names(
+    served: &Served,
+    file: &str,
+    src: &str,
+    hunks: &[(u32, u32)],
+) -> Option<std::collections::HashSet<String>> {
+    let path = std::path::Path::new(file);
+    use crate::parse_ast::LangExt;
+    let lang = crate::parse_ast::Lang::from_path(path)?;
+    let facts = crate::parse_ast::parse_file(path, src, lang)?;
+    let mut line_start = vec![0u32];
+    line_start.extend(
+        src.bytes()
+            .enumerate()
+            .filter(|&(_, b)| b == b'\n')
+            .map(|(i, _)| i as u32 + 1),
+    );
+    let end = src.len() as u32;
+    let bytes = |(a, b): (u32, u32)| {
+        let at = |line: u32| line_start.get(line as usize - 1).copied().unwrap_or(end);
+        (at(a.max(1)), at(b + 1))
+    };
+    let mut names = std::collections::HashSet::new();
+    for &(a, b) in hunks {
+        let (hs, he) = if a > b {
+            let at = bytes((a, a)).0;
+            (at, at)
+        } else {
+            bytes((a, b))
+        };
+        let mut inside = false;
+        for (name, (s, e)) in &facts.ranges {
+            let hit = if hs == he {
+                *s < hs && hs < *e
+            } else {
+                *s < he && hs < *e
+            };
+            if hit {
+                names.insert(name.clone());
+                inside = true;
+            }
+        }
+        if !inside {
+            names.insert("<module>".to_string());
+        }
+    }
+    let now: std::collections::HashSet<&str> = facts.defines.iter().map(String::as_str).collect();
+    let prefix = format!("{file}#");
+    for (symbol, _) in served.registry.entries() {
+        if let Some(name) = symbol.strip_prefix(&prefix)
+            && !now.contains(name)
+            && name != "<module>"
+        {
+            names.insert(name.to_string());
+        }
+    }
+    Some(names)
 }
 
 /// Everything that reaches `seeds` backwards, one level per hop. Breadth-first,
@@ -1642,6 +1922,7 @@ fn render_detect_changes(v: &Value) -> String {
         "{files} file(s) changed, {} symbol(s) in them\n",
         syms.len()
     );
+    out.push_str(&render_risk(&v["risk"]));
     if !unknown.is_empty() {
         out.push_str(&format!(
             "\n{} changed file(s) define nothing this graph knows — a file added \

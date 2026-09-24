@@ -5773,7 +5773,7 @@ fn demo_change_tools() {
     // pay -> charge -> log, a test two hops from log and one three hops out,
     // and a test elsewhere that must not be named.
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..7u32 {
+    for _ in 0..12u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -5788,6 +5788,8 @@ fn demo_change_tools() {
     b.add_edge(3, e(0));
     b.add_edge(6, e(1));
     b.add_edge(5, e(4));
+    // export -> render, and no test reaches either.
+    b.add_edge(8, e(7));
     let g = graph::Graph::new(b.build());
     let snap = g.load();
     let mut reg = ingest::SymbolRegistry::new(0);
@@ -5799,13 +5801,18 @@ fn demo_change_tools() {
         "src/util.rs#unrelated",
         "tests/util.rs#unrelated_works",
         "src/charge.rs#test_charge_twice",
+        "src/report.rs#render",
+        "src/report.rs#export",
+        "src/calc.rs#add",
+        "src/calc.rs#sub",
+        "src/calc.rs#<module>",
     ]
     .iter()
     .enumerate()
     {
         reg.insert((*name).to_string(), i as csr::NodeId);
     }
-    let defined: std::collections::HashSet<csr::NodeId> = (0..7).collect();
+    let defined: std::collections::HashSet<csr::NodeId> = (0..12).collect();
     let comms = community::detect(
         &snap,
         &community::Params::default(),
@@ -5855,6 +5862,11 @@ fn demo_change_tools() {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "c"]);
     };
+    commit(&["src/report.rs"]);
+    let calc = "// arithmetic\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\nfn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n";
+    std::fs::write(dir.join("src/calc.rs"), calc).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "calc"]);
     for _ in 0..3 {
         commit(&["src/pay.rs", "src/charge.rs"]);
     }
@@ -5959,6 +5971,65 @@ fn demo_change_tools() {
             .unwrap()
             .contains("src/charge.rs#charge"),
         "{text}"
+    );
+
+    // A change's risk, as reasons: pay is edited without charge, which history
+    // says changes with it half the time; render has a caller and no test; and
+    // a file never added to git is still part of the change.
+    std::fs::write(dir.join("src/pay.rs"), "edited").unwrap();
+    std::fs::write(dir.join("src/report.rs"), "edited").unwrap();
+    std::fs::write(dir.join("src/new.rs"), "new").unwrap();
+    let (v, text) = call("detect_changes", json!({}));
+    assert_eq!(v["risk"]["level"], "high", "{text}");
+    assert_eq!(
+        v["risk"]["untested"],
+        json!(["src/report.rs#render"]),
+        "{text}"
+    );
+    let missed = v["risk"]["missed_partners"].as_array().unwrap();
+    assert_eq!(missed.len(), 1, "{text}");
+    assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
+    assert!(
+        v["files_without_known_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "src/new.rs"),
+        "an untracked file is part of the change: {text}"
+    );
+    assert!(
+        text.contains("src/report.rs#render") && text.contains("leaves out"),
+        "{text}"
+    );
+
+    // Line-level: a change is the definitions whose lines it touched, not the
+    // whole file. Editing sub's body is sub; a comment outside every function
+    // is <module>; deleting add is add, because its callers are what break.
+    let calc_changed = |text: &str| -> Vec<String> {
+        std::fs::write(dir.join("src/calc.rs"), text).unwrap();
+        let (v, _) = call("detect_changes", json!({}));
+        let mut c: Vec<String> = v["changed_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .filter(|s| s.starts_with("src/calc.rs#"))
+            .map(str::to_string)
+            .collect();
+        c.sort();
+        c
+    };
+    assert_eq!(
+        calc_changed(&calc.replace("a - b", "b - a")),
+        vec!["src/calc.rs#sub"]
+    );
+    assert_eq!(
+        calc_changed(&calc.replace("// arithmetic", "// integer arithmetic")),
+        vec!["src/calc.rs#<module>"]
+    );
+    assert_eq!(
+        calc_changed(&calc.replace("fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n", "")),
+        vec!["src/calc.rs#<module>", "src/calc.rs#add"]
     );
 
     std::fs::remove_dir_all(&dir).unwrap();

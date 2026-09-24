@@ -153,8 +153,10 @@ agent:
 - `get_code_snippet` — the source a symbol names, from the range the parser
   recorded, so nothing has to open the file or guess a line
 - `find_callers` — the direct callers of one symbol, as one list
-- `detect_changes` — a git diff mapped to the symbols it touches and what
-  depends on them
+- `detect_changes` — a git diff mapped to the definitions whose lines it
+  touches (new files included) and what depends on them, with a risk level
+  and its reasons: changed code that has callers and no test reaching it, and
+  files the history says usually change too that the change leaves out
 
 Three answer what to do *before* a commit, which is when an answer is
 cheapest to act on:
