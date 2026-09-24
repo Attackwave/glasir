@@ -35,7 +35,8 @@ use std::path::Path;
 ///
 /// 3: the step 2-5 and 8a audit repairs.
 /// 4: definition byte ranges, so a tool can return source and not only a name.
-const FORMAT_VERSION: u32 = 26;
+/// 27: the names each definition uses without calling (`refs`).
+const FORMAT_VERSION: u32 = 27;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -70,6 +71,9 @@ pub struct Snapshot {
     pub sources: Vec<(String, u64)>,
     /// Explicit cross-repository contracts observed for this exact snapshot.
     pub contracts: serde_json::Value,
+    /// Per file, (definition, name) for what it uses without calling. Stored
+    /// for the reason `docs` is: rebuilding it means lexing every file again.
+    pub refs: Vec<(String, Vec<(NodeId, String)>)>,
 }
 
 impl Snapshot {
@@ -96,6 +100,7 @@ impl Snapshot {
             spans,
             sources,
             contracts: serde_json::Value::Null,
+            refs: Vec::new(),
         }
     }
 }

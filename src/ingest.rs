@@ -52,6 +52,11 @@ pub struct SymbolRegistry {
     /// A name reached from two languages has none: it is then shared, and the
     /// safe reading is to link it nowhere rather than to guess a side.
     placeholder_lang: HashMap<NodeId, Option<Lang>>,
+    /// Per file, the names each of its definitions uses without calling:
+    /// (definition, name). Resolved against the whole tree when served, since
+    /// only then is it known which names are defined exactly once. Keyed by
+    /// file so a re-parse replaces them in one insert.
+    refs: HashMap<String, Vec<(NodeId, String)>>,
     next: NodeId,
 }
 
@@ -64,6 +69,7 @@ impl SymbolRegistry {
             docs: HashMap::new(),
             spans: HashMap::new(),
             placeholder_lang: HashMap::new(),
+            refs: HashMap::new(),
             next: base_node_count as NodeId,
         }
     }
@@ -102,6 +108,37 @@ impl SymbolRegistry {
     /// Every recorded span, for the snapshot to store.
     pub fn spans(&self) -> &HashMap<NodeId, (u32, u32)> {
         &self.spans
+    }
+
+    pub fn set_refs(&mut self, file: &str, refs: Vec<(NodeId, String)>) {
+        if refs.is_empty() {
+            self.refs.remove(file);
+        } else {
+            self.refs.insert(file.to_owned(), refs);
+        }
+    }
+
+    pub fn refs(&self) -> &HashMap<String, Vec<(NodeId, String)>> {
+        &self.refs
+    }
+
+    /// Keeps only references to a name the tree defines exactly once, the only
+    /// ones that can be resolved: locals, parameters, the standard library and
+    /// names defined twice are most of them. Run once the batch's definitions
+    /// are all known. A Markdown section is not a definition.
+    pub fn prune_refs(&mut self) {
+        let mut defs: HashMap<&str, u32> = HashMap::new();
+        for key in self.by_name.keys() {
+            if let Some((file, name)) = key.split_once('#')
+                && !crate::docs::is_markdown(Path::new(file))
+            {
+                *defs.entry(name).or_default() += 1;
+            }
+        }
+        for refs in self.refs.values_mut() {
+            refs.retain(|(_, name)| defs.get(name.as_str()) == Some(&1));
+        }
+        self.refs.retain(|_, refs| !refs.is_empty());
     }
 
     /// Node for an exact symbol, without minting one if it is absent.
@@ -175,6 +212,7 @@ impl SymbolRegistry {
             .map(|(_, &n)| n)
             .collect();
         self.by_name.retain(|k, _| !k.starts_with(&prefix));
+        self.refs.remove(file);
         for n in gone {
             self.docs.remove(&n);
             // A span into a file that is gone points at bytes that are not
@@ -541,6 +579,19 @@ fn prepare_facts(
             },
         ));
     }
+
+    // After the calls, which mint `<module>` when the top level calls
+    // anything. Only from a definition that exists: minting `<module>` for a file whose
+    // top level merely names something would add a node nothing calls.
+    let refs = facts
+        .refs
+        .iter()
+        .filter_map(|(from, name)| {
+            let node = registry.node_of(&qualify(&file, from))?;
+            Some((node, name.clone()))
+        })
+        .collect();
+    registry.set_refs(&file, refs);
 
     let file_key = arena.intern(&file);
     (file_key, edges, nodes)

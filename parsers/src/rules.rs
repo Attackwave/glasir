@@ -1,7 +1,7 @@
 //! Versioned extraction rules, loaded explicitly and fixed for a process's life.
 
 use crate::generic::{LangSpec, Opens};
-use crate::lexer::CommentStyle;
+use crate::lexer::{CommentStyle, TokenKind};
 use crate::{FileFacts, Language};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -368,24 +368,60 @@ impl RuleFile {
         parse().map_err(|e| invalid(format!("{name}.toml: {e}")))
     }
 
-    fn parse(&self, src: &str) -> FileFacts {
-        let line: Vec<_> = self
-            .lexical
-            .line_comments
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let docs: Vec<_> = self
-            .lexical
-            .doc_comments
-            .iter()
-            .map(String::as_str)
-            .collect();
+    fn comment_parts(&self) -> (Vec<&str>, Vec<&str>, Option<(&str, &str)>) {
+        let line = self.lexical.line_comments.iter().map(String::as_str).collect();
+        let docs = self.lexical.doc_comments.iter().map(String::as_str).collect();
         let block = self
             .lexical
             .block_comment
             .as_ref()
             .map(|p| (p[0].as_str(), p[1].as_str()));
+        (line, docs, block)
+    }
+
+    /// Identifiers outside comments and strings that are not in call position,
+    /// with their byte offsets. What a file names besides what it calls: a type
+    /// in a signature, a constant read, a class it extends.
+    fn identifiers<'a>(&self, src: &'a str) -> Vec<(u32, &'a str)> {
+        let (line, docs, block) = self.comment_parts();
+        let style = CommentStyle {
+            line_comment_prefix: &line,
+            doc_comment_prefix: &docs,
+            block_comment_start: block.map(|p| p.0),
+            block_comment_end: block.map(|p| p.1),
+            ident_suffix_marks: self.lexical.identifier_suffix_marks,
+            ident_dashes: self.lexical.identifier_dashes,
+            raw_escapes: self.lexical.raw_string_escapes,
+        };
+        let tokens = crate::lexer::Lexer::new(src, style).collect_all_tokens();
+        let significant: Vec<&crate::lexer::Token> = tokens
+            .iter()
+            .filter(|t| {
+                !matches!(
+                    t.kind,
+                    TokenKind::Newline
+                        | TokenKind::LineComment(_)
+                        | TokenKind::DocComment(_)
+                        | TokenKind::BlockComment(_)
+                )
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (i, t) in significant.iter().enumerate() {
+            let TokenKind::Ident(name) = t.kind else {
+                continue;
+            };
+            let next = significant.get(i + 1).map(|t| &t.kind);
+            if matches!(next, Some(TokenKind::Symbol('('))) {
+                continue;
+            }
+            out.push((t.start, name));
+        }
+        out
+    }
+
+    fn parse(&self, src: &str) -> FileFacts {
+        let (line, docs, block) = self.comment_parts();
         let style = CommentStyle {
             line_comment_prefix: &line,
             doc_comment_prefix: &docs,
@@ -505,6 +541,15 @@ impl RuleSet {
 
     pub fn identity(&self) -> &str {
         &self.identity
+    }
+
+    /// See `RuleFile::identifiers`. Empty for a language with no rule file,
+    /// whose comment syntax is known only to its hand-written scanner.
+    pub fn identifiers<'a>(&self, language: Language, src: &'a str) -> Vec<(u32, &'a str)> {
+        match BUILTINS.iter().find(|b| b.language == language) {
+            Some(b) => self.files[b.name].identifiers(src),
+            None => Vec::new(),
+        }
     }
 
     pub fn parse(&self, language: Language, src: &str) -> FileFacts {

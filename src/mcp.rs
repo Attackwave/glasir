@@ -88,6 +88,8 @@ pub struct Served<'a> {
     pub files: Option<&'a std::sync::OnceLock<FileGraph>>,
     /// Where `mentions()` memoises. `None` in fixtures, which rebuild.
     pub mentions: Option<&'a std::sync::OnceLock<Mentions>>,
+    /// Where `references()` memoises. `None` in fixtures, which rebuild.
+    pub references: Option<&'a std::sync::OnceLock<References>>,
     /// The indexed tree, for the one tool that reads a file rather than the
     /// graph. Symbol names are root-relative — that is what keeps an absolute
     /// path out of every answer — so returning source needs the root back.
@@ -130,6 +132,8 @@ pub struct ServedState {
     pub files: std::sync::OnceLock<FileGraph>,
     /// Which files name each uniquely defined symbol, built on first use.
     pub mentions: std::sync::OnceLock<Mentions>,
+    /// Who uses each symbol without calling it, built on first use.
+    pub references: std::sync::OnceLock<References>,
     pub root: std::path::PathBuf,
 }
 
@@ -160,6 +164,7 @@ impl ServedState {
             now: self.now,
             files: Some(&self.files),
             mentions: Some(&self.mentions),
+            references: Some(&self.references),
             root: Some(&self.root),
         }
     }
@@ -524,7 +529,8 @@ fn tool_list() -> Value {
             "name": "impact",
             "title": "What breaks if I change this",
             "description": "Everything that depends on a symbol, transitively: the \
-    callers, their callers, and so on, grouped by distance. Answers 'what do I have to \
+    callers and the definitions using it by name, then their callers, and so on, \
+    grouped by distance. Answers 'what do I have to \
     check before changing this'. Each dependent is tagged with how the edge reaching it \
     was resolved.",
             "inputSchema": {
@@ -650,7 +656,9 @@ fn tool_list() -> Value {
         {
             "name": "find_callers",
             "title": "Who calls this",
-            "description": "The direct callers of one symbol, as one list. \
+            "description": "The direct callers of one symbol, as one list, and the \
+    definitions that use it by name without calling it — a type in a signature, a \
+    constant read — tagged ambiguous, since a name is matched by name. \
     `impact` answers the wider question — everything reachable backwards within k \
     hops, grouped by distance — which is right for a blast radius and too much when \
     the question is simply who calls this. An ambiguous bare name is refused with \
@@ -1994,13 +2002,72 @@ fn touched_names(
 /// onto it: a placeholder is the name a call was written with, not a caller,
 /// and counting it as one put every cross-file caller a hop further away than
 /// it is and left `find_callers` naming only the name.
+/// The definitions that use a symbol without calling it — a type in a
+/// signature, a constant read, a base class — for every name the tree defines
+/// exactly once. Resolved here rather than stored as edges, so what a question
+/// expands through and how the tree partitions are untouched.
+#[derive(Default)]
+pub struct References {
+    by_target: std::collections::HashMap<NodeId, Vec<NodeId>>,
+}
+
+impl Served<'_> {
+    fn references<'r>(&'r self, fallback: &'r std::sync::OnceLock<References>) -> &'r References {
+        self.references.unwrap_or(fallback).get_or_init(|| {
+            let mut unique: std::collections::HashMap<&str, Option<NodeId>> = Default::default();
+            for (symbol, &node) in self.registry.entries() {
+                if let Some((file, name)) = symbol.split_once('#')
+                    && self.defined.contains(&node)
+                    && !crate::docs::is_markdown(std::path::Path::new(file))
+                {
+                    unique
+                        .entry(name)
+                        .and_modify(|slot| *slot = None)
+                        .or_insert(Some(node));
+                }
+            }
+            let mut by_target: std::collections::HashMap<NodeId, Vec<NodeId>> = Default::default();
+            for refs in self.registry.refs().values() {
+                for (from, name) in refs {
+                    if let Some(Some(target)) = unique.get(name.as_str())
+                        && target != from
+                    {
+                        by_target.entry(*target).or_default().push(*from);
+                    }
+                }
+            }
+            for sources in by_target.values_mut() {
+                sources.sort_unstable();
+                sources.dedup();
+            }
+            References { by_target }
+        })
+    }
+}
+
 fn direct_callers(
     served: &Served,
     reverse: &crate::graph::Reverse,
     node: NodeId,
     floor: Confidence,
 ) -> Vec<(NodeId, Confidence)> {
+    direct_callers_with(served, reverse, node, floor, true)
+}
+
+/// `uses`: whether names count beside calls. `reverse_levels` takes them at
+/// the first hop only: a user of a type is affected by it, but what calls that
+/// user is affected through the call. Carried further, a type pulled in every
+/// method whose receiver names it and then all of their callers — same recall
+/// on the foreign sets, 2.5-4x the answer.
+fn direct_callers_with(
+    served: &Served,
+    reverse: &crate::graph::Reverse,
+    node: NodeId,
+    floor: Confidence,
+    uses: bool,
+) -> Vec<(NodeId, Confidence)> {
     let mut out = Vec::new();
+
     for (caller, edge) in reverse.callers(node) {
         if edge.confidence < floor {
             continue;
@@ -2013,6 +2080,20 @@ fn direct_callers(
             if call.confidence >= floor && through != node {
                 out.push((through, edge.confidence.min(call.confidence)));
             }
+        }
+    }
+    // After the calls, so a caller that also names the symbol keeps its
+    // call's confidence. A use by name is matched by name, the weakest tier.
+    if uses && Confidence::Ambiguous >= floor {
+        let local = std::sync::OnceLock::new();
+        for &from in served
+            .references(&local)
+            .by_target
+            .get(&node)
+            .into_iter()
+            .flatten()
+        {
+            out.push((from, Confidence::Ambiguous));
         }
     }
     out
@@ -2034,10 +2115,10 @@ fn reverse_levels(
     let mut frontier: Vec<NodeId> = seen.iter().copied().collect();
     frontier.sort_unstable();
     let mut levels = Vec::new();
-    for _ in 0..depth {
+    for hop in 0..depth {
         let mut next: Vec<(NodeId, Confidence)> = Vec::new();
         for &n in &frontier {
-            for (caller, confidence) in direct_callers(served, reverse, n, floor) {
+            for (caller, confidence) in direct_callers_with(served, reverse, n, floor, hop == 0) {
                 if seen.insert(caller) {
                     next.push((caller, confidence));
                 }

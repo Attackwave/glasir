@@ -218,6 +218,11 @@ fn imports() {
 }
 
 #[test]
+fn references() {
+    crate::demo_references();
+}
+
+#[test]
 fn parallel_ingest() {
     crate::demo_parallel_ingest();
 }
