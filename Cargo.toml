@@ -14,3 +14,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 native_parsers = { version = "0.1.0", path = "parsers" }
+
+# musl's allocator is what a static Linux binary costs: measured, analysis ran
+# 1.5x slower on a real tree and 3.5x on a generated 300k-line one. Only the
+# musl build links this; glibc and the other platforms keep their system
+# allocator.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }

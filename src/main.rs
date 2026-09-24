@@ -5,6 +5,11 @@
 use crate::parse_ast::LangExt;
 use serde_json::json;
 
+/// See the musl note in Cargo.toml.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod arena;
 mod audit;
 mod auth;

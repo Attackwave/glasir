@@ -19,7 +19,15 @@ always produce the same answer.
 
 ## Quickstart
 
-Download the archive for your platform from
+Install with the package manager you already use:
+
+```sh
+brew install attackwave/glasir/glasir                      # macOS, Linux
+scoop bucket add glasir https://github.com/Attackwave/scoop-glasir
+scoop install glasir                                       # Windows
+```
+
+Or download the archive for your platform from
 [Releases](https://github.com/Attackwave/glasir/releases), check it against
 the `.sha256` beside it, and put `glasir` on your `PATH`:
 
@@ -31,10 +39,11 @@ the `.sha256` beside it, and put `glasir` on your `PATH`:
 | macOS Intel | `glasir-<version>-macos-x86_64.tar.gz` |
 | Windows x86_64 | `glasir-<version>-windows-x86_64.zip` |
 
-The binaries are not yet notarized by Apple, so macOS refuses the first start
-of a downloaded one. Clear the download flag once, after checking the checksum:
-`xattr -d com.apple.quarantine glasir`. Building from source avoids it
-(`cargo build --release`).
+The Linux binaries are statically linked and run on any distribution,
+including Alpine and older enterprise releases. A binary downloaded by hand on
+macOS is not yet notarized, so macOS refuses its first start; clear the flag
+once, after checking the checksum: `xattr -d com.apple.quarantine glasir`.
+Homebrew installs are not affected.
 
 Then, in the repository you want to ask about:
 

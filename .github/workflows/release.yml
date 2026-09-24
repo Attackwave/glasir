@@ -22,8 +22,11 @@ jobs:
     strategy:
       matrix:
         include:
+          # musl, statically linked: a glibc build from the newest runner needs
+          # that runner's glibc (2.39) and did not start on Ubuntu 22.04,
+          # Debian 12 or RHEL 9. mimalloc keeps the static build as fast.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             platform: linux-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -34,7 +37,7 @@ jobs:
           # Native, like the container images: ARM Linux is Graviton and
           # Ampere servers, and cross-compiled binaries would ship untested.
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             platform: linux-arm64
           # The last Intel image GitHub offers; it is retired in August 2027,
           # after which this entry has to cross-compile from Apple Silicon.
@@ -64,6 +67,10 @@ jobs:
           ./target/release/glasir guard .
           cargo install cargo-audit --locked
           cargo audit
+
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -224,8 +231,50 @@ jobs:
         run: |
           for tag in $TAGS; do cosign sign --yes "${tag}@${DIGEST}"; done
 
+  # The Homebrew formula and the Scoop manifest, rendered from the checksums
+  # this release published. Attached to every release, so Scoop can install
+  # straight from it; pushed to the tap and the bucket only for a stable
+  # version, and only when PACKAGES_TOKEN (contents: write on both) is set.
+  packages:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - run: python3 packaging/render.py --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dist dist --out packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: packages/*
+      - name: publish to the tap and the bucket
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "PACKAGES_TOKEN is not set: the formula and manifest are attached to the release only."
+            exit 0
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          publish() (
+            repo=$1 dest=$2 src=$PWD/$3
+            git clone -q "https://x-access-token:${TOKEN}@github.com/${owner}/${repo}.git" "/tmp/${repo}"
+            cd "/tmp/${repo}"
+            mkdir -p "$(dirname "$dest")"
+            cp "$src" "$dest"
+            git add -A
+            git diff --cached --quiet && exit 0
+            git -c user.name="glasir release" -c user.email="release@users.noreply.github.com" \
+              commit -qm "glasir ${GITHUB_REF_NAME}"
+            git push -q
+          )
+          publish homebrew-glasir Formula/glasir.rb packages/glasir.rb
+          publish scoop-glasir bucket/glasir.json packages/glasir.json
+
   publish:
-    needs: [build, sbom, container]
+    needs: [build, sbom, container, packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
