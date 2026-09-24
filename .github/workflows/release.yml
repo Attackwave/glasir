@@ -248,8 +248,11 @@ jobs:
         with:
           name: packages
           path: packages/*
+      # An expired token costs the tap and bucket update, never the release:
+      # the step shows failed, and `publish` still runs.
       - name: publish to the tap and the bucket
         if: ${{ !contains(github.ref_name, '-') }}
+        continue-on-error: true
         env:
           TOKEN: ${{ secrets.PACKAGES_TOKEN }}
         run: |
