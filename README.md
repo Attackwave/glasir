@@ -122,7 +122,13 @@ percentages or token counts.
 glasir benchmark .
 glasir benchmark . --check
 python3 bench/scale.py target/release/glasir --check   # 100k vs 1M lines
+bench/foreign/fetch.sh /tmp/foreign          # four foreign repos at pinned commits
+glasir benchmark . --foreign /tmp/foreign --check
 ```
+
+The foreign sets ask the structural questions — who calls this, who uses this
+type, which tests to run — on gin, spring-petclinic, graphify and ktor, with
+answers read out of their source by hand.
 
 [Benchmark methodology](docs/benchmarking.md) defines the corpus, baseline,
 token estimate, limits, and interpretation. It also explains why results from

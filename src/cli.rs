@@ -45,6 +45,7 @@ impl Args {
                         | "token"
                         | "port"
                         | "questions"
+                        | "foreign"
                         | "floors"
                         | "days"
                         | "public-url"
@@ -139,6 +140,8 @@ GRAPH
   benchmark [path]      Recall and token cost against bench/questions.txt
     --questions <file>  Use a different question set
     --check             Fail if recall fell below bench/baseline.txt
+    --foreign <dir>     Score bench/foreign/*.txt against clones in <dir>
+                        (bench/foreign/fetch.sh fetches them at pinned commits)
 
 DIAGNOSTICS
   selfcheck             Every assert-based check, in one process

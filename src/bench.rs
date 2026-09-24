@@ -268,9 +268,10 @@ pub fn structural_answer(served: &Served, q: &Question) -> Answer {
     let tool = parts.next().unwrap_or_default();
     let args: Vec<&str> = parts.collect();
     let arguments = match (tool, args.as_slice()) {
-        ("impact", [symbol]) | ("explain_node", [symbol]) => {
-            serde_json::json!({ "symbol": symbol })
-        }
+        ("impact", [symbol])
+        | ("explain_node", [symbol])
+        | ("find_callers", [symbol])
+        | ("affected_tests", [symbol]) => serde_json::json!({ "symbol": symbol }),
         ("shortest_path", [from, to]) => serde_json::json!({ "from": from, "to": to }),
         _ => {
             return Answer {

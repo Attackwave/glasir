@@ -1,0 +1,75 @@
+# gin-gonic/gin — structural ground truth on a foreign Go tree.
+#
+# Read out of the source, never out of the tool: call sites found with grep,
+# attributed to the enclosing `func` and each line read; type users are the
+# files whose code (comments stripped) names gin's own type — `render/*`
+# writes `http.ResponseWriter`, which is not gin's, and is excluded by reading.
+#
+# Three kinds of question, each answering what an agent asks before a change:
+# who calls this, who uses this type, which tests should run.
+
+# Who calls this — direct callers, tests included.
+find_callers context.go#bodyAllowedForStatus
+  context.go#Render
+  context_test.go#TestContextBodyAllowedForStatus
+
+find_callers utils.go#parseAccept
+  context.go#NegotiateFormat
+  utils_test.go#TestParseAccept
+  utils_test.go#BenchmarkParseAccept
+
+find_callers utils.go#filterFlags
+  context.go#ContentType
+  utils_test.go#TestFilterFlags
+
+find_callers utils.go#resolveAddress
+  gin.go#Run
+
+find_callers utils.go#lastChar
+  utils.go#joinPaths
+  utils_test.go#TestLastChar
+
+find_callers path.go#cleanPath
+  gin.go#handleHTTPRequest
+  gin.go#redirectFixedPath
+  path_test.go#TestPathClean
+  path_test.go#TestPathCleanLong
+
+# Who uses this type — the files a change to it has to be checked in.
+impact routergroup.go#RouterGroup
+  gin.go
+  ginS/gins.go
+  routergroup_test.go
+
+impact logger.go#LogFormatterParams
+  logger_test.go
+
+impact response_writer.go#ResponseWriter
+  context.go
+  response_writer_test.go
+
+impact gin.go#HandlersChain
+  context.go
+  debug.go
+  routergroup.go
+  tree.go
+
+impact tree.go#Params
+  context.go
+  gin.go
+
+impact context.go#Negotiate
+  context_test.go
+
+# Which tests to run — the test files that call it directly.
+affected_tests path.go#cleanPath
+  path_test.go
+
+affected_tests utils.go#lastChar
+  utils_test.go
+
+affected_tests utils.go#parseAccept
+  utils_test.go
+
+affected_tests context.go#bodyAllowedForStatus
+  context_test.go

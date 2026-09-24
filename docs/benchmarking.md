@@ -22,6 +22,27 @@ strategies, not a claim about any particular agent or model.
 Token cost is source characters divided by four. It is an approximation applied
 equally to both methods; it must not be interpreted as a provider billing value.
 
+## Foreign trees
+
+Every set above reads this repository. `bench/foreign/` asks structural
+questions — `find_callers`, `impact` on a type, `affected_tests` — about four
+repositories written by other people: gin (Go), spring-petclinic (Java),
+graphify (Python) and ktor (Kotlin), each pinned to a commit in
+`bench/foreign/repos.txt`. The expected answers were read out of those
+sources by hand: call sites found with grep and attributed to the function
+enclosing them by reading, and type users taken from code with comments and
+documentation removed. An expectation is scored by whether the tool's answer
+text contains it. The grep-and-read column is reported for completeness; it
+cannot answer a structural question and scores near zero by construction.
+
+```sh
+bench/foreign/fetch.sh /tmp/foreign
+glasir benchmark . --foreign /tmp/foreign --check
+```
+
+`--check` fails on a floor in `bench/foreign/baseline.txt` that regressed or
+whose clone is missing.
+
 ## Reproducing a result
 
 Run the command from the exact commit and on the exact corpus to be reported:
