@@ -27,6 +27,7 @@ mod history;
 mod http;
 mod import_json;
 mod import_scip;
+mod imports;
 mod ingest;
 mod langcheck;
 mod layout;
@@ -3510,6 +3511,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_community();
     demo_mcp();
     demo_change_tools();
+    demo_imports();
     demo_install();
     demo_search();
     demo_snapshot();
@@ -5743,6 +5745,60 @@ fn demo_mcp() {
 /// install/uninstall touch the user's editor configuration, so the property
 /// that matters is that a round trip leaves other people's settings exactly as
 /// they were.
+/// A call through an import reaches the definition the import names, in each
+/// language whose imports are read: every name below is defined twice, so
+/// without the import the call is ambiguous and links nowhere.
+fn demo_imports() {
+    let dir = std::env::temp_dir().join(format!("glasir-imports-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        ("pkg/__init__.py", ""),
+        ("pkg/a.py", "def helper():\n    return 1\n"),
+        ("pkg/b.py", "def helper():\n    return 2\n"),
+        (
+            "app.py",
+            "from pkg import a as mod\nfrom pkg.b import (\n    helper as h,\n)\n\ndef run():\n    mod.helper()\n    h()\n",
+        ),
+        ("go.mod", "module example.com/m\n"),
+        ("util/u.go", "package util\n\nfunc Do() {}\n"),
+        ("other/o.go", "package other\n\nfunc Do() {}\n"),
+        (
+            "main.go",
+            "package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/m/util\"\n)\n\nfunc main() {\n\tutil.Do()\n\tfmt.Println()\n}\n",
+        ),
+        ("lib/x.ts", "export function run() {}\n"),
+        ("lib/y.ts", "export function run() {}\n"),
+        (
+            "app.ts",
+            "import * as x from './lib/x';\nimport {\n  run as go,\n} from './lib/y';\n\nexport function start() {\n  x.run();\n  go();\n}\n",
+        ),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let a = analyse(&dir).unwrap();
+    let node = |s: &str| a.registry.node_of(s).unwrap_or_else(|| panic!("no {s}"));
+    let reaches = |from: &str, to: &str| {
+        let target = node(to);
+        a.snap
+            .neighbors(node(from))
+            .any(|e| e.target == target || a.snap.neighbors(e.target).any(|e2| e2.target == target))
+    };
+    for (from, to, want) in [
+        ("app.py#run", "pkg/a.py#helper", true),
+        ("app.py#run", "pkg/b.py#helper", true),
+        ("main.go#main", "util/u.go#Do", true),
+        ("main.go#main", "other/o.go#Do", false),
+        ("app.ts#start", "lib/x.ts#run", true),
+        ("app.ts#start", "lib/y.ts#run", true),
+    ] {
+        assert_eq!(reaches(from, to), want, "{from} -> {to}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("imports ok: a call through an import reaches the definition it names");
+}
+
 /// The three tools that answer what to do before a commit: which tests to run,
 /// what else usually changes, and whether a boundary breaks.
 fn demo_change_tools() {

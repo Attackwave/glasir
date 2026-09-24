@@ -420,12 +420,57 @@ fn prepare_facts(
         registry.set_span(node, *span);
     }
 
+    // What the file's imports say its names refer to: `alias.f()` and a bare
+    // imported `f()`, each mapped to the file or package that defines them.
+    let lang = Lang::from_path(path);
+    let mut modules: HashMap<&str, String> = HashMap::new();
+    let mut names: HashMap<&str, (String, &str)> = HashMap::new();
+    if let Some(lang) = lang {
+        for import in &facts.imports {
+            match import {
+                crate::imports::Import::Module { alias, spec } => {
+                    if let Some(t) = crate::imports::resolve(lang, &file, spec, root) {
+                        modules.entry(alias).or_insert(t);
+                    }
+                }
+                crate::imports::Import::Name { local, spec, name } => {
+                    if let Some(t) = crate::imports::resolve(lang, &file, spec, root) {
+                        names.entry(local).or_insert((t, name));
+                    }
+                }
+            }
+        }
+    }
+
     let mut edges: Vec<(NodeId, Edge)> = Vec::with_capacity(facts.calls.len());
-    for (caller, callee, has_receiver) in &facts.calls {
+    for (i, (caller, callee, has_receiver)) in facts.calls.iter().enumerate() {
         let source_node = registry.get_or_mint(&qualify(&file, caller));
         let local = qualify(&file, callee);
+        // A call through an import names its file, so its placeholder says
+        // which file: tier 3 then links it there instead of refusing a name
+        // several files define.
+        let imported = if *has_receiver {
+            facts
+                .call_modules
+                .get(i)
+                .and_then(Option::as_deref)
+                .and_then(|m| modules.get(m))
+                .map(|t| crate::imports::scoped(callee, t))
+        } else if !registry.contains(&local) {
+            names
+                .get(callee.as_str())
+                .map(|(t, n)| crate::imports::scoped(n, t))
+        } else {
+            None
+        };
         let target = if !*has_receiver && registry.contains(&local) {
             registry.get_or_mint(&local)
+        } else if let Some(scoped) = imported {
+            let node = registry.get_or_mint(&scoped);
+            if let Some(lang) = lang {
+                registry.note_placeholder_lang(node, lang);
+            }
+            node
         } else {
             // Not defined here: a bare name, shared across files, so a later
             // file defining it lands on the same node. Which language reached

@@ -2300,7 +2300,8 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         .entries()
         .filter(|(s, _)| !s.contains('#'))
         .filter(|&(_, &n)| reverse.callers(n).next().is_some())
-        .map(|(s, _)| s.as_str())
+        // A placeholder scoped by an import (`f from a.py`) is a call of `f`.
+        .map(|(s, _)| crate::imports::unscope(s).map_or(s.as_str(), |(name, _)| name))
         .collect();
 
     let mut uncalled: Vec<(&str, &str)> = Vec::new();
