@@ -1,0 +1,26 @@
+# Warns before PACKAGES_TOKEN stops working. The release pushes the Homebrew
+# formula and the Scoop manifest with it; once it expires, a release still
+# publishes but both package managers keep offering the previous version, and
+# nothing fails loudly. From 30 days out this opens an issue assigned to the
+# repository owner — an assignment sends mail — and comments on it weekly
+# until the token is replaced. A missing or refused token is reported too.
+name: token expiry
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/token-expiry.sh
