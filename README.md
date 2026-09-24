@@ -189,6 +189,14 @@ read-only mode may call all of them. The three that list without bound —
 `next_offset` while more remain; the order is stable, so pages add up to the
 whole answer.
 
+**"Nothing calls this" is checked against the source.** The graph records
+calls; a type in a signature, a constant read or a handler wired up in a
+template is a use it has no edge for. `impact`, `find_callers` and
+`affected_tests` therefore also name the files whose text names the symbol
+without an edge connecting them (`named_elsewhere`), for every name the tree
+defines exactly once — so an interface injected into three controllers is no
+longer reported as breaking nothing.
+
 **Every answer comes twice: as prose and as `structuredContent`.** The text is
 laid out for a person to read; the structured half is the same facts as data,
 against a schema each tool declares, so an agent parses fields instead of

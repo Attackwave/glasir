@@ -86,6 +86,8 @@ pub struct Served<'a> {
     pub now: u64,
     /// Where `file_graph()` memoises. `None` in fixtures, which rebuild.
     pub files: Option<&'a std::sync::OnceLock<FileGraph>>,
+    /// Where `mentions()` memoises. `None` in fixtures, which rebuild.
+    pub mentions: Option<&'a std::sync::OnceLock<Mentions>>,
     /// The indexed tree, for the one tool that reads a file rather than the
     /// graph. Symbol names are root-relative — that is what keeps an absolute
     /// path out of every answer — so returning source needs the root back.
@@ -126,6 +128,8 @@ pub struct ServedState {
     pub now: u64,
     /// The file graph, built on first use. See `FileGraph`.
     pub files: std::sync::OnceLock<FileGraph>,
+    /// Which files name each uniquely defined symbol, built on first use.
+    pub mentions: std::sync::OnceLock<Mentions>,
     pub root: std::path::PathBuf,
 }
 
@@ -155,6 +159,7 @@ impl ServedState {
             physics: self.physics,
             now: self.now,
             files: Some(&self.files),
+            mentions: Some(&self.mentions),
             root: Some(&self.root),
         }
     }
@@ -1486,6 +1491,8 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let node = served.resolve_one(symbol)?;
     let levels = reverse_levels(served, &[node], depth, floor);
     let (offset, limit) = page(args, 200);
+    let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
+    let elsewhere = served.unconnected_mentions(node, &reached);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
@@ -1505,6 +1512,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
         "symbol": served.name(node),
         "dependents": total,
         "within": within,
+        "named_elsewhere": elsewhere,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
@@ -1573,9 +1581,15 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     callers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     callers.dedup_by_key(|&mut (n, _)| n);
     let (offset, limit) = page(args, 200);
+    let reached: Vec<NodeId> = reverse_levels(served, &[node], 2, floor)
+        .iter()
+        .flatten()
+        .map(|&(n, _)| n)
+        .collect();
 
     let mut value = json!({
         "symbol": served.name(node),
+        "named_elsewhere": served.unconnected_mentions(node, &reached),
         "callers": callers
             .iter()
             .skip(offset)
@@ -1597,6 +1611,12 @@ fn render_find_callers(v: &Value) -> String {
     let sym = v["symbol"].as_str().unwrap_or("");
     let callers = v["callers"].as_array().map_or(&[][..], Vec::as_slice);
     if v["count"].as_u64().unwrap_or(0) == 0 {
+        if has_elsewhere(v) {
+            return format!(
+                "{sym}\n\nnothing in the graph calls this{}",
+                render_elsewhere(v, ", but")
+            );
+        }
         return format!(
             "{sym}\n\nnothing in the graph calls this. Callers in code the graph \
 does not cover are not ruled out.\n"
@@ -1612,6 +1632,9 @@ does not cover are not ruled out.\n"
         ));
     }
     out.push_str(&more_line(v, count));
+    if has_elsewhere(v) {
+        out.push_str(&render_elsewhere(v, "\nbeyond these,"));
+    }
     out
 }
 
@@ -2122,9 +2145,11 @@ const TEST_DEPTH: u64 = 12;
 fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
     let depth = args["depth"].as_u64().unwrap_or(TEST_DEPTH).clamp(1, 30) as usize;
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let mut single = None;
     let (target, seeds, unknown) = match args["symbol"].as_str() {
         Some(symbol) => {
             let node = served.resolve_one(symbol)?;
+            single = Some(node);
             (served.name(node), vec![node], Vec::new())
         }
         None => {
@@ -2159,10 +2184,20 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
         .collect();
     files.sort();
     files.dedup();
+    // Tests naming it without an edge — a type in a fixture, a constant
+    // compared against.
+    let naming: Vec<String> = single.map_or_else(Vec::new, |node| {
+        served
+            .unconnected_mentions(node, &[])
+            .into_iter()
+            .filter(|f| is_test_symbol(&format!("{f}#x")) && !files.contains(f))
+            .collect()
+    });
 
     Ok(json!({
         "target": target,
         "count": tests.len(),
+        "named_elsewhere": naming,
         "files": files,
         "tests": tests
             .iter()
@@ -2198,6 +2233,19 @@ proof it is untested: a test in a file the graph does not index, or one that \
 calls through dynamic dispatch, is invisible here.\n",
             v["depth"].as_u64().unwrap_or(0)
         ));
+        let naming = v["named_elsewhere"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        if !naming.is_empty() {
+            out.push_str(&format!(
+                "\nbut {} test file(s) name it without an edge the graph records — \
+run them:\n",
+                naming.len()
+            ));
+            for f in naming {
+                out.push_str(&format!("  {}\n", f.as_str().unwrap_or("")));
+            }
+        }
         return out;
     }
     let files = v["files"].as_array().map_or(0, Vec::len);
@@ -2582,6 +2630,97 @@ fn is_engine_callback(file: &str, name: &str) -> bool {
 
 /// Every text file under `root` the indexer would not ignore, for a search the
 /// graph cannot answer. Binary files and files over 1 MiB are skipped.
+/// The files whose text names a symbol, for every name the tree defines exactly
+/// once. The graph records calls; a type in a signature, a constant read or a
+/// handler wired up in a scene is a reference it never sees, and `impact` then
+/// said "changing it breaks no caller" about a symbol other files plainly use.
+/// Measured on five foreign trees, the files it named held 0-25% of those
+/// using a type. A name defined twice is left out: its mentions cannot be told
+/// apart.
+#[derive(Default)]
+pub struct Mentions {
+    files: Vec<String>,
+    by_name: std::collections::HashMap<String, Vec<u32>>,
+}
+
+impl Mentions {
+    fn of(&self, name: &str) -> impl Iterator<Item = &str> {
+        self.by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|&f| self.files[f as usize].as_str())
+    }
+}
+
+impl Served<'_> {
+    fn mentions<'m>(&'m self, fallback: &'m std::sync::OnceLock<Mentions>) -> &'m Mentions {
+        self.mentions.unwrap_or(fallback).get_or_init(|| {
+            let Some(root) = self.root else {
+                return Mentions::default();
+            };
+            let mut defs: std::collections::HashMap<&str, usize> = Default::default();
+            for (symbol, &node) in self.registry.entries() {
+                if let Some((_, name)) = symbol.split_once('#')
+                    && self.defined.contains(&node)
+                    && name.len() > 2
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    *defs.entry(name).or_default() += 1;
+                }
+            }
+            let mut out = Mentions::default();
+            for path in text_files(root) {
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                let file = out.files.len() as u32;
+                let mut hit = false;
+                for word in String::from_utf8_lossy(&bytes)
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                {
+                    if defs.get(word) == Some(&1) {
+                        let seen = out.by_name.entry(word.to_string()).or_default();
+                        if seen.last() != Some(&file) {
+                            seen.push(file);
+                            hit = true;
+                        }
+                    }
+                }
+                if hit {
+                    out.files.push(
+                        path.strip_prefix(root)
+                            .map(|r| r.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+            out
+        })
+    }
+
+    /// Files naming `node` that no edge in `reached` connects, sorted.
+    fn unconnected_mentions(&self, node: NodeId, reached: &[NodeId]) -> Vec<String> {
+        let own = self.name(node);
+        let Some((home, name)) = own.split_once('#') else {
+            return Vec::new();
+        };
+        let local = std::sync::OnceLock::new();
+        let connected: std::collections::HashSet<String> = reached
+            .iter()
+            .filter_map(|&n| self.name(n).split_once('#').map(|(f, _)| f.to_string()))
+            .collect();
+        let mut files: Vec<String> = self
+            .mentions(&local)
+            .of(name)
+            .filter(|f| *f != home && !connected.contains(*f))
+            .map(str::to_string)
+            .collect();
+        files.sort();
+        files
+    }
+}
+
 fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -2715,10 +2854,15 @@ fn render_impact(v: &Value) -> String {
     let mut out = format!("{}\n\n", v["symbol"].as_str().unwrap_or(""));
     let levels = v["hops"].as_array().map_or(&[][..], Vec::as_slice);
     if v["dependents"].as_u64().unwrap_or(0) == 0 {
-        out.push_str(
-            "nothing in the graph reaches this symbol: changing it \
+        if has_elsewhere(v) {
+            out.push_str("nothing in the graph reaches this symbol");
+            out.push_str(&render_elsewhere(v, ", but"));
+        } else {
+            out.push_str(
+                "nothing in the graph reaches this symbol: changing it \
 breaks no caller here. Callers in code the graph does not cover are not ruled out.\n",
-        );
+            );
+        }
         return out;
     }
     out.push_str(&format!(
@@ -2742,6 +2886,38 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
         }
     }
     out.push_str(&more_line(v, v["dependents"].as_u64().unwrap_or(0)));
+    if has_elsewhere(v) {
+        out.push_str(&render_elsewhere(v, "\nbeyond these,"));
+    }
+    out
+}
+
+fn has_elsewhere(v: &Value) -> bool {
+    v["named_elsewhere"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty())
+}
+
+/// The files that name a symbol without an edge to it, after `lead`.
+fn render_elsewhere(v: &Value, lead: &str) -> String {
+    let files = v["named_elsewhere"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    let mut out = format!(
+        "{lead} its name appears in {} other file(s) no edge connects — a type, a \
+constant, an import or a reference the graph does not record as a call. Read \
+them before changing it:\n",
+        files.len()
+    );
+    for f in files.iter().take(CHANGE_LIST_LIMIT) {
+        out.push_str(&format!("  {}\n", f.as_str().unwrap_or("")));
+    }
+    if files.len() > CHANGE_LIST_LIMIT {
+        out.push_str(&format!(
+            "  … and {} more (all of them in structuredContent)\n",
+            files.len() - CHANGE_LIST_LIMIT
+        ));
+    }
     out
 }
 
