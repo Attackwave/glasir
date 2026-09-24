@@ -78,7 +78,7 @@ folder you have trusted. `install` prints the step for each one it wrote.
 
 Restart the assistant and ask it something about the code: *"what breaks if I
 change `parse_config`?"*, *"how does a request reach the database?"*. The
-answers come from `impact`, `query_graph`, `shortest_path` and nine more tools
+answers come from `impact`, `query_graph`, `shortest_path` and ten more tools
 listed under [What it serves](#what-it-serves).
 
 ```sh
@@ -141,7 +141,7 @@ source and extraction configuration still match.
 
 ## What it serves
 
-Twelve MCP tools, over stdio for a local editor or Streamable HTTP for a remote
+Thirteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
@@ -174,6 +174,12 @@ cheapest to act on:
   broken rule with the edges that break it; pass rules ad hoc to test a
   boundary before writing it down. Under `serve --watch` the graph follows
   the working tree, so a change is checked before it is committed
+- `find_unused` — definitions nothing in the tree refers to, confirmed against
+  every text file rather than the call graph alone, with tests, annotated and
+  generated code, overrides and framework conventions left out. On six real
+  repositories in five languages, every name it reported appeared nowhere but
+  in its own definition; what it cannot see — a library's public API, a name
+  built at run time — is stated in each answer
 
 **Every answer comes twice: as prose and as `structuredContent`.** The text is
 laid out for a person to read; the structured half is the same facts as data,

@@ -831,6 +831,35 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["source", "rules", "holds", "violations"]
             }
+        },
+        {
+            "name": "find_unused",
+            "title": "What nothing uses",
+            "description": "Definitions nothing in the tree refers to: no call \
+    reaches them, no call anywhere uses the name, and the name appears in no text \
+    file of the tree more often than it is defined. Tests, entry points, \
+    annotated or decorated definitions (a framework calls those), overrides, \
+    generated files, headers, data formats, JavaBeans accessors, visitor and \
+    event-handler conventions and Godot callbacks are left out. Not proof of \
+    dead code: a library's public API, or a name a library builds at run time \
+    (`getattr`, reflection), is invisible here. Check before deleting.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Only definitions under this path prefix"},
+                    "limit": {"type": "integer", "description": "How many to name (default 50)"}
+                }
+            },
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "checked": {"type": "integer", "description": "Definitions considered"},
+                    "count": {"type": "integer"},
+                    "unused": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["path", "checked", "count", "unused"]
+            }
         }
     ])
 }
@@ -2210,6 +2239,329 @@ fn render_co_changes(v: &Value) -> String {
     out
 }
 
+/// Files whose definitions are data or entry points rather than code a caller
+/// reaches — keys, selectors, build targets, schema fields.
+const NOT_CALLED: &[&str] = &[
+    "json",
+    "yaml",
+    "yml",
+    "xml",
+    "svg",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "html",
+    "htm",
+    "ini",
+    "properties",
+    "env",
+    "cfg",
+    "conf",
+    "md",
+    "markdown",
+    "rst",
+    "bib",
+    "tex",
+    "txt",
+    "mk",
+    "tf",
+    "tfvars",
+    "hcl",
+    "proto",
+    "graphql",
+    "gql",
+    "sql",
+    "prisma",
+    "toml",
+    "mod",
+    // A header declares an interface for other translation units, as a
+    // `.d.ts` does: measured on ktor, a vendored curl.h was 310 reports.
+    "h",
+    "hh",
+    "hpp",
+    "hxx",
+];
+/// Build files named without an extension; their targets are entry points.
+const NOT_CALLED_NAMES: &[&str] = &["Makefile", "Justfile", "Dockerfile", "Rakefile", "Gemfile"];
+
+/// Definitions whose name nothing in the tree refers to. Strict on purpose,
+/// because the reader acts on it by deleting: a definition counts as used if
+/// anything else points at it, *or* if any call anywhere names it bare —
+/// which covers `self.x()`, calls through an import alias, and names defined
+/// in several places. What it cannot see is named in the answer.
+fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
+    let scope = args["path"].as_str().unwrap_or("").trim_start_matches("./");
+    let limit = args["limit"].as_u64().unwrap_or(50).clamp(1, 1000) as usize;
+    let reverse = served.snap.reverse();
+
+    let called_bare: std::collections::HashSet<&str> = served
+        .registry
+        .entries()
+        .filter(|(s, _)| !s.contains('#'))
+        .filter(|&(_, &n)| reverse.callers(n).next().is_some())
+        .map(|(s, _)| s.as_str())
+        .collect();
+
+    let mut uncalled: Vec<(&str, &str)> = Vec::new();
+    let mut checked = 0;
+    for (symbol, &node) in served.registry.entries() {
+        let Some((file, name)) = symbol.split_once('#') else {
+            continue;
+        };
+        let base = file.rsplit('/').next().unwrap_or(file);
+        let ext = base
+            .rsplit_once('.')
+            .map_or("", |(_, e)| e)
+            .to_ascii_lowercase();
+        if !served.defined.contains(&node)
+            || !file.starts_with(scope)
+            || NOT_CALLED.contains(&ext.as_str())
+            || NOT_CALLED_NAMES.contains(&base)
+            || name == "<module>"
+            || name == "main"
+            // A package or namespace declaration, which nothing calls.
+            || name.contains('.')
+            || ["testdata/", "fixtures/"].iter().any(|d| file.to_ascii_lowercase().contains(d))
+            || (name.starts_with("__") && name.ends_with("__"))
+            || is_test_symbol(symbol)
+        {
+            continue;
+        }
+        checked += 1;
+        let pointed_at = reverse.callers(node).any(|(c, _)| {
+            c != node
+                && !served
+                    .name(c)
+                    .split_once('#')
+                    .is_some_and(|(f, _)| crate::docs::is_markdown(std::path::Path::new(f)))
+        });
+        if !pointed_at && !called_bare.contains(name) {
+            uncalled.push((file, name));
+        }
+    }
+
+    // The graph records calls, not every reference: a type in a signature, a
+    // constant read, a module declaration or a handler passed by name never
+    // becomes an edge. Measured, that made 218 of 685 definitions here look
+    // unused and every one of them was named elsewhere. So the source has the
+    // last word — every text file in the tree, not only the indexed ones, since
+    // a Godot scene or an HTML template connects a handler by name alone. A
+    // name written more often than it is defined is in use.
+    let root = served
+        .root
+        .ok_or("this server has no tree on disk to check the source against")?;
+    let mut wanted: std::collections::HashMap<&str, (usize, usize)> = Default::default();
+    for &(_, name) in &uncalled {
+        wanted.entry(name).or_default().0 += 1;
+    }
+    let mut excused: std::collections::HashSet<(&str, &str)> = Default::default();
+    for path in text_files(root) {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        // `$` separates words: it is a sigil or a template (`$x` in PHP and
+        // Bash, `"big$size"` in a Kotlin string), and kept as part of a word it
+        // hid the name inside. A PHP definition may carry it, so both spellings
+        // are looked up.
+        for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            if let Some(seen) = wanted.get_mut(word) {
+                seen.1 += 1;
+            } else if !word.is_empty()
+                && let Some(seen) = wanted.get_mut(format!("${word}").as_str())
+            {
+                seen.1 += 1;
+            }
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        // By characters: a byte offset can land inside one and panic.
+        let head: String = text.chars().take(1024).collect();
+        let generated = head.contains("DO NOT EDIT") || head.contains("@generated");
+        for &(file, name) in uncalled.iter().filter(|(f, _)| *f == rel) {
+            let annotated = served
+                .registry
+                .node_of(&format!("{file}#{name}"))
+                .and_then(|n| served.registry.span(n))
+                .is_some_and(|(start, _)| is_annotated(&text, start as usize));
+            if generated || annotated || is_engine_callback(file, name) {
+                excused.insert((file, name));
+            }
+        }
+    }
+    let mut unused: Vec<String> = uncalled
+        .iter()
+        .filter(|entry| !excused.contains(*entry))
+        .filter(|(_, name)| wanted.get(name).is_some_and(|&(defs, seen)| seen <= defs))
+        .map(|(file, name)| format!("{file}#{name}"))
+        .collect();
+    unused.sort();
+    Ok(json!({
+        "path": scope,
+        "checked": checked,
+        "count": unused.len(),
+        "unused": unused.iter().take(limit).collect::<Vec<_>>(),
+    }))
+}
+
+/// Whether an attribute or decorator sits on the definition starting at
+/// `start` — `#[test]`, `#[global_allocator]`, `@app.route`, `@Override`,
+/// `[Fact]`. A framework calls such a definition; nothing in the tree does.
+fn is_annotated(text: &str, start: usize) -> bool {
+    let Some(before) = text.get(..start.min(text.len())) else {
+        return false;
+    };
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    // `override` (Kotlin, C#, Swift) is a call through an interface.
+    let line_end = text[start.min(text.len())..]
+        .find('\n')
+        .map_or(text.len(), |i| start + i);
+    let line = text.get(line_start..line_end).unwrap_or("");
+    if before[line_start..].contains('@')
+        || before[line_start..].contains("#[")
+        || line.split_whitespace().any(|w| w == "override")
+    {
+        return true;
+    }
+    before[..line_start]
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| l.starts_with('@') || l.starts_with("#[") || l.starts_with('['))
+}
+
+/// Methods a library or engine calls by a name it builds: a visitor's
+/// `visit_<Node>`, an event handler's `on_<event>` or `On<Event>`, and Godot's
+/// virtual callbacks — a per-language list, like Python's dunders, because
+/// nothing in the source marks them. Measured on graphify, the visitor and
+/// handler conventions were 16 of 43 reports.
+fn is_engine_callback(file: &str, name: &str) -> bool {
+    // JavaBeans accessors, which Spring, Jackson, JPA and every template
+    // engine reach through the property name (`owner.address`), never the
+    // method name.
+    let bean = ["get", "set", "is"].iter().any(|p| {
+        name.strip_prefix(p)
+            .and_then(|r| r.chars().next())
+            .is_some_and(|c| c.is_ascii_uppercase())
+    });
+    if bean && (file.ends_with(".java") || file.ends_with(".kt") || file.ends_with(".groovy")) {
+        return true;
+    }
+    let handler = name
+        .strip_prefix("On")
+        .and_then(|r| r.chars().next())
+        .is_some_and(|c| c.is_ascii_uppercase());
+    if ["visit_", "depart_", "on_"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        || handler
+    {
+        return true;
+    }
+    const GODOT: &[&str] = &[
+        "_ready",
+        "_process",
+        "_physics_process",
+        "_input",
+        "_unhandled_input",
+        "_unhandled_key_input",
+        "_shortcut_input",
+        "_gui_input",
+        "_notification",
+        "_draw",
+        "_enter_tree",
+        "_exit_tree",
+        "_init",
+        "_initialize",
+        "_finalize",
+        "_to_string",
+        "_get",
+        "_set",
+        "_get_property_list",
+        "_validate_property",
+        "_can_drop_data",
+        "_drop_data",
+        "_get_drag_data",
+        "_make_custom_tooltip",
+        "_has_point",
+        "_get_minimum_size",
+        "_integrate_forces",
+        "_run",
+        "_get_configuration_warnings",
+    ];
+    file.ends_with(".gd") && GODOT.contains(&name)
+}
+
+/// Every text file under `root` the indexer would not ignore, for a search the
+/// graph cannot answer. Binary files and files over 1 MiB are skipped.
+fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let Ok(kind) = e.file_type() else { continue };
+            let own = p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".glasir"));
+            if own || kind.is_symlink() || crate::watcher::ignored_under(&p, Some(root)) {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(p);
+            } else if e.metadata().is_ok_and(|m| m.len() <= 1 << 20)
+                && std::fs::read(&p).is_ok_and(|b| !b[..b.len().min(8192)].contains(&0))
+            {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn render_find_unused(v: &Value) -> String {
+    let count = v["count"].as_u64().unwrap_or(0);
+    let checked = v["checked"].as_u64().unwrap_or(0);
+    let mut out =
+        format!("{count} of {checked} definition(s) are not referenced anywhere in the graph");
+    let unused = v["unused"].as_array().map_or(&[][..], Vec::as_slice);
+    if unused.is_empty() {
+        out.push_str(".\n");
+        return out;
+    }
+    out.push_str(":\n");
+    let mut last = "";
+    for u in unused {
+        let s = u.as_str().unwrap_or("");
+        let (file, name) = s.split_once('#').unwrap_or(("", s));
+        if file != last {
+            out.push_str(&format!("\n{file}\n"));
+            last = file;
+        }
+        out.push_str(&format!("  {name}\n"));
+    }
+    if (unused.len() as u64) < count {
+        out.push_str(&format!(
+            "\n… and {} more (raise `limit`)\n",
+            count - unused.len() as u64
+        ));
+    }
+    out.push_str(
+        "\nNot proof of dead code: a library's public API, a framework callback, a trait \
+method called implicitly, or a name reached through reflection or a string is invisible \
+here. Check before deleting.\n",
+    );
+    out
+}
+
 /// Where a tree keeps its architecture contract; `glasir guard` reads the same.
 pub const RULES_FILE: &str = "glasir-rules.txt";
 
@@ -2865,6 +3217,7 @@ fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, St
         "affected_tests" => affected_tests(served, args),
         "co_changes" => co_changes(served, args),
         "check_architecture" => check_architecture(served, args),
+        "find_unused" => find_unused(served, args),
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -2884,6 +3237,7 @@ fn render(name: &str, v: &Value) -> String {
         "affected_tests" => render_affected_tests(v),
         "co_changes" => render_co_changes(v),
         "check_architecture" => render_check_architecture(v),
+        "find_unused" => render_find_unused(v),
         _ => String::new(),
     }
 }
