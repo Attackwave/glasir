@@ -213,6 +213,11 @@ fn change_tools() {
 }
 
 #[test]
+fn imports() {
+    crate::demo_imports();
+}
+
+#[test]
 fn parallel_ingest() {
     crate::demo_parallel_ingest();
 }

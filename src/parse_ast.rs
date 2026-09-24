@@ -50,6 +50,9 @@ pub struct FileFacts {
     /// callee rather than inside it, because every consumer reads the bare
     /// name and `charge -> process` must stay `process`.
     pub call_modules: Vec<Option<String>>,
+    /// Import statements, for resolving a call through a module to the file it
+    /// names. See `imports`.
+    pub imports: Vec<crate::imports::Import>,
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
@@ -292,6 +295,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         docs: f.docs,
         calls: f.calls,
         call_modules: f.call_modules,
+        imports: crate::imports::read(lang, src),
         had_errors: f.had_errors,
     })
 }

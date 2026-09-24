@@ -28,6 +28,8 @@ pub struct Link {
     pub definition: NodeId,
     /// Definitions that also carry this name. 1 means unique.
     pub candidates: usize,
+    /// Named by an import rather than matched by name alone.
+    pub exact: bool,
 }
 
 /// The language a definition's file is written in.
@@ -65,13 +67,56 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         }
     }
 
+    let file_of: HashMap<NodeId, &str> = registry
+        .entries()
+        .filter_map(|(s, &n)| s.split_once('#').map(|(f, _)| (n, f)))
+        .collect();
     let mut links = Vec::new();
     for (symbol, &placeholder) in registry.entries() {
         // Unqualified symbols are the placeholders tier 2 minted.
         if symbol.contains('#') {
             continue;
         }
-        let Some(defs) = by_name.get(symbol.as_str()) else {
+        // A placeholder an import scoped to a file or a Go package links to
+        // the definition there. When the target does not define the name — a
+        // re-export through an `__init__.py` or an `index.ts` — the bare-name
+        // rule below still applies, with its refusal of an ambiguous name.
+        let (bare, target) = match crate::imports::unscope(symbol) {
+            Some((name, target)) => (name, Some(target)),
+            None => (symbol.as_str(), None),
+        };
+        if let Some(target) = target {
+            let found: Vec<NodeId> = if let Some(dir) = target.strip_suffix('/') {
+                by_name
+                    .get(bare)
+                    .map(|defs| {
+                        defs.iter()
+                            .copied()
+                            .filter(|&d| {
+                                file_of.get(&d).is_some_and(|file| {
+                                    file.rsplit_once('/').map_or("", |(d, _)| d) == dir
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                registry
+                    .node_of(&format!("{target}#{bare}"))
+                    .into_iter()
+                    .collect()
+            };
+            if let [definition] = found[..] {
+                links.push(Link {
+                    placeholder,
+                    definition,
+                    candidates: 1,
+                    exact: true,
+                });
+                continue;
+            }
+        }
+        let Some(defs) = by_name.get(bare) else {
             continue;
         };
         // A definition never resolves onto itself, and never across languages.
@@ -95,6 +140,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 placeholder,
                 definition,
                 candidates: defs.len(),
+                exact: false,
             });
         }
     }
@@ -121,7 +167,12 @@ pub fn link_edges(links: &[Link], now: u64) -> Vec<(NodeId, Edge)> {
                     timestamp: now,
                     authority: crate::physics::SOURCE_CODE,
                     edge_kind: RESOLVES_TO,
-                    confidence: Confidence::Ambiguous,
+                    // An import named the file: syntactic, like tier 2.
+                    confidence: if l.exact {
+                        Confidence::Inferred
+                    } else {
+                        Confidence::Ambiguous
+                    },
                 },
             )
         })

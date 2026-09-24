@@ -204,7 +204,10 @@ merely plausible.
 **Every edge says how it was resolved.** `extracted` is compiler-verified
 (SCIP/LSP), `inferred` is syntax from native scanners, `ambiguous` is a name match.
 An answer is therefore citable: a caller can tell what the tool knows from what
-it guessed.
+it guessed. In Python, Go and JavaScript/TypeScript a call through an import —
+`util.Do()`, `from pkg.b import helper as h; h()`, `import * as x from './x'` —
+resolves to the file or package the import names, so a name defined in several
+places still links to the right one instead of to none.
 
 ## Languages
 
