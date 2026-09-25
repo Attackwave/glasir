@@ -2608,34 +2608,22 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     for &(file, name) in &uncalled {
         by_file.entry(file).or_default().push(name);
     }
-    for path in text_files(root) {
-        let Ok(bytes) = std::fs::read(&path) else {
+    // The counts come from the tree-wide pass `mentions` takes once per
+    // served state; only the files holding a candidate are read here, for
+    // what their own text says about it.
+    let local = std::sync::OnceLock::new();
+    let counts = &served.mentions(&local).counts;
+    for (name, seen) in wanted.iter_mut() {
+        seen.1 = counts.get(*name).copied().unwrap_or(0);
+    }
+    for (&file, names) in &by_file {
+        let Ok(bytes) = std::fs::read(root.join(file)) else {
             continue;
         };
         let text = String::from_utf8_lossy(&bytes);
-        // `$` separates words: it is a sigil or a template (`$x` in PHP and
-        // Bash, `"big$size"` in a Kotlin string), and kept as part of a word it
-        // hid the name inside. A PHP definition may carry it, so both spellings
-        // are looked up.
-        for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-            if let Some(seen) = wanted.get_mut(word) {
-                seen.1 += 1;
-            } else if !word.is_empty()
-                && let Some(seen) = wanted.get_mut(format!("${word}").as_str())
-            {
-                seen.1 += 1;
-            }
-        }
-        let rel = path
-            .strip_prefix(root)
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
         // By characters: a byte offset can land inside one and panic.
         let head: String = text.chars().take(1024).collect();
         let generated = head.contains("DO NOT EDIT") || head.contains("@generated");
-        let Some((&file, names)) = by_file.get_key_value(rel.as_str()) else {
-            continue;
-        };
         for &name in names {
             let annotated = served
                 .registry
@@ -2766,6 +2754,9 @@ fn is_engine_callback(file: &str, name: &str) -> bool {
 pub struct Mentions {
     files: Vec<String>,
     by_name: std::collections::HashMap<String, Vec<u32>>,
+    /// How often each defined name is written anywhere in the tree, for
+    /// `find_unused`: the same pass over every text file, taken once.
+    counts: std::collections::HashMap<String, usize>,
 }
 
 impl Mentions {
@@ -2784,16 +2775,37 @@ impl Served<'_> {
             let Some(root) = self.root else {
                 return Mentions::default();
             };
-            let mut defs: std::collections::HashMap<&str, usize> = Default::default();
+            // One slot per defined name, looked up once per word and keyed by
+            // the registry's own strings: a match is frequent, and a String
+            // per match cost 1.6 s on OTP. A name is mentionable when the tree
+            // defines it once and it reads as a word; every defined name is
+            // counted, for `find_unused`. `$` splits words — a sigil or a
+            // template (`$x` in PHP and Bash, `"big$size"` in Kotlin) — so a
+            // definition spelled `$x` is counted when `x` is.
+            #[derive(Default)]
+            struct Slot {
+                defs: usize,
+                count: usize,
+                // Some definition is spelled `$` + this name.
+                sigil: bool,
+                postings: Vec<u32>,
+            }
+            let mut slots: std::collections::HashMap<&str, Slot> = Default::default();
             for (symbol, &node) in self.registry.entries() {
                 if let Some((_, name)) = symbol.split_once('#')
                     && self.defined.contains(&node)
-                    && name.len() > 2
-                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
                 {
-                    *defs.entry(name).or_default() += 1;
+                    slots.entry(name).or_default().defs += 1;
+                    if let Some(bare) = name.strip_prefix('$') {
+                        slots.entry(bare).or_default().sigil = true;
+                    }
                 }
             }
+            let mentionable = |name: &str, slot: &Slot| {
+                slot.defs == 1
+                    && name.len() > 2
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            };
             let mut out = Mentions::default();
             for path in text_files(root) {
                 let Ok(bytes) = std::fs::read(&path) else {
@@ -2804,12 +2816,15 @@ impl Served<'_> {
                 for word in String::from_utf8_lossy(&bytes)
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 {
-                    if defs.get(word) == Some(&1) {
-                        let seen = out.by_name.entry(word.to_string()).or_default();
-                        if seen.last() != Some(&file) {
-                            seen.push(file);
-                            hit = true;
-                        }
+                    let Some((&name, slot)) = slots.get_key_value(word) else {
+                        continue;
+                    };
+                    let mention = mentionable(name, slot);
+                    let slot = slots.get_mut(word).expect("just found");
+                    slot.count += 1;
+                    if mention && slot.postings.last() != Some(&file) {
+                        slot.postings.push(file);
+                        hit = true;
                     }
                 }
                 if hit {
@@ -2818,6 +2833,18 @@ impl Served<'_> {
                             .map(|r| r.to_string_lossy().replace('\\', "/"))
                             .unwrap_or_default(),
                     );
+                }
+            }
+            for (name, slot) in slots {
+                if slot.defs > 0 {
+                    *out.counts.entry(name.to_string()).or_default() += slot.count;
+                }
+                // `x` written in the text also counts for a `$x` definition.
+                if slot.sigil {
+                    *out.counts.entry(format!("${name}")).or_default() += slot.count;
+                }
+                if !slot.postings.is_empty() {
+                    out.by_name.insert(name.to_string(), slot.postings);
                 }
             }
             out
