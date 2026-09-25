@@ -4,7 +4,7 @@
 # fails `--check`, so a repository cannot drop out of the gate silently.
 gin               100
 spring-petclinic  94
-graphify          98
+graphify          100
 ktor              99
 polly             100
 zod               100

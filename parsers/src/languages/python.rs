@@ -120,9 +120,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     true,
                                     &mut facts,
                                 );
-                                if let Some(last) = scope.open.last_mut() {
-                                    last.depth = current_line_indent + 1;
-                                }
+                                scope.set_body_depth(current_line_indent + 1);
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
@@ -140,9 +138,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     false,
                                     &mut facts,
                                 );
-                                if let Some(last) = scope.open.last_mut() {
-                                    last.depth = current_line_indent + 1;
-                                }
+                                scope.set_body_depth(current_line_indent + 1);
                                 scope.on_word(name);
                                 i += 2;
                                 continue;
