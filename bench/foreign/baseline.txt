@@ -8,7 +8,7 @@ graphify          98
 ktor              99
 polly             100
 zod               100
-ripgrep           93
+ripgrep           100
 pixelorama        93
 jhipster          100
 eshop             100

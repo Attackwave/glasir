@@ -6247,7 +6247,7 @@ fn demo_change_tools() {
     // pay -> charge -> log, a test two hops from log and one three hops out,
     // and a test elsewhere that must not be named.
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..18u32 {
+    for _ in 0..19u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -6264,6 +6264,10 @@ fn demo_change_tools() {
     b.add_edge(5, e(4));
     // export -> render, and no test reaches either.
     b.add_edge(8, e(7));
+    // A test known only by its attribute: `checks_itself` calls sub.
+    b.add_edge(12, e(10));
+    // `#[cfg(test)]` marks code a test uses, not a test.
+    b.add_edge(18, e(10));
     let g = graph::Graph::new(b.build());
     let snap = g.load();
     let mut reg = ingest::SymbolRegistry::new(0);
@@ -6286,6 +6290,7 @@ fn demo_change_tools() {
         "src/gen.rs#gen_fn",
         "src/a.rs#twin",
         "src/b.rs#twin",
+        "src/tools.rs#only_in_tests",
     ]
     .iter()
     .enumerate()
@@ -6294,10 +6299,12 @@ fn demo_change_tools() {
     }
     // Read by `find_unused` below; its span is what lets the attribute above
     // `checks_itself` be seen.
-    let tools = "#[test]\nfn checks_itself() {}\n\nfn helper() {}\n\nfn used_by_text() {}\n// see used_by_text\n";
+    let tools = "#[test]\nfn checks_itself() {}\n\nfn helper() {}\n\nfn used_by_text() {}\n// see used_by_text\n\n#[cfg(test)]\nfn only_in_tests() {}\n";
     let at = tools.find("fn checks_itself").unwrap() as u32;
     reg.set_span(12, (at, at + 20));
-    let defined: std::collections::HashSet<csr::NodeId> = (0..18).collect();
+    let at = tools.find("fn only_in_tests").unwrap() as u32;
+    reg.set_span(18, (at, at + 20));
+    let defined: std::collections::HashSet<csr::NodeId> = (0..19).collect();
     let comms = community::detect(
         &snap,
         &community::Params::default(),
@@ -6544,6 +6551,14 @@ fn demo_change_tools() {
     ] {
         assert!(!unused.contains(&kept), "{kept} is used or excused: {text}");
     }
+
+    // Neither path nor name says `checks_itself` is a test; `#[test]` does.
+    let (v, text) = call("affected_tests", json!({"symbol": "src/calc.rs#sub"}));
+    assert_eq!(
+        v["tests"],
+        json!([{"symbol": "src/tools.rs#checks_itself", "file": "src/tools.rs", "hop": 1}]),
+        "{text}"
+    );
 
     // A name the graph has no edge for is still named by the files that write
     // it: `view.rs` names log and render, `charge.rs` is already a dependent,
