@@ -2971,3 +2971,17 @@ fn java_anonymous_class_is_not_a_definition() {
     assert_eq!(facts.defines, vec!["Fixtures", "make", "getName"]);
     assert!(facts.calls.iter().any(|c| c.0 == "make" && c.1 == "PetType"));
 }
+
+#[test]
+fn gdscript_static_func_after_an_inner_class_is_top_level() {
+    // `func` sits at column 7 in `static func`, which read as nested in `Meta`.
+    let facts = native_parsers::rules::active().parse(
+        Language::GdScript,
+        "class Meta:\n\tvar uniforms = []\n\n\nstatic func build(\n\tshader\n) -> void:\n\tHelper.make(shader)\n",
+    );
+    assert!(
+        facts.calls.iter().any(|c| c.0 == "build" && c.1 == "make"),
+        "{:?}",
+        facts.calls
+    );
+}

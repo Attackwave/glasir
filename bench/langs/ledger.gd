@@ -14,6 +14,10 @@ const LIMIT = 5000
 
 var owner_name = ""
 
+@export var rate = 2
+
+static var opened = 0
+
 # Bills the account and returns what is left.
 func charge(amount):
 	if amount > LIMIT:
