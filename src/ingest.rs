@@ -601,25 +601,36 @@ fn prepare_facts(
     // After the calls, which mint `<module>` when the top level calls
     // anything. Only from a definition that exists: minting `<module>` for a file whose
     // top level merely names something would add a node nothing calls.
+    let mut node_of: HashMap<u32, Option<NodeId>> = HashMap::new();
     let refs = facts
         .refs
         .iter()
         .filter_map(|(from, name, qualifier)| {
-            let node = registry.node_of(&qualify(&file, from))?;
+            let node = (*node_of.entry(*from).or_insert_with(|| {
+                let def = match *from {
+                    parse_ast::MODULE => "<module>",
+                    k => facts
+                        .ranges
+                        .get(k as usize)
+                        .map_or("<module>", |(n, _)| n.as_str()),
+                };
+                registry.node_of(&qualify(&file, def))
+            }))?;
+            let name: &str = name;
             // Through an import the name is decided, however many files
             // define it: `util.Primitive` after `import * as util from
             // "./util.js"`, or a name imported directly.
             let through = match qualifier {
-                Some(q) => modules
-                    .get(q.as_str())
-                    .map(|t| crate::imports::scoped(name, t)),
-                None => names
-                    .get(name.as_str())
-                    .map(|(t, n)| crate::imports::scoped(n, t)),
+                Some(q) => modules.get(&**q).map(|t| crate::imports::scoped(name, t)),
+                None => names.get(name).map(|(t, n)| crate::imports::scoped(n, t)),
             };
-            Some((node, through.unwrap_or_else(|| name.clone())))
+            Some((node, through.unwrap_or_else(|| name.to_string())))
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Overloads share a node, so their uses are one set.
+    let mut refs = refs;
+    refs.sort_unstable();
+    refs.dedup();
     registry.set_refs(&file, refs);
 
     let file_key = arena.intern(&file);
