@@ -80,7 +80,13 @@ jobs:
         run: |
           BIN=target/${{ matrix.target }}/release/glasir
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
-          "$BIN" --version | grep -q "^glasir "
+          # The archive is named after the tag, so the binary inside must say
+          # the same version — v0.2.0 would otherwise ship a binary answering
+          # 0.1.0. A release candidate's suffix is not in Cargo.toml.
+          WANT="${GITHUB_REF_NAME#control-}"
+          WANT="${WANT#v}"
+          WANT="${WANT%%-*}"
+          "$BIN" --version | tee /dev/stderr | grep -qx "glasir $WANT"
 
       - name: install cargo-about
         run: cargo install cargo-about --locked --features cli
