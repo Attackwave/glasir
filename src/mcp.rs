@@ -1571,11 +1571,7 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     let node = served.resolve_one(symbol)?;
 
     let reverse = served.snap.reverse();
-    let mut callers: Vec<(NodeId, Confidence)> = reverse
-        .callers(node)
-        .filter(|(_, e)| e.confidence >= floor)
-        .map(|(c, e)| (c, e.confidence))
-        .collect();
+    let mut callers = direct_callers(served, reverse, node, floor);
     // A multigraph may join two nodes several times; the caller is one answer,
     // at its strongest confidence.
     callers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
@@ -1994,6 +1990,34 @@ fn touched_names(
     Some(names)
 }
 
+/// The symbols calling `node`, looking through the placeholders tier 3 linked
+/// onto it: a placeholder is the name a call was written with, not a caller,
+/// and counting it as one put every cross-file caller a hop further away than
+/// it is and left `find_callers` naming only the name.
+fn direct_callers(
+    served: &Served,
+    reverse: &crate::graph::Reverse,
+    node: NodeId,
+    floor: Confidence,
+) -> Vec<(NodeId, Confidence)> {
+    let mut out = Vec::new();
+    for (caller, edge) in reverse.callers(node) {
+        if edge.confidence < floor {
+            continue;
+        }
+        if served.defined.contains(&caller) {
+            out.push((caller, edge.confidence));
+            continue;
+        }
+        for (through, call) in reverse.callers(caller) {
+            if call.confidence >= floor && through != node {
+                out.push((through, edge.confidence.min(call.confidence)));
+            }
+        }
+    }
+    out
+}
+
 /// Everything that reaches `seeds` backwards, one level per hop. Breadth-first,
 /// so a node appears at its shortest distance — the hop count worth reporting,
 /// since a direct caller almost certainly breaks and a fourth-hop one probably
@@ -2013,9 +2037,9 @@ fn reverse_levels(
     for _ in 0..depth {
         let mut next: Vec<(NodeId, Confidence)> = Vec::new();
         for &n in &frontier {
-            for (caller, edge) in reverse.callers(n) {
-                if edge.confidence >= floor && seen.insert(caller) {
-                    next.push((caller, edge.confidence));
+            for (caller, confidence) in direct_callers(served, reverse, n, floor) {
+                if seen.insert(caller) {
+                    next.push((caller, confidence));
                 }
             }
         }
