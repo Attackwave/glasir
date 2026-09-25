@@ -7,7 +7,7 @@ spring-petclinic  88
 graphify          98
 ktor              99
 polly             100
-zod               98
+zod               100
 ripgrep           93
 pixelorama        93
 jhipster          100
