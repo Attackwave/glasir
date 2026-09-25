@@ -1865,9 +1865,22 @@ struct Diff {
     unknown: Vec<String>,
 }
 
+/// Refuses a revision git would read as an option. `rev` reaches `git diff`
+/// as an argument, and `--output=<path>` there writes a file wherever the
+/// server may write.
+pub fn check_rev(rev: &str) -> Result<(), String> {
+    if rev.starts_with('-') {
+        return Err(format!(
+            "{rev:?} is not a revision: it may not start with '-'"
+        ));
+    }
+    Ok(())
+}
+
 /// The working tree against HEAD for an empty `rev`, or `rev` against HEAD.
 fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     let rev = rev.trim();
+    check_rev(rev)?;
     // Same default as the CLI: the working tree against HEAD is what someone
     // asking mid-change means.
     let working = rev.is_empty() || rev == ".";
