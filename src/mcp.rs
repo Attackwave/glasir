@@ -2014,25 +2014,45 @@ pub struct References {
 impl Served<'_> {
     fn references<'r>(&'r self, fallback: &'r std::sync::OnceLock<References>) -> &'r References {
         self.references.unwrap_or(fallback).get_or_init(|| {
-            let mut unique: std::collections::HashMap<&str, Option<NodeId>> = Default::default();
+            let mut defs: std::collections::HashMap<&str, Vec<(&str, NodeId)>> = Default::default();
             for (symbol, &node) in self.registry.entries() {
                 if let Some((file, name)) = symbol.split_once('#')
                     && self.defined.contains(&node)
                     && !crate::docs::is_markdown(std::path::Path::new(file))
                 {
-                    unique
-                        .entry(name)
-                        .and_modify(|slot| *slot = None)
-                        .or_insert(Some(node));
+                    defs.entry(name).or_default().push((file, node));
                 }
             }
+            let resolve = |name: &str| -> Option<NodeId> {
+                let (bare, target) = match crate::imports::unscope(name) {
+                    Some((bare, target)) => (bare, Some(target)),
+                    None => (name, None),
+                };
+                let candidates = defs.get(bare)?;
+                let chosen: Vec<NodeId> = candidates
+                    .iter()
+                    .filter(|(file, _)| match target {
+                        Some(dir) if dir.ends_with('/') => {
+                            file.rsplit_once('/').map_or("", |(d, _)| d)
+                                == dir.trim_end_matches('/')
+                        }
+                        Some(path) => *file == path,
+                        None => true,
+                    })
+                    .map(|&(_, n)| n)
+                    .collect();
+                match chosen[..] {
+                    [one] => Some(one),
+                    _ => None,
+                }
+            };
             let mut by_target: std::collections::HashMap<NodeId, Vec<NodeId>> = Default::default();
             for refs in self.registry.refs().values() {
                 for (from, name) in refs {
-                    if let Some(Some(target)) = unique.get(name.as_str())
-                        && target != from
+                    if let Some(target) = resolve(name)
+                        && target != *from
                     {
-                        by_target.entry(*target).or_default().push(*from);
+                        by_target.entry(target).or_default().push(*from);
                     }
                 }
             }

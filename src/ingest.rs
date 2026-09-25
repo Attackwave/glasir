@@ -136,7 +136,20 @@ impl SymbolRegistry {
             }
         }
         for refs in self.refs.values_mut() {
-            refs.retain(|(_, name)| defs.get(name.as_str()) == Some(&1));
+            for (_, name) in refs.iter_mut() {
+                // An import naming a file that does not define the name — a
+                // re-export — decides nothing; the plain rule applies.
+                if let Some((bare, target)) = crate::imports::unscope(name)
+                    && !target.ends_with('/')
+                    && !self.by_name.contains_key(&format!("{target}#{bare}"))
+                {
+                    *name = bare.to_string();
+                }
+            }
+            refs.retain(|(_, name)| match crate::imports::unscope(name) {
+                Some(_) => true,
+                None => defs.get(name.as_str()) == Some(&1),
+            });
         }
         self.refs.retain(|_, refs| !refs.is_empty());
     }
@@ -591,9 +604,20 @@ fn prepare_facts(
     let refs = facts
         .refs
         .iter()
-        .filter_map(|(from, name)| {
+        .filter_map(|(from, name, qualifier)| {
             let node = registry.node_of(&qualify(&file, from))?;
-            Some((node, name.clone()))
+            // Through an import the name is decided, however many files
+            // define it: `util.Primitive` after `import * as util from
+            // "./util.js"`, or a name imported directly.
+            let through = match qualifier {
+                Some(q) => modules
+                    .get(q.as_str())
+                    .map(|t| crate::imports::scoped(name, t)),
+                None => names
+                    .get(name.as_str())
+                    .map(|(t, n)| crate::imports::scoped(n, t)),
+            };
+            Some((node, through.unwrap_or_else(|| name.clone())))
         })
         .collect();
     registry.set_refs(&file, refs);
