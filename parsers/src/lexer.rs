@@ -132,7 +132,27 @@ impl<'a, 's> Lexer<'a, 's> {
         }
     }
 
+    /// Every token starts and ends on a character boundary, never past the
+    /// end. The branches below step in bytes, and an unterminated string or
+    /// an escape before the end left the position inside a character; each
+    /// scanner then sliced the source there and panicked — the class this
+    /// crate met eleven times, closed here once rather than per branch.
     pub fn next_token(&mut self) -> Token<'a> {
+        let mut token = self.next_token_raw();
+        let len = self.bytes.len();
+        let settle = |mut at: usize| {
+            at = at.min(len);
+            while !self.src.is_char_boundary(at) {
+                at += 1;
+            }
+            at
+        };
+        self.pos = settle(self.pos);
+        token.end = settle(token.end as usize) as u32;
+        token
+    }
+
+    fn next_token_raw(&mut self) -> Token<'a> {
         self.skip_whitespace_except_newline();
 
         if self.pos >= self.bytes.len() {
@@ -273,9 +293,14 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.bytes[self.pos + 2],
             ];
             self.pos += 3;
+            // Unterminated, it runs to the end of the file. Stopping where the
+            // loop stops — two bytes short — left the next token starting
+            // inside a character, and the Python scanner sliced there.
+            let mut closed = false;
             while self.pos + 2 < self.bytes.len() {
                 if self.bytes[self.pos..self.pos + 3] == quote {
                     self.pos += 3;
+                    closed = true;
                     break;
                 }
                 if self.bytes[self.pos] == b'\\' {
@@ -287,6 +312,9 @@ impl<'a, 's> Lexer<'a, 's> {
                 } else {
                     self.pos += 1;
                 }
+            }
+            if !closed {
+                self.pos = self.bytes.len();
             }
             let end = self.pos.min(self.bytes.len());
             return Token {

@@ -193,6 +193,11 @@ pub fn parse_css(src: &str) -> FileFacts {
                     for (off, ch) in src[j..].char_indices() {
                         match ch {
                             '{' => depth += 1,
+                            // A close before any open ends an enclosing block:
+                            // this was a declaration, not a rule. Subtracting
+                            // anyway underflowed — a panic in a debug build, a
+                            // range that never closed in a release one.
+                            '}' if depth == 0 => break,
                             '}' => {
                                 depth -= 1;
                                 if depth == 0 {

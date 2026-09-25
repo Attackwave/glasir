@@ -1,0 +1,28 @@
+# Every scanner, fed arbitrary bytes for twenty minutes a week. The seeded
+# mutation test in parsers/tests runs on every change; this looks further.
+# Its first ten minutes found a crash the seeded test had missed. A crashing
+# input is uploaded; turn it into a case in inputs_that_crashed_once.
+name: fuzz
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scanners:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - working-directory: parsers
+        run: cargo fuzz run parse -- -max_total_time=1200 -timeout=10 -rss_limit_mb=4096
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: parsers/fuzz/artifacts
