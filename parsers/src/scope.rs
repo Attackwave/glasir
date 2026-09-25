@@ -146,6 +146,22 @@ impl ScopeStack {
         self.had_receiver = false;
     }
 
+    /// Moves the definition just opened to the depth of its body. For an
+    /// indentation language the body is one level in from the keyword; both
+    /// stacks move, or the range closes on the dedent while calls after it
+    /// stay attributed to the nested definition.
+    pub fn set_body_depth(&mut self, depth: i32) {
+        let Some(last) = self.open.last_mut() else {
+            return;
+        };
+        last.depth = depth;
+        if last.opens_body {
+            if let Some(e) = self.enclosing.last_mut() {
+                e.1 = depth;
+            }
+        }
+    }
+
     /// Open a new definition (defaults collects_body_docs to opens_body for function-like definitions).
     pub fn open_definition(
         &mut self,

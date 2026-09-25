@@ -2985,3 +2985,24 @@ fn gdscript_static_func_after_an_inner_class_is_top_level() {
         facts.calls
     );
 }
+
+#[test]
+fn an_indented_body_ends_for_attribution_too() {
+    // The range closed on the dedent while the caller stack kept the
+    // function: every top-level line after a `def` was attributed to it.
+    let rules = native_parsers::rules::active();
+    let py = rules.parse(
+        Language::Python,
+        "def outer(items):\n    def inner(h):\n        return h\n\n    for i in items:\n        load(i)\n\ndef other():\n    pass\n\nfor x in data:\n    store(x)\n",
+    );
+    for (facts, caller, callee) in [
+        (&py, "outer", "load"),
+        (&py, "<module>", "store"),
+    ] {
+        assert!(
+            facts.calls.iter().any(|c| c.0 == caller && c.1 == callee),
+            "{caller} -> {callee}: {:?}",
+            facts.calls
+        );
+    }
+}
