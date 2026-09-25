@@ -1,0 +1,66 @@
+# BurntSushi/ripgrep — structural ground truth on a foreign Rust workspace.
+#
+# Read out of the source: call sites with grep, attributed to the enclosing
+# `fn` by reading. Left out on purpose: `is_inexact`, whose calls go to the
+# same-named method of a foreign crate's `Seq`, and trait methods such as
+# `find_iter`, which every matcher implements — a name defined four times has
+# no single answer. Type users: files whose code, comments excluded, names the
+# type, `use` lines included.
+
+find_callers crates/searcher/src/sink.rs#bytes_range_in_buffer
+  printer/src/json.rs#matched
+  printer/src/standard.rs#matched
+  printer/src/summary.rs#matched
+
+find_callers crates/ignore/src/pathutil.rs#is_hidden_path
+  ignore/src/incremental.rs#match_path
+  ignore/src/incremental.rs#matched_with_errors_ignore
+
+find_callers crates/ignore/src/walk.rs#skip_entry
+  ignore/src/walk.rs#next
+
+find_callers crates/printer/src/util.rs#as_hyperlink
+  printer/src/path.rs#start_hyperlink
+  printer/src/standard.rs#start_hyperlink
+  printer/src/summary.rs#start_hyperlink
+
+find_callers crates/ignore/src/walk.rs#build_matchers
+  ignore/src/incremental.rs#matchers
+  ignore/src/incremental.rs#one_matcher
+
+find_callers crates/ignore/src/types.rs#add_defaults
+  core/flags/hiargs.rs#types
+
+impact crates/matcher/src/lib.rs#ByteSet
+  regex/src/config.rs
+  regex/src/matcher.rs
+  regex/src/non_matching.rs
+
+impact crates/cli/src/process.rs#CommandReader
+  cli/src/decompress.rs
+  core/flags/hiargs.rs
+
+impact crates/searcher/src/searcher/mod.rs#ConfigError
+  searcher/src/sink.rs
+
+impact crates/ignore/src/gitignore.rs#Gitignore
+  ignore/src/dir.rs
+  ignore/src/overrides.rs
+
+impact crates/globset/src/glob.rs#GlobBuilder
+  ignore/src/gitignore.rs
+  ignore/src/types.rs
+
+impact crates/printer/src/hyperlink/mod.rs#HyperlinkEnvironment
+  core/flags/hiargs.rs
+
+# Which tests to run. Rust writes most tests as #[test] functions inside the
+# file they test, which is the case the last question asks about.
+affected_tests crates/ignore/src/gitignore.rs#matched_path_or_any_parents
+  ignore/tests/gitignore_matched_path_or_any_parents_tests.rs
+
+affected_tests crates/ignore/src/types.rs#add_def
+  ignore/src/types.rs#test_invalid_defs
+
+affected_tests crates/printer/src/util.rs#DecimalFormatter
+  printer/src/util.rs#custom_decimal_format

@@ -1,0 +1,49 @@
+# colinhacks/zod — structural ground truth on a foreign TypeScript monorepo.
+#
+# v3 and v4 define many of the same names twice, which is what makes this tree
+# hard; every question below names something defined exactly once. Call sites
+# are attributed by reading: an arrow function assigned to an exported const
+# (`createToJSONSchemaMethod = (...) => (...) => {...}`) is that const.
+# Type users are qualified as often as not (`JSONSchema.BaseSchema`,
+# `util.HasLength`), which a bare-name search still has to see.
+
+find_callers packages/zod/src/v4/core/to-json-schema.ts#initializeContext
+  core/json-schema-generator.ts#constructor
+  core/json-schema-processors.ts#toJSONSchema
+  core/to-json-schema.ts#createToJSONSchemaMethod
+  core/to-json-schema.ts#createStandardJSONSchemaMethod
+
+find_callers packages/zod/src/v4/core/schemas.ts#parseURLObject
+  core/schemas.ts#validateURL
+
+find_callers packages/zod/src/v4/core/memoizer.ts#memoizer
+  classic/schemas.ts#_ensureDefaultMemoizer
+
+impact packages/zod/src/v4/core/json-schema.ts#BaseSchema
+  core/json-schema-generator.ts
+  core/json-schema-processors.ts
+  core/schemas.ts
+  core/to-json-schema.ts
+
+impact packages/zod/src/v4/core/schemas.ts#CheckFn
+  classic/schemas.ts
+  core/api.ts
+  mini/schemas.ts
+
+impact packages/zod/src/v4/core/doc.ts#Doc
+  core/compile.ts
+  core/schemas.ts
+
+impact packages/zod/src/v4/core/util.ts#HasLength
+  core/api.ts
+  core/checks.ts
+
+impact packages/zod/src/v4/core/compile.ts#CompileOptions
+  classic/external.ts
+  mini/external.ts
+
+affected_tests packages/zod/src/v4/core/schemas.ts#parseURLObject
+  core/tests/url-no-canparse.test.ts
+
+affected_tests packages/zod/src/v4/core/memoizer.ts#memoizer
+  mini/tests/cyclic-data.test.ts

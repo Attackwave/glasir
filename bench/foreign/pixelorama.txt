@@ -1,0 +1,50 @@
+# Orama-Interactive/Pixelorama — structural ground truth on a foreign Godot
+# project (GDScript), a real pixel-art editor rather than a demo.
+#
+# Read out of the source: calls through an autoload (`Global.x()`, `Tools.x()`)
+# and a call split across lines (`Global\n. create_node_from_variable(`) count;
+# `##` documentation naming a class does not — ExtensionsApi.gd and
+# PointCollapseContainer.gd mention a class only there. No tests in this tree,
+# so no affected_tests questions.
+
+find_callers src/Autoload/Global.gd#create_node_from_variable
+  Classes/ShaderLoader.gd#create_ui_for_shader_uniforms
+  Tools/3DTools/3DShapeEdit.gd#_create_object_property_nodes
+  KeyframeTimeline/KeyframeTimeline.gd#select_keyframes
+
+find_callers src/UI/Timeline/KeyframeTimeline/KeyframeTimeline.gd#unselect_keyframe
+  KeyframeTimeline/KeyframeTimeline.gd#_on_cel_switched
+  KeyframeTimeline/KeyframeTimeline.gd#select_keyframes
+  KeyframeTimeline/KeyframeTimelineTrackContainer.gd#_on_gui_input
+
+find_callers src/Autoload/Tools.gd#selection_tool_has_selection
+  Canvas/CanvasCamera.gd#_input
+  Canvas/TransformationHandles.gd#_draw
+  ToolsPanel/ToolButtons.gd#_unhandled_input
+
+find_callers src/UI/Dialogs/ImportPreviewDialog.gd#obtain_sliced_data
+  Dialogs/ImportPreviewDialog.gd#_on_ImportPreviewDialog_confirmed
+  Dialogs/ImportPreviewDialog.gd#slice_preview
+
+find_callers src/UI/Nodes/GradientEdit.gd#get_gradient_offsets_texture
+  Classes/ShaderLoader.gd#create_ui_for_shader_uniforms
+  DesignTools/Gradient.gd#apply_gradient
+  ImageEffects/GradientDialog.gd#commit_action
+
+find_callers src/Autoload/Tools.gd#swap_tools
+  Autoload/Tools.gd#_input
+
+impact src/Classes/SoftwareParsers/AsepriteParser.gd#AsepriteParser
+  Autoload/OpenSave.gd
+  AnimationExporters/AsepriteExporter.gd
+
+impact src/Classes/Cels/AudioCel.gd#AudioCel
+  Layers/AudioLayer.gd
+  Classes/Project.gd
+  Timeline/CelButton.gd
+
+impact src/UI/Nodes/Sliders/BasisSliders.gd#BasisSliders
+  Autoload/Global.gd
+
+impact src/UI/Nodes/CollapsibleContainer.gd#CollapsibleContainer
+  LayerEffects/LayerEffectsSettings.gd
