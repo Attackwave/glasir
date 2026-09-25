@@ -1745,9 +1745,60 @@ fn assess(served: &Served, diff: &Diff, dependents: usize) -> Value {
     })
 }
 
+/// Whether `node` is a test: by its name and path, or by a test attribute on
+/// the definition — Rust's `#[test]` inside `mod tests` has neither. `texts`
+/// holds the files read so far in one call.
+fn is_test_node(
+    served: &Served,
+    node: NodeId,
+    texts: &mut std::collections::HashMap<String, Option<String>>,
+) -> bool {
+    let name = served.name(node);
+    if is_test_symbol(&name) {
+        return true;
+    }
+    let (Some(root), Some((file, _)), Some((start, _))) = (
+        served.root,
+        name.split_once('#'),
+        served.registry.span(node),
+    ) else {
+        return false;
+    };
+    texts
+        .entry(file.to_string())
+        .or_insert_with(|| std::fs::read_to_string(root.join(file)).ok())
+        .as_deref()
+        .is_some_and(|text| has_test_attribute(text, start as usize))
+}
+
+/// Whether an attribute directly above `start`, or before it on its line,
+/// names a test: `#[test]`, `#[tokio::test]`, `@Test`, `[TestMethod]`,
+/// `[Fact]`. `#[cfg(test)]` marks test-only code, not a test to run.
+fn has_test_attribute(text: &str, start: usize) -> bool {
+    let Some(before) = text.get(..start.min(text.len())) else {
+        return false;
+    };
+    let is_test = |a: &str| {
+        let a = a.to_ascii_lowercase();
+        !a.contains("cfg(") && (a.contains("test") || a.contains("[fact") || a.contains("[theory"))
+    };
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let inline = &before[line_start..];
+    if (inline.contains("#[") || inline.contains('@') || inline.contains('[')) && is_test(inline) {
+        return true;
+    }
+    before[..line_start]
+        .lines()
+        .rev()
+        .map(str::trim)
+        .take_while(|l| l.starts_with("#[") || l.starts_with('@') || l.starts_with('['))
+        .any(is_test)
+}
+
 /// Whether any test reaches `node`, stopping at the first one found.
 fn reaches_test(served: &Served, node: NodeId) -> bool {
     let reverse = served.snap.reverse();
+    let mut texts = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::from([node]);
     let mut frontier = vec![node];
     for _ in 0..TEST_DEPTH {
@@ -1757,7 +1808,7 @@ fn reaches_test(served: &Served, node: NodeId) -> bool {
                 if !seen.insert(caller) {
                     continue;
                 }
-                if served.defined.contains(&caller) && is_test_symbol(&served.name(caller)) {
+                if served.defined.contains(&caller) && is_test_node(served, caller, &mut texts) {
                     return true;
                 }
                 next.push(caller);
@@ -2358,10 +2409,10 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
         .into_iter()
         .enumerate()
         .flat_map(|(i, level)| level.into_iter().map(move |(n, _)| (n, i + 1)));
+    let mut texts = std::collections::HashMap::new();
     for (node, hop) in hop0.chain(reached) {
-        let name = served.name(node);
-        if served.defined.contains(&node) && is_test_symbol(&name) {
-            found.entry(name).or_insert(hop);
+        if served.defined.contains(&node) && is_test_node(served, node, &mut texts) {
+            found.entry(served.name(node)).or_insert(hop);
         }
     }
     let mut tests: Vec<(String, usize)> = found.into_iter().collect();
