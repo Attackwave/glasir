@@ -86,7 +86,35 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
             None => (symbol.as_str(), None),
         };
         if let Some(target) = target {
-            let found: Vec<NodeId> = if let Some(dir) = target.strip_suffix('/') {
+            let found: Vec<NodeId> = if let Some(module) = target.strip_prefix('@') {
+                let files: Vec<&str> = by_name
+                    .get(module)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| file_of.get(d).copied())
+                    .collect();
+                match files[..] {
+                    [file] => registry
+                        .node_of(&format!("{file}#{bare}"))
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            } else if let Some(base) = target.strip_prefix("*/") {
+                by_name
+                    .get(bare)
+                    .map(|defs| {
+                        defs.iter()
+                            .copied()
+                            .filter(|&d| {
+                                file_of
+                                    .get(&d)
+                                    .is_some_and(|file| file.rsplit('/').next() == Some(base))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else if let Some(dir) = target.strip_suffix('/') {
                 by_name
                     .get(bare)
                     .map(|defs| {

@@ -26,6 +26,27 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             }
             TokenKind::Symbol('.') => {
                 scope.on_receiver();
+                // `Shop.Cart.total()` goes through the module `Shop.Cart`: the
+                // capitalised chain before the dot, which `defmodule` names.
+                let mut chain: Vec<&str> = Vec::new();
+                let mut k = i;
+                while k > 0 {
+                    match tokens[k - 1].kind {
+                        TokenKind::Ident(w) if w.starts_with(|c: char| c.is_uppercase()) => {
+                            chain.push(w);
+                            if k >= 2 && tokens[k - 2].kind == TokenKind::Symbol('.') {
+                                k -= 2;
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
+                if !chain.is_empty() {
+                    chain.reverse();
+                    scope.module_receiver = Some(chain.join("."));
+                }
                 i += 1;
                 continue;
             }

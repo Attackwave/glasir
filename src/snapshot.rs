@@ -36,7 +36,8 @@ use std::path::Path;
 /// 3: the step 2-5 and 8a audit repairs.
 /// 4: definition byte ranges, so a tool can return source and not only a name.
 /// 27: the names each definition uses without calling (`refs`).
-const FORMAT_VERSION: u32 = 27;
+/// 28: Erlang and Elixir module calls scoped to the module's file.
+const FORMAT_VERSION: u32 = 28;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {

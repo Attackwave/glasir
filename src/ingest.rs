@@ -540,8 +540,13 @@ fn prepare_facts(
                 .call_modules
                 .get(i)
                 .and_then(Option::as_deref)
-                .and_then(|m| modules.get(m))
-                .map(|t| crate::imports::scoped(callee, t))
+                .and_then(|m| {
+                    modules
+                        .get(m)
+                        .cloned()
+                        .or_else(|| lang.and_then(|l| crate::imports::module_file(l, m)))
+                })
+                .map(|t| crate::imports::scoped(callee, &t))
         } else if !registry.contains(&local) {
             names
                 .get(callee.as_str())
