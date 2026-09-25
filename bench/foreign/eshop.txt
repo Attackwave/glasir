@@ -1,0 +1,28 @@
+# dotnet/eShop — HTTP calls between services, all C#: a Blazor web app and a
+# hybrid app calling the catalog and ordering APIs.
+#
+# Read by hand: the server joins `MapGroup("api/catalog")` with
+# `api.MapGet("/items/{id:int}", GetItemById)`; the client keeps
+# `remoteServiceBaseUrl = "api/catalog/"` and builds
+# `var uri = $"{remoteServiceBaseUrl}items/{id}"` inside the method that sends
+# it. A query string and `?api-version=2.0` are not part of the route, and
+# case is not either (`/api/Orders/` against `api/orders`). Handlers written as
+# inline lambdas have no name to ask about and are left out.
+
+find_callers src/Catalog.API/Apis/CatalogApi.cs#GetItemById
+  WebAppComponents/Services/CatalogService.cs#GetCatalogItem
+  HybridApp/Services/CatalogService.cs#GetCatalogItem
+
+find_callers src/Catalog.API/Apis/CatalogApi.cs#GetItemsByIds
+  WebAppComponents/Services/CatalogService.cs#GetCatalogItems
+  HybridApp/Services/CatalogService.cs#GetCatalogItems
+
+find_callers src/Catalog.API/Apis/CatalogApi.cs#GetItemsBySemanticRelevance
+  WebAppComponents/Services/CatalogService.cs#GetCatalogItemsWithSemanticRelevance
+  HybridApp/Services/CatalogService.cs#GetCatalogItemsWithSemanticRelevance
+
+find_callers src/Ordering.API/Apis/OrdersApi.cs#GetOrdersByUserAsync
+  WebApp/Services/OrderingService.cs#GetOrders
+
+find_callers src/Ordering.API/Apis/OrdersApi.cs#CreateOrderAsync
+  WebApp/Services/OrderingService.cs#CreateOrder

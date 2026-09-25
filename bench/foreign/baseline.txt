@@ -10,4 +10,6 @@ polly             100
 zod               98
 ripgrep           93
 pixelorama        93
+jhipster          100
+eshop             100
 tolerance         3

@@ -218,6 +218,11 @@ fn imports() {
 }
 
 #[test]
+fn routes() {
+    crate::demo_routes();
+}
+
+#[test]
 fn references() {
     crate::demo_references();
 }

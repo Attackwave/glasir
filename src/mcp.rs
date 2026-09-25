@@ -2009,6 +2009,9 @@ fn touched_names(
 #[derive(Default)]
 pub struct References {
     by_target: std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// Handlers reached over HTTP, by the definitions sending the request.
+    /// See `routes`.
+    by_route: std::collections::HashMap<NodeId, Vec<NodeId>>,
 }
 
 impl Served<'_> {
@@ -2060,7 +2063,53 @@ impl Served<'_> {
                 sources.sort_unstable();
                 sources.dedup();
             }
-            References { by_target }
+            // A handler named by reference in another file is found by its
+            // name when the tree defines it once.
+            let handler = |symbol: &str| -> Option<NodeId> {
+                if symbol.contains('#') {
+                    return self.registry.node_of(symbol);
+                }
+                resolve(symbol)
+            };
+            let mut routes: Vec<(NodeId, crate::routes::Verb, Vec<String>)> = Vec::new();
+            for file in self.registry.http().values() {
+                for (symbol, verb, path) in &file.routes {
+                    if let Some(node) = handler(symbol) {
+                        routes.push((node, *verb, crate::routes::segments(path)));
+                    }
+                }
+            }
+            let mut by_route: std::collections::HashMap<NodeId, Vec<NodeId>> = Default::default();
+            for file in self.registry.http().values() {
+                for (from, verb, path) in &file.requests {
+                    let segments = crate::routes::segments(path);
+                    let reached: Vec<(NodeId, usize)> = routes
+                        .iter()
+                        .filter(|(node, route_verb, route)| {
+                            node != from
+                                && crate::routes::reaches((*verb, &segments), (*route_verb, route))
+                        })
+                        .map(|(node, _, route)| (*node, route.iter().filter(|s| *s != "*").count()))
+                        .collect();
+                    // A literal segment outranks a parameter, as every router
+                    // decides it: `/items/by` goes to its own route, not to
+                    // `/items/{id}`.
+                    let best = reached.iter().map(|&(_, literal)| literal).max();
+                    for (node, literal) in reached {
+                        if Some(literal) == best {
+                            by_route.entry(node).or_default().push(*from);
+                        }
+                    }
+                }
+            }
+            for sources in by_route.values_mut() {
+                sources.sort_unstable();
+                sources.dedup();
+            }
+            References {
+                by_target,
+                by_route,
+            }
         })
     }
 }
@@ -2100,6 +2149,20 @@ fn direct_callers_with(
             if call.confidence >= floor && through != node {
                 out.push((through, edge.confidence.min(call.confidence)));
             }
+        }
+    }
+    // A request reaching the handler is a call at every hop, matched by path
+    // rather than resolved, so at the weakest tier.
+    if Confidence::Ambiguous >= floor {
+        let local = std::sync::OnceLock::new();
+        for &from in served
+            .references(&local)
+            .by_route
+            .get(&node)
+            .into_iter()
+            .flatten()
+        {
+            out.push((from, Confidence::Ambiguous));
         }
     }
     // After the calls, so a caller that also names the symbol keeps its

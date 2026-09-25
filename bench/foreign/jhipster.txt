@@ -1,0 +1,36 @@
+# jhipster/jhipster-sample-app — HTTP calls across languages: an Angular
+# client (TypeScript) and a Spring server (Java) in one repository.
+#
+# Read by hand, pair by pair: the client builds its URL from a field,
+# `resourceUrl = \`${serverApiUrl}api/bank-accounts\``, then
+# `this.http.get(\`${this.resourceUrl}/${id}\`)`; the server joins the
+# class's `@RequestMapping("/api/bank-accounts")` with the method's
+# `@GetMapping("/{id}")`. The verb has to agree: find and delete both hit
+# `/{id}`, one with GET and one with DELETE.
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#getBankAccount
+  bank-account/service/bank-account.service.ts#find
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#getAllBankAccounts
+  bank-account/service/bank-account.service.ts#query
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#createBankAccount
+  bank-account/service/bank-account.service.ts#create
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#updateBankAccount
+  bank-account/service/bank-account.service.ts#update
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#partialUpdateBankAccount
+  bank-account/service/bank-account.service.ts#partialUpdate
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/BankAccountResource.java#deleteBankAccount
+  bank-account/service/bank-account.service.ts#delete
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/LabelResource.java#getLabel
+  label/service/label.service.ts#find
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/LabelResource.java#createLabel
+  label/service/label.service.ts#create
+
+find_callers src/main/java/io/github/jhipster/sample/web/rest/LabelResource.java#deleteLabel
+  label/service/label.service.ts#delete

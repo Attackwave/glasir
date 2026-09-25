@@ -406,18 +406,8 @@ impl RuleFile {
             raw_escapes: self.lexical.raw_string_escapes,
         };
         let tokens = crate::lexer::Lexer::new(src, style).collect_all_tokens();
-        let significant: Vec<&crate::lexer::Token> = tokens
-            .iter()
-            .filter(|t| {
-                !matches!(
-                    t.kind,
-                    TokenKind::Newline
-                        | TokenKind::LineComment(_)
-                        | TokenKind::DocComment(_)
-                        | TokenKind::BlockComment(_)
-                )
-            })
-            .collect();
+        let significant: Vec<&crate::lexer::Token> =
+            tokens.iter().filter(|t| significant(&t.kind)).collect();
         let mut out = Vec::new();
         for (i, t) in significant.iter().enumerate() {
             let TokenKind::Ident(name) = t.kind else {
@@ -434,6 +424,24 @@ impl RuleFile {
             out.push((t.start, name, qualifier));
         }
         out
+    }
+
+    fn tokens<'a>(&self, src: &'a str) -> Vec<crate::lexer::Token<'a>> {
+        let (line, docs, block) = self.comment_parts();
+        let style = CommentStyle {
+            line_comment_prefix: &line,
+            doc_comment_prefix: &docs,
+            block_comment_start: block.map(|p| p.0),
+            block_comment_end: block.map(|p| p.1),
+            ident_suffix_marks: self.lexical.identifier_suffix_marks,
+            ident_dashes: self.lexical.identifier_dashes,
+            raw_escapes: self.lexical.raw_string_escapes,
+        };
+        crate::lexer::Lexer::new(src, style)
+            .collect_all_tokens()
+            .into_iter()
+            .filter(|t| significant(&t.kind))
+            .collect()
     }
 
     fn parse(&self, src: &str) -> FileFacts {
@@ -557,6 +565,16 @@ impl RuleSet {
 
     pub fn identity(&self) -> &str {
         &self.identity
+    }
+
+    /// The file's tokens without comments and line breaks, lexed with the
+    /// language's own comment and string syntax. Empty for a language with no
+    /// rule file.
+    pub fn tokens<'a>(&self, language: Language, src: &'a str) -> Vec<crate::lexer::Token<'a>> {
+        match BUILTINS.iter().find(|b| b.language == language) {
+            Some(b) => self.files[b.name].tokens(src),
+            None => Vec::new(),
+        }
     }
 
     /// See `RuleFile::identifiers`. Empty for a language with no rule file,
@@ -1095,4 +1113,14 @@ end subroutine"),
             "def second\n  notify()\n end"
         );
     }
+}
+
+fn significant(kind: &TokenKind<'_>) -> bool {
+    !matches!(
+        kind,
+        TokenKind::Newline
+            | TokenKind::LineComment(_)
+            | TokenKind::DocComment(_)
+            | TokenKind::BlockComment(_)
+    )
 }
