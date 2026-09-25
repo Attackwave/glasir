@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/18";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/19";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -369,8 +369,18 @@ impl RuleFile {
     }
 
     fn comment_parts(&self) -> (Vec<&str>, Vec<&str>, Option<(&str, &str)>) {
-        let line = self.lexical.line_comments.iter().map(String::as_str).collect();
-        let docs = self.lexical.doc_comments.iter().map(String::as_str).collect();
+        let line = self
+            .lexical
+            .line_comments
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let docs = self
+            .lexical
+            .doc_comments
+            .iter()
+            .map(String::as_str)
+            .collect();
         let block = self
             .lexical
             .block_comment
