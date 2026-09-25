@@ -26,6 +26,13 @@ fn relative_path(path: &Path, root: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// What one file declares and sends over HTTP, resolved to symbols.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileHttp {
+    pub routes: Vec<(String, crate::routes::Verb, String)>,
+    pub requests: Vec<(NodeId, crate::routes::Verb, String)>,
+}
+
 /// Maps a qualified symbol name to a node id, minting ids for symbols the base
 /// graph has never seen.
 pub struct SymbolRegistry {
@@ -57,6 +64,10 @@ pub struct SymbolRegistry {
     /// only then is it known which names are defined exactly once. Keyed by
     /// file so a re-parse replaces them in one insert.
     refs: HashMap<String, Vec<(NodeId, String)>>,
+    /// Per file, the HTTP routes it declares — handler symbol, verb, path —
+    /// and the requests it sends — sending node, verb, path. Matched against
+    /// each other when served. See `routes`.
+    http: HashMap<String, FileHttp>,
     next: NodeId,
 }
 
@@ -70,6 +81,7 @@ impl SymbolRegistry {
             spans: HashMap::new(),
             placeholder_lang: HashMap::new(),
             refs: HashMap::new(),
+            http: HashMap::new(),
             next: base_node_count as NodeId,
         }
     }
@@ -120,6 +132,18 @@ impl SymbolRegistry {
 
     pub fn refs(&self) -> &HashMap<String, Vec<(NodeId, String)>> {
         &self.refs
+    }
+
+    pub fn set_http(&mut self, file: &str, http: FileHttp) {
+        if http.routes.is_empty() && http.requests.is_empty() {
+            self.http.remove(file);
+        } else {
+            self.http.insert(file.to_owned(), http);
+        }
+    }
+
+    pub fn http(&self) -> &HashMap<String, FileHttp> {
+        &self.http
     }
 
     /// Keeps only references to a name the tree defines exactly once, the only
@@ -226,6 +250,7 @@ impl SymbolRegistry {
             .collect();
         self.by_name.retain(|k, _| !k.starts_with(&prefix));
         self.refs.remove(file);
+        self.http.remove(file);
         for n in gone {
             self.docs.remove(&n);
             // A span into a file that is gone points at bytes that are not
@@ -632,6 +657,43 @@ fn prepare_facts(
     refs.sort_unstable();
     refs.dedup();
     registry.set_refs(&file, refs);
+
+    // Handlers are kept as symbols: one passed by name may live in another
+    // file, and only the served tree knows which.
+    let def_name = |k: u32| match k {
+        crate::routes::MODULE => "<module>",
+        k => facts
+            .ranges
+            .get(k as usize)
+            .map_or("<module>", |(n, _)| n.as_str()),
+    };
+    let http = FileHttp {
+        routes: facts
+            .http
+            .routes
+            .iter()
+            .map(|(handler, verb, path)| {
+                let symbol = match handler {
+                    crate::routes::Handler::Def(k) => qualify(&file, def_name(*k)),
+                    crate::routes::Handler::Name(n) => n.clone(),
+                };
+                (symbol, *verb, path.clone())
+            })
+            .collect(),
+        requests: facts
+            .http
+            .requests
+            .iter()
+            .filter_map(|(k, verb, path)| {
+                Some((
+                    registry.node_of(&qualify(&file, def_name(*k)))?,
+                    *verb,
+                    path.clone(),
+                ))
+            })
+            .collect(),
+    };
+    registry.set_http(&file, http);
 
     let file_key = arena.intern(&file);
     (file_key, edges, nodes)

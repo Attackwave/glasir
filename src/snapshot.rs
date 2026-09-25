@@ -38,7 +38,8 @@ use std::path::Path;
 /// 27: the names each definition uses without calling (`refs`).
 /// 28: Erlang and Elixir module calls scoped to the module's file.
 /// 29: references through an import stored scoped to the imported file.
-const FORMAT_VERSION: u32 = 29;
+/// 30: HTTP routes and requests per file (`http`).
+const FORMAT_VERSION: u32 = 30;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -76,6 +77,8 @@ pub struct Snapshot {
     /// Per file, (definition, name) for what it uses without calling. Stored
     /// for the reason `docs` is: rebuilding it means lexing every file again.
     pub refs: Vec<(String, Vec<(NodeId, String)>)>,
+    /// Per file, HTTP routes and requests. Stored for the reason `refs` is.
+    pub http: Vec<(String, crate::ingest::FileHttp)>,
 }
 
 impl Snapshot {
@@ -103,6 +106,7 @@ impl Snapshot {
             sources,
             contracts: serde_json::Value::Null,
             refs: Vec::new(),
+            http: Vec::new(),
         }
     }
 }

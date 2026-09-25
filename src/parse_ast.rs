@@ -63,6 +63,8 @@ pub struct FileFacts {
     /// level: a function's name repeated once per identifier it uses was most
     /// of what these cost while a whole tree's facts wait to be folded.
     pub refs: Vec<(u32, Box<str>, Option<Box<str>>)>,
+    /// HTTP routes the file declares and requests it sends. See `routes`.
+    pub http: crate::routes::Http,
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
@@ -300,6 +302,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
     // snapshot still discarded itself over the changed rule identity.
     let f = native_parsers::rules::active().parse(lang, src);
     let refs = references(lang, src, &f.ranges);
+    let http = crate::routes::extract(lang, src, &f.ranges);
     Some(FileFacts {
         defines: f.defines,
         ranges: f.ranges,
@@ -308,6 +311,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         call_modules: f.call_modules,
         imports: crate::imports::read(lang, src),
         refs,
+        http,
         had_errors: f.had_errors,
     })
 }

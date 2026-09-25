@@ -8,3 +8,5 @@ polly             https://github.com/App-vNext/Polly                   9a81fdc7c
 zod               https://github.com/colinhacks/zod                    2bf7b0630d5378033e90bcee82cb32b0fe04628e
 ripgrep           https://github.com/BurntSushi/ripgrep                3fce3b5bb0236da2df6d99672afb8a719642eca7
 pixelorama        https://github.com/Orama-Interactive/Pixelorama      da7b68f97806c461abde615d1d847af91921c37b
+jhipster          https://github.com/jhipster/jhipster-sample-app      6b000b5d23a36c45e01472471b84a44fa2464044
+eshop             https://github.com/dotnet/eShop                      b4a40872005d4bb29e5b1fa1ff7e244143d39215

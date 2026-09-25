@@ -39,6 +39,7 @@ mod pem;
 mod physics;
 mod published;
 mod resolve;
+mod routes;
 mod scip_wire;
 mod search;
 mod snapshot;
@@ -738,6 +739,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (node, span) in &stored.spans {
                 registry.set_span(*node, *span);
             }
+            for (file, http) in stored.http {
+                registry.set_http(&file, http);
+            }
             for (file, refs) in stored.refs {
                 registry.set_refs(&file, refs);
             }
@@ -862,6 +866,13 @@ fn store_snapshot(
         .collect();
     refs.sort();
     stored.refs = refs;
+    let mut http: Vec<(String, ingest::FileHttp)> = reg
+        .http()
+        .iter()
+        .map(|(f, h)| (f.clone(), h.clone()))
+        .collect();
+    http.sort_by(|a, b| a.0.cmp(&b.0));
+    stored.http = http;
     let contract_path = root.join(".glasir/contracts.json");
     if contract_path.exists() {
         stored.contracts =
@@ -3644,6 +3655,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_mcp();
     demo_change_tools();
     demo_imports();
+    demo_routes();
     demo_references();
     demo_install();
     demo_search();
@@ -6014,6 +6026,62 @@ fn demo_imports() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
     println!("imports ok: a call through an import reaches the definition it names");
+}
+
+/// A request reaches the handler its route names, across languages: the
+/// Spring prefix joins the method mapping, a group joins its routes, a
+/// template joins a field, the verb has to agree, and a literal segment
+/// outranks a parameter.
+fn demo_routes() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("glasir-routes-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        (
+            "api/OwnerApi.java",
+            "@RestController\n@RequestMapping(\"/api/owners\")\npublic class OwnerApi {\n    @GetMapping(\"/{id}\")\n    public Owner show(@PathVariable long id) { return null; }\n\n    @GetMapping(\"/find\")\n    public Owner lookup() { return null; }\n\n    @PostMapping(\"\")\n    public Owner store(Owner o) { return o; }\n}\n",
+        ),
+        (
+            "api/Items.cs",
+            "public static class Items\n{\n    public static void Map(WebApplication app)\n    {\n        var api = app.MapGroup(\"/api/items\");\n        api.MapGet(\"/{id:int}\", GetItem);\n        api.MapGet(\"/by\", GetByIds);\n    }\n\n    public static Item GetItem(int id) { return null; }\n\n    public static Item[] GetByIds(int[] ids) { return null; }\n}\n",
+        ),
+        (
+            "web/client.ts",
+            "export class Client {\n  private url = '/api/owners';\n\n  one(id: number) {\n    return this.http.get(`${this.url}/${id}`);\n  }\n\n  search() {\n    return this.http.get(`${this.url}/find`);\n  }\n\n  save(o: Owner) {\n    return this.http.post(this.url, o);\n  }\n\n  drop(id: number) {\n    return this.http.delete(`${this.url}/${id}`);\n  }\n\n  item(id: number) {\n    return fetch(`/api/items/${id}`);\n  }\n\n  some() {\n    return fetch('/api/items/by');\n  }\n}\n",
+        ),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let state = served_state(&dir).unwrap();
+    let callers = |symbol: &str| -> String {
+        let r = mcp::handle_for_test(
+            &state.as_served(),
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap();
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    for (handler, caller, want) in [
+        ("api/OwnerApi.java#show", "web/client.ts#one", true),
+        ("api/OwnerApi.java#show", "web/client.ts#search", false),
+        ("api/OwnerApi.java#show", "web/client.ts#drop", false),
+        ("api/OwnerApi.java#lookup", "web/client.ts#search", true),
+        ("api/OwnerApi.java#store", "web/client.ts#save", true),
+        ("api/Items.cs#GetItem", "web/client.ts#item", true),
+        ("api/Items.cs#GetItem", "web/client.ts#some", false),
+        ("api/Items.cs#GetByIds", "web/client.ts#some", true),
+    ] {
+        let text = callers(handler);
+        assert_eq!(text.contains(caller), want, "{handler} <- {caller}: {text}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("routes ok: a request reaches the handler of the route it names");
 }
 
 /// What a definition uses without calling reaches `impact` and `find_callers`:
