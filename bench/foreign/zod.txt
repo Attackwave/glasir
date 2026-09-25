@@ -47,3 +47,20 @@ affected_tests packages/zod/src/v4/core/schemas.ts#parseURLObject
 
 affected_tests packages/zod/src/v4/core/memoizer.ts#memoizer
   mini/tests/cyclic-data.test.ts
+
+# Names v3 and v4 both define, used through a namespace import
+# (`import * as util from "./util.js"` then `util.Primitive`): the import
+# decides which one. classic/schemas.ts reaches `util` through a re-export in
+# core/index.ts instead, which is left out as the one hop an import reader
+# would have to follow.
+impact packages/zod/src/v4/core/util.ts#Primitive
+  core/compile.ts
+  core/errors.ts
+  core/schemas.ts
+
+impact packages/zod/src/v4/core/util.ts#EnumLike
+  core/api.ts
+  mini/schemas.ts
+
+impact packages/zod/src/v4/core/util.ts#Writeable
+  mini/schemas.ts

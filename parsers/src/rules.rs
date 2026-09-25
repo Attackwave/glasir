@@ -390,9 +390,11 @@ impl RuleFile {
     }
 
     /// Identifiers outside comments and strings that are not in call position,
-    /// with their byte offsets. What a file names besides what it calls: a type
-    /// in a signature, a constant read, a class it extends.
-    fn identifiers<'a>(&self, src: &'a str) -> Vec<(u32, &'a str)> {
+    /// with their byte offsets and the name before a `.` that qualifies them.
+    /// What a file names besides what it calls: a type in a signature, a
+    /// constant read, a class it extends — and `util` in `util.Primitive`,
+    /// which says through which import.
+    fn identifiers<'a>(&self, src: &'a str) -> Vec<(u32, &'a str, Option<&'a str>)> {
         let (line, docs, block) = self.comment_parts();
         let style = CommentStyle {
             line_comment_prefix: &line,
@@ -425,7 +427,11 @@ impl RuleFile {
             if matches!(next, Some(TokenKind::Symbol('('))) {
                 continue;
             }
-            out.push((t.start, name));
+            let qualifier = match (i.checked_sub(2).map(|k| &significant[k].kind), i.checked_sub(1).map(|k| &significant[k].kind)) {
+                (Some(TokenKind::Ident(q)), Some(TokenKind::Symbol('.'))) => Some(*q),
+                _ => None,
+            };
+            out.push((t.start, name, qualifier));
         }
         out
     }
@@ -555,7 +561,11 @@ impl RuleSet {
 
     /// See `RuleFile::identifiers`. Empty for a language with no rule file,
     /// whose comment syntax is known only to its hand-written scanner.
-    pub fn identifiers<'a>(&self, language: Language, src: &'a str) -> Vec<(u32, &'a str)> {
+    pub fn identifiers<'a>(
+        &self,
+        language: Language,
+        src: &'a str,
+    ) -> Vec<(u32, &'a str, Option<&'a str>)> {
         match BUILTINS.iter().find(|b| b.language == language) {
             Some(b) => self.files[b.name].identifiers(src),
             None => Vec::new(),

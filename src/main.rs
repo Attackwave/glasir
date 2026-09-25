@@ -6090,6 +6090,40 @@ fn demo_references() {
         "a name defined twice cannot be attributed: {text}"
     );
 
+    // A name defined twice is decided by the import that brings it in: a
+    // namespace alias (`a.Account`) or a named import.
+    for (file, body) in [
+        (
+            "ts/a.ts",
+            "export interface Account {\n  total: number;\n}\n",
+        ),
+        (
+            "ts/b.ts",
+            "export interface Account {\n  owner: string;\n}\n",
+        ),
+        (
+            "ts/use.ts",
+            "import * as a from \"./a\";\n\nexport function settle(l: a.Account) {\n  return l;\n}\n",
+        ),
+        (
+            "ts/named.ts",
+            "import { Account } from \"./b\";\n\nexport function keep(l: Account) {\n  return l;\n}\n",
+        ),
+    ] {
+        std::fs::create_dir_all(dir.join("ts")).unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+    let text = ask("find_callers", "ts/a.ts#Account");
+    assert!(
+        text.contains("ts/use.ts#settle") && !text.contains("ts/named.ts#keep"),
+        "{text}"
+    );
+    let text = ask("find_callers", "ts/b.ts#Account");
+    assert!(
+        text.contains("ts/named.ts#keep") && !text.contains("ts/use.ts#settle"),
+        "{text}"
+    );
+
     // Stored with the graph and replaced per file: an edit reaches the next
     // start, and the untouched files' uses come back from the snapshot.
     std::fs::write(dir.join("src/noise.rs"), "fn noise(l: Ledger) {}\n").unwrap();
