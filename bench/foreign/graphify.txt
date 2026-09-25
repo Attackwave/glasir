@@ -1,0 +1,59 @@
+# Graphify-Labs/graphify — structural ground truth on a foreign Python tree.
+#
+# Read out of the source: call sites with grep, attributed to the enclosing
+# `def` by reading — `cache.py:1633` sits in `save_semantic_cache` after a
+# nested function has already returned, and a docstring naming `file_hash(`
+# in `reflect.py` is not a call. Type users are files that import, annotate
+# with or construct the class, comments excluded.
+
+find_callers graphify/cache.py#file_hash
+  graphify/cache.py#load_cached
+  graphify/cache.py#save_cached
+  tests/test_cache.py#test_file_hash_consistent
+  tests/test_cache.py#test_file_hash_changes
+
+find_callers graphify/cache.py#load_cached
+  graphify/cache.py#check_semantic_cache
+  graphify/cache.py#save_semantic_cache
+  graphify/extract.py#_extract_single_file
+  graphify/extract.py#extract
+  tests/test_cache.py#test_cache_roundtrip
+
+find_callers graphify/affected.py#affected_nodes
+  graphify/affected.py#format_affected
+  tests/test_affected_member_seed.py#test_class_level_caller_still_works
+  tests/test_indirect_dispatch.py#test_affected_includes_indirect_callers
+
+impact graphify/extractors/models.py#LanguageConfig
+  graphify/extract.py
+  graphify/extractors/engine.py
+  graphify/extractors/resolution.py
+
+impact graphify/resolver_registry.py#LanguageResolver
+  graphify/extract.py
+  tests/test_language_resolvers.py
+
+impact graphify/_minhash.py#MinHash
+  graphify/dedup.py
+  tests/test_minhash.py
+
+impact graphify/detect.py#FileType
+  tests/test_detect.py
+  tests/test_manifest_ingest.py
+
+impact graphify/extractors/csharp.py#CsharpNameResolver
+  graphify/cross_repo_calls.py
+  graphify/extract.py
+
+impact graphify/symbol_resolution.py#ImportedSymbol
+  tests/test_symbol_resolution.py
+
+affected_tests graphify/cache.py#file_hash
+  tests/test_cache.py
+
+affected_tests graphify/affected.py#affected_nodes
+  tests/test_affected_member_seed.py
+  tests/test_indirect_dispatch.py
+
+affected_tests graphify/_minhash.py#MinHash
+  tests/test_minhash.py

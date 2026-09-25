@@ -1533,6 +1533,16 @@ fn run_status(args: &cli::Args) -> std::io::Result<()> {
 /// term's document frequency — the four floors would then measure the fixture
 /// as much as the code.
 fn run_deep(tree: &std::path::Path, set: &std::path::Path) -> std::io::Result<f32> {
+    run_tree(tree, set, false)
+}
+
+/// One question set against one tree analysed on its own; `structural` scores
+/// it by calling the tools, which also read the tree on disk.
+fn run_tree(
+    tree: &std::path::Path,
+    set: &std::path::Path,
+    structural: bool,
+) -> std::io::Result<f32> {
     let tree = tree.canonicalize()?;
     let questions = bench::load_questions(set)?;
     // A benchmark measures this build, never a cache of an older one. The
@@ -1547,6 +1557,7 @@ fn run_deep(tree: &std::path::Path, set: &std::path::Path) -> std::io::Result<f3
     let embeddings = embed::embed(&a.snap, 4);
     let search = search::SearchIndex::build_with_docs(&a.registry, a.registry.docs());
     let names = mcp::name_table(&a.registry, a.snap.width());
+    let mentions = std::sync::OnceLock::new();
     let served = mcp::Served {
         snap: &a.snap,
         names: &names,
@@ -1558,8 +1569,8 @@ fn run_deep(tree: &std::path::Path, set: &std::path::Path) -> std::io::Result<f3
         physics: physics::Physics::default(),
         now: now(),
         files: None,
-        mentions: None,
-        root: None,
+        mentions: Some(&mentions),
+        root: structural.then_some(tree.as_path()),
     };
     let mut files: Vec<(String, String)> = Vec::new();
     for path in walk(&tree) {
@@ -1570,11 +1581,51 @@ fn run_deep(tree: &std::path::Path, set: &std::path::Path) -> std::io::Result<f3
         }
     }
     files.sort();
-    Ok(bench::run(&served, &questions, &files))
+    Ok(if structural {
+        bench::run_structural(&served, &questions, &files)
+    } else {
+        bench::run(&served, &questions, &files)
+    })
+}
+
+/// Scores `bench/foreign/<name>.txt` against a clone of each repository in
+/// `bench/foreign/repos.txt`, pinned by commit, and gates it on
+/// `bench/foreign/baseline.txt`. Every other floor reads this Rust tree; these
+/// read Go, Java, Python and Kotlin written by other people.
+fn run_foreign(
+    root: &std::path::Path,
+    clones: &std::path::Path,
+    check: bool,
+) -> std::io::Result<()> {
+    let list = std::fs::read_to_string(root.join("bench/foreign/repos.txt"))?;
+    let mut measured = Vec::new();
+    for line in list
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        let name = line.split_whitespace().next().unwrap_or_default();
+        let tree = clones.join(name);
+        if !tree.is_dir() {
+            // A floor whose tree is missing measured nothing, which `--check`
+            // must not read as a pass.
+            println!("\n=== {name}: no clone at {}", tree.display());
+            continue;
+        }
+        println!("\n=== {name}");
+        let set = root.join(format!("bench/foreign/{name}.txt"));
+        measured.push((name.to_string(), run_tree(&tree, &set, true)?));
+    }
+    if check {
+        enforce_floors(&measured, &root.join("bench/foreign/baseline.txt"), true)?;
+    }
+    Ok(())
 }
 
 fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     let root = &std::path::Path::new(&args.path).canonicalize()?;
+    if let Some(clones) = args.value("foreign") {
+        return run_foreign(root, std::path::Path::new(clones), args.has("check"));
+    }
     let questions_path = args
         .value("questions")
         .map(std::path::PathBuf::from)
@@ -1744,38 +1795,57 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     // `--check` is what makes the benchmark a guard rather than a report: CI
     // runs it, and a set that falls below its floor breaks the build.
     if args.has("check") {
-        let baseline = bench::load_baseline(&root.join("bench/baseline.txt"))?;
-        let mut failed = Vec::new();
-        println!("\n=== against bench/baseline.txt");
-        for (name, got) in &measured {
-            let Some((_, floor)) = baseline.floors.iter().find(|(k, _)| k == name) else {
-                println!("  {name:<24} {got:>3.0}%   (no floor recorded)");
-                continue;
-            };
-            // `<=`, not `<`: with `<` a drop of exactly the tolerance passes,
-            // and that is not a corner case — it is what happened. The
-            // identifier set fell 93% -> 90% and the guard reported "ok" for
-            // five commits, because 90 + 3 is not less than 93.
-            let low = got + baseline.tolerance <= *floor;
-            println!(
-                "  {name:<24} {got:>3.0}%   floor {floor:.0}%  {}",
-                if low { "REGRESSION" } else { "ok" }
-            );
-            if low {
-                failed.push(format!("{name}: {got:.0}% against a floor of {floor:.0}%"));
+        enforce_floors(&measured, &root.join("bench/baseline.txt"), false)?;
+    }
+    Ok(())
+}
+
+/// Fails the process when a measured set is below its floor. With `strict`, a
+/// floor nothing measured fails too.
+fn enforce_floors(
+    measured: &[(String, f32)],
+    path: &std::path::Path,
+    strict: bool,
+) -> std::io::Result<()> {
+    let baseline = bench::load_baseline(path)?;
+    let mut failed = Vec::new();
+    println!("\n=== against {}", path.display());
+    if strict {
+        for (name, _) in &baseline.floors {
+            if !measured.iter().any(|(m, _)| m == name) {
+                failed.push(format!("{name}: not measured"));
             }
         }
-        if !failed.is_empty() {
-            eprintln!("\nretrieval regressed:");
-            for f in &failed {
-                eprintln!("  {f}");
-            }
-            eprintln!(
-                "\nIf the drop is intended, lower the floor in bench/baseline.txt in the \n\
-                 same commit, with the reason in the message."
-            );
-            std::process::exit(1);
+    }
+    for (name, got) in measured {
+        let Some((_, floor)) = baseline.floors.iter().find(|(k, _)| k == name) else {
+            println!("  {name:<24} {got:>3.0}%   (no floor recorded)");
+            continue;
+        };
+        // `<=`, not `<`: with `<` a drop of exactly the tolerance passes,
+        // and that is not a corner case — it is what happened. The
+        // identifier set fell 93% -> 90% and the guard reported "ok" for
+        // five commits, because 90 + 3 is not less than 93.
+        let low = got + baseline.tolerance <= *floor;
+        println!(
+            "  {name:<24} {got:>3.0}%   floor {floor:.0}%  {}",
+            if low { "REGRESSION" } else { "ok" }
+        );
+        if low {
+            failed.push(format!("{name}: {got:.0}% against a floor of {floor:.0}%"));
         }
+    }
+    if !failed.is_empty() {
+        eprintln!("\nretrieval regressed:");
+        for f in &failed {
+            eprintln!("  {f}");
+        }
+        eprintln!(
+            "\nIf the drop is intended, lower the floor in {} in the \n\
+             same commit, with the reason in the message.",
+            path.display()
+        );
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -7437,6 +7507,30 @@ fn demo_baseline() {
             "{set} has no recorded floor, so a regression there is invisible"
         );
     }
+    // Every foreign repository has its set and its floor, and every floor its
+    // repository: an unpaired entry is either unguarded or never measured.
+    let repos = std::fs::read_to_string("bench/foreign/repos.txt").unwrap();
+    let foreign = bench::load_baseline(std::path::Path::new("bench/foreign/baseline.txt")).unwrap();
+    let names: Vec<&str> = repos
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(!names.is_empty());
+    for name in &names {
+        assert!(
+            std::path::Path::new(&format!("bench/foreign/{name}.txt")).exists(),
+            "{name} has no question set"
+        );
+        assert!(
+            foreign.floors.iter().any(|(k, _)| k == name),
+            "{name} has no floor"
+        );
+    }
+    for (k, _) in &foreign.floors {
+        assert!(names.contains(&k.as_str()), "floor {k} names no repository");
+    }
+
     // A single question in a twelve-question set is worth eight points, so a
     // tolerance at or above that would never fire.
     assert!(

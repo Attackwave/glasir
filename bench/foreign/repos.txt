@@ -1,0 +1,6 @@
+# name  url  commit — each clone is fetched at exactly this commit, so a
+# question set cannot drift from the tree its answers were read out of.
+gin               https://github.com/gin-gonic/gin                    dcaa4296d111981ffb31ac3eba90bb63e1eb5ab9
+spring-petclinic  https://github.com/spring-projects/spring-petclinic 818c4136ea971c21674525f9053de0d9c7ad8cfe
+graphify          https://github.com/Graphify-Labs/graphify           4c735618f3d56fd622c2049771584621c31ba9ff
+ktor              https://github.com/ktorio/ktor                      786504e44fa1cbc1ad1164b7a4d4fa88c2e47c03

@@ -1,0 +1,70 @@
+# ktorio/ktor — structural ground truth on a foreign Kotlin tree, 2,400 files.
+#
+# Read out of the source: call sites with grep, attributed to the enclosing
+# `fun` by reading — extension functions (`HttpMessage.setCookie()`) are
+# named by their function, a companion call (`HttpAuthHeader.basicAuthChallenge`)
+# is still a call. Test names in backticks are left out of the expectations,
+# since they hold spaces. Type users: files whose code, KDoc excluded, names
+# the type; two files that only mention one in KDoc are not users.
+
+find_callers ktor-http/common/src/io/ktor/http/Cookie.kt#parseClientCookiesHeader
+  plugins/cookies/HttpCookies.kt#captureHeaderCookies
+  io/ktor/http/Cookie.kt#parseServerSetCookieHeader
+  server/request/RequestCookies.kt#fetchCookies
+
+find_callers ktor-http/common/src/io/ktor/http/Cookie.kt#parseServerSetCookieHeader
+  http/HttpMessageProperties.kt#setCookie
+  http/HttpMessageProperties.kt#cookies
+  server/response/ResponseCookies.kt#get
+  http/Cookie.kt#jvmDeserialize
+  plugins/ParserServerSetCookieTest.kt#testSimpleParse
+
+find_callers ktor-http/ktor-http-cio/common/src/io/ktor/http/cio/Multipart.kt#parseBoundaryInternal
+  cio/Multipart.kt#parseMultipart
+  cio/MultipartTest.kt#testParseBoundary
+  cio/MultipartTest.kt#testBoundary
+
+find_callers ktor-http/common/src/io/ktor/http/auth/HttpAuthHeader.kt#basicAuthChallenge
+  auth/BasicAuth.kt#onAuthenticate
+  jwt/JWTAuthTest.kt#testJwtNoAuthCustomChallengeNoToken
+
+find_callers ktor-http/ktor-http-cio/common/src/io/ktor/http/cio/ConnectionOptions.kt#buildToString
+  cio/ConnectionOptions.kt#toString
+
+impact ktor-http/ktor-http-cio/common/src/io/ktor/http/cio/internals/AsciiCharTree.kt#AsciiCharTree
+  cio/ConnectionOptions.kt
+  cio/HttpParser.kt
+  internals/Chars.kt
+
+impact ktor-client/ktor-client-plugins/ktor-client-auth/common/src/io/ktor/client/plugins/auth/providers/BasicAuthProvider.kt#BasicAuthProvider
+  auth/AuthTest.kt
+  auth/BasicProviderTest.kt
+
+impact ktor-network/ktor-network-tls/jvm/src/io/ktor/network/tls/TLSConfigJvm.kt#CertificateAndKey
+  tls/TLSClientHandshake.kt
+  tls/TLSConfigBuilder.kt
+
+impact ktor-server/ktor-server-core/common/src/io/ktor/server/routing/RouteSelector.kt#ParameterRouteSelector
+  routing/RoutingBuilder.kt
+  resources/Routing.kt
+  openapi/OpenApiRoutes.kt
+  routing/RoutingResolveTest.kt
+
+impact ktor-server/ktor-server-plugins/ktor-server-auth-jwt/jvm/src/io/ktor/server/auth/jwt/JWTAuth.kt#JWTPrincipal
+  jwt/JWTAuthTest.kt
+  openapi/JvmSecuritySchemeInferenceTest.kt
+
+impact ktor-server/ktor-server-netty/jvm/src/io/ktor/server/netty/http3/HmacQuicTokenHandler.kt#HmacQuicTokenHandler
+  netty/HmacQuicTokenHandlerTest.kt
+
+affected_tests ktor-http/ktor-http-cio/common/src/io/ktor/http/cio/Multipart.kt#parseBoundaryInternal
+  cio/MultipartTest.kt
+
+affected_tests ktor-http/common/src/io/ktor/http/Cookie.kt#parseClientCookiesHeader
+  http/ParseClientCookiesHeaderTest.kt
+
+affected_tests ktor-server/ktor-server-netty/jvm/src/io/ktor/server/netty/http3/HmacQuicTokenHandler.kt#HmacQuicTokenHandler
+  netty/HmacQuicTokenHandlerTest.kt
+
+affected_tests ktor-client/ktor-client-plugins/ktor-client-auth/common/src/io/ktor/client/plugins/auth/providers/BasicAuthProvider.kt#BasicAuthProvider
+  auth/BasicProviderTest.kt

@@ -1,0 +1,79 @@
+# spring-projects/spring-petclinic — structural ground truth on a foreign Java tree.
+#
+# Read out of the source: call sites with grep, attributed to the enclosing
+# method and each line read (a lambda inside `loadPetWithVisit` is still that
+# method); type users are files whose code — comments and Javadoc stripped —
+# names the type in a field, a signature, an `extends` or an `import`.
+# Expectations are path suffixes, which the answer text contains either way.
+
+# Who calls this — `getPet` is overloaded three times in one file, which
+# the graph keys as one symbol, as a reader does.
+find_callers src/main/java/org/springframework/samples/petclinic/owner/Owner.java#getPet
+  owner/Owner.java#addVisit
+  owner/PetController.java#findPet
+  owner/PetController.java#processCreationForm
+  owner/PetController.java#processUpdateForm
+  owner/PetController.java#updatePetDetails
+  owner/VisitController.java#loadPetWithVisit
+  service/ClinicServiceTests.java#shouldAddNewVisitForPet
+
+find_callers src/main/java/org/springframework/samples/petclinic/owner/Pet.java#addVisit
+  owner/Owner.java#addVisit
+  owner/VisitController.java#loadPetWithVisit
+
+find_callers src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java#findPaginatedForOwnersLastName
+  owner/OwnerController.java#processFindForm
+
+find_callers src/main/java/org/springframework/samples/petclinic/vet/Vet.java#getNrOfSpecialties
+  service/ClinicServiceTests.java#shouldFindVets
+
+# Who uses this type: fields, injected constructors, extends, imports.
+impact src/main/java/org/springframework/samples/petclinic/owner/OwnerRepository.java#OwnerRepository
+  owner/OwnerController.java
+  owner/PetController.java
+  owner/VisitController.java
+  owner/OwnerControllerTests.java
+
+impact src/main/java/org/springframework/samples/petclinic/owner/PetTypeRepository.java#PetTypeRepository
+  owner/PetController.java
+  owner/PetTypeFormatter.java
+
+impact src/main/java/org/springframework/samples/petclinic/vet/VetRepository.java#VetRepository
+  vet/VetController.java
+  vet/VetControllerTests.java
+
+impact src/main/java/org/springframework/samples/petclinic/model/BaseEntity.java#BaseEntity
+  model/NamedEntity.java
+  model/Person.java
+  owner/Visit.java
+
+impact src/main/java/org/springframework/samples/petclinic/model/NamedEntity.java#NamedEntity
+  owner/Pet.java
+  owner/PetType.java
+  vet/Specialty.java
+
+impact src/main/java/org/springframework/samples/petclinic/model/Person.java#Person
+  owner/Owner.java
+  vet/Vet.java
+
+impact src/main/java/org/springframework/samples/petclinic/owner/PetType.java#PetType
+  owner/Pet.java
+  owner/PetController.java
+  owner/PetTypeFormatter.java
+  owner/PetTypeRepository.java
+
+impact src/main/java/org/springframework/samples/petclinic/vet/Specialty.java#Specialty
+  vet/Vet.java
+
+impact src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java#PetValidator
+  owner/PetController.java
+
+# Which tests to run.
+affected_tests src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java#validate
+  owner/PetValidatorTests.java
+
+affected_tests src/main/java/org/springframework/samples/petclinic/owner/PetTypeFormatter.java#parse
+  owner/PetTypeFormatterTests.java
+
+affected_tests src/main/java/org/springframework/samples/petclinic/vet/Vet.java#getNrOfSpecialties
+  service/ClinicServiceTests.java
