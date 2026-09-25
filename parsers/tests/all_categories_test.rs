@@ -2960,3 +2960,14 @@ Response handle(Request req) {
         facts.calls
     );
 }
+
+#[test]
+fn java_anonymous_class_is_not_a_definition() {
+    // Through the rule route, which is the scanner `glasir` runs.
+    let facts = native_parsers::rules::active().parse(
+        Language::Java,
+        "class Fixtures {\n    List<PetType> make() {\n        list.add(new PetType() {\n            public String getName() { return \"cat\"; }\n        });\n        return list;\n    }\n}\n",
+    );
+    assert_eq!(facts.defines, vec!["Fixtures", "make", "getName"]);
+    assert!(facts.calls.iter().any(|c| c.0 == "make" && c.1 == "PetType"));
+}
