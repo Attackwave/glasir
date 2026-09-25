@@ -3006,3 +3006,20 @@ fn an_indented_body_ends_for_attribution_too() {
         );
     }
 }
+
+#[test]
+fn a_kotlin_expression_body_ends_with_its_expression() {
+    // A lambda's `}` closed the function; the call after it fell to the file.
+    let facts = native_parsers::rules::active().parse(
+        Language::Kotlin,
+        "fun HttpMessage.cookies(): List<Cookie> = headers.getAll(\"x\")\n    ?.flatMap { it.split() }\n    ?.map { parse(it) }\n    ?: emptyList()\n\nclass C {\n    fun a() = list.map { it }\n    val limit = compute()\n}\n",
+    );
+    for (caller, callee) in [("cookies", "parse"), ("cookies", "emptyList")] {
+        assert!(
+            facts.calls.iter().any(|c| c.0 == caller && c.1 == callee),
+            "{caller} -> {callee}: {:?}",
+            facts.calls
+        );
+    }
+    assert!(facts.defines.iter().any(|d| d == "limit"), "{:?}", facts.defines);
+}

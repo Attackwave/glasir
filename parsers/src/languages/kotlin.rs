@@ -12,9 +12,16 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut i = 0;
     let mut scope = ScopeStack::new();
     let mut in_type = false;
+    // Where an expression-bodied function ends: its lambdas' braces are not
+    // its body, and the first `}` used to close it.
+    let mut expression_end: Option<usize> = None;
 
     while i < tokens.len() {
         let tok = &tokens[i];
+        if expression_end == Some(i) {
+            expression_end = None;
+            scope.on_statement_end(tok.start as usize, &mut facts);
+        }
         match &tok.kind {
             TokenKind::DocComment(text)
             | TokenKind::LineComment(text)
@@ -58,7 +65,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Symbol(':') => {
-                in_type = true;
+                // `?:` is the elvis operator, and a call follows it.
+                in_type = i == 0 || tokens[i - 1].kind != TokenKind::Symbol('?');
                 i += 1;
                 continue;
             }
@@ -281,6 +289,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 true,
                                 &mut facts,
                             );
+                            if expression_end.is_none() {
+                                if let Some(end) = expression_body_end(&tokens, j) {
+                                    if let Some(last) = scope.open.last_mut() {
+                                        last.statement_scoped = true;
+                                    }
+                                    expression_end = Some(end);
+                                }
+                            }
                             scope.on_word(fn_name);
                             i = j;
                             continue;
@@ -410,4 +426,65 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+/// For `fun f(…): T = expr`, the index of the token ending `expr`: a line
+/// break outside brackets when the next line does not continue it (`.`,
+/// `?.`, `?:`, an operator), or the `}` closing what encloses the function.
+/// `None` for a block body or no body.
+fn expression_body_end(tokens: &[crate::lexer::Token<'_>], mut k: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    loop {
+        match tokens.get(k)?.kind {
+            TokenKind::Symbol('(' | '[') => depth += 1,
+            TokenKind::Symbol(')' | ']') => depth -= 1,
+            TokenKind::Symbol('=') if depth == 0 => break,
+            TokenKind::Symbol('{' | '}' | ';') if depth == 0 => return None,
+            TokenKind::Ident("fun" | "val" | "var" | "class" | "interface" | "object")
+                if depth == 0 =>
+            {
+                return None
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    k += 1;
+    let mut depth = 0i32;
+    let mut seen = false;
+    while let Some(t) = tokens.get(k) {
+        match t.kind {
+            TokenKind::Symbol('(' | '[' | '{') => depth += 1,
+            TokenKind::Symbol(')' | ']' | '}') if depth == 0 => return Some(k),
+            TokenKind::Symbol(')' | ']' | '}') => depth -= 1,
+            TokenKind::Symbol(';') if depth == 0 => return Some(k),
+            TokenKind::Newline if depth == 0 && seen => {
+                let next = tokens[k + 1..].iter().find(|t| {
+                    !matches!(
+                        t.kind,
+                        TokenKind::Newline
+                            | TokenKind::LineComment(_)
+                            | TokenKind::BlockComment(_)
+                            | TokenKind::DocComment(_)
+                    )
+                });
+                let continues = next.is_some_and(|t| {
+                    matches!(
+                        t.kind,
+                        TokenKind::Symbol('.' | '?' | ':' | '+' | '-' | '*' | '/' | '%' | '<' | '>')
+                            | TokenKind::DoubleSymbol(
+                                "?." | "&&" | "||" | "->" | "==" | "!=" | "<=" | ">=" | "::"
+                            )
+                    )
+                });
+                if !continues {
+                    return Some(k);
+                }
+            }
+            TokenKind::Newline => {}
+            _ => seen = true,
+        }
+        k += 1;
+    }
+    Some(k)
 }
