@@ -2,8 +2,8 @@
 # rules as bench/baseline.txt: raise one in the commit that improves it, lower
 # one only with the reason in the message. A floor whose clone is missing
 # fails `--check`, so a repository cannot drop out of the gate silently.
-gin               41
-spring-petclinic  32
-graphify          70
-ktor              64
+gin               69
+spring-petclinic  76
+graphify          84
+ktor              79
 tolerance         3
