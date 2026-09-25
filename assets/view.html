@@ -94,8 +94,21 @@ let view = {x:0, y:0, k:1}, rot = 0;
 // above 0.95 the clumps hide detail that fits comfortably.
 const LOD_FAR = 0.55, LOD_NEAR = 0.95;
 let index = new Map();
-const clumpOf = new Map(OVERVIEW.map(c =>
-  [c.id, {cx: c.cx, cy: c.cy, label: '', size: c.size}]));
+// A subsystem may hold several communities (they share a majority file), so
+// every member id and the file point at the same clump. A symbol in no
+// community still belongs to its file's clump.
+const clumpOf = new Map(), clumpByFile = new Map();
+let clumpList = [];
+function setOverview(list) {
+  clumpOf.clear(); clumpByFile.clear();
+  clumpList = list.map(c => ({cx: c.cx, cy: c.cy, label: c.label || '', size: c.size}));
+  list.forEach((c, i) => {
+    for (const id of c.ids || [c.id]) clumpOf.set(id, clumpList[i]);
+    if (c.file) clumpByFile.set(c.file, clumpList[i]);
+  });
+}
+setOverview(OVERVIEW);
+const clumpFor = n => clumpOf.get(n.community) || (n.local ? clumpByFile.get(n.file) : undefined);
 
 // Filled in by each viewport response: what is on screen, not what exists.
 document.getElementById('stats').textContent =
@@ -223,7 +236,9 @@ const nodeProg = program(`
     // Focusing dims everything the focused node does not touch. Done in the
     // shader from a small per-node buffer, so a click is one upload of one
     // attribute rather than a rebuild of the whole geometry.
-    v_alpha = (a_local > 0.5 ? 1.0 : 0.45) * (1.0 - u_lod * 0.82) * (a_dim > 0.5 ? 0.07 : 1.0);
+    // A name the tree does not define belongs to no subsystem: it fades out
+    // entirely as the clumps take over, instead of staying scattered between them.
+    v_alpha = (a_local > 0.5 ? 1.0 - u_lod * 0.82 : 0.45 * (1.0 - u_lod)) * (a_dim > 0.5 ? 0.07 : 1.0);
   }`, `
   precision mediump float;
   varying vec3 v_color; varying float v_alpha;
@@ -297,7 +312,7 @@ function upload() {
   dim = new Float32Array(N);
   DATA.nodes.forEach((n, i) => {
     detail[i * 2] = n.x; detail[i * 2 + 1] = n.y;
-    const c = clumpOf.get(n.community);
+    const c = clumpFor(n);
     clump[i * 2] = c ? c.cx : n.x; clump[i * 2 + 1] = c ? c.cy : n.y;
     const col = n.hub ? [0.91, 0.77, 0.40] : n.local ? [0.29, 0.75, 0.69] : [0.29, 0.37, 0.44];
     color[i * 3] = col[0]; color[i * 3 + 1] = col[1]; color[i * 3 + 2] = col[2];
@@ -310,6 +325,9 @@ function upload() {
   for (const e of DATA.edges) {
     const a = index.get(e.s), b = index.get(e.t);
     if (a === undefined || b === undefined) continue;
+    // A call into `push` or `unwrap` says nothing about this tree's shape,
+    // and those edges were most of the web drawn over it.
+    if (!DATA.nodes[a].local || !DATA.nodes[b].local) continue;
     (groups[e.c] || groups.ambiguous).push(a, b);
   }
   const edgeBufs = {};
@@ -323,7 +341,7 @@ function upload() {
   }
 
   // One point per subsystem, sized by how many symbols it holds.
-  const cl = [...clumpOf.values()];
+  const cl = [...clumpList];
   const cPos = new Float32Array(cl.length * 2), cSize = new Float32Array(cl.length);
   cl.forEach((c, i) => {
     cPos[i * 2] = c.cx; cPos[i * 2 + 1] = c.cy;
@@ -432,14 +450,14 @@ function render2d() {
 
   const lod = lodNow();
   const at = n => {
-    const c = clumpOf.get(n.community);
+    const c = clumpFor(n);
     return c
       ? {x: n.x + (c.cx - n.x) * lod, y: n.y + (c.cy - n.y) * lod}
       : {x: n.x, y: n.y};
   };
 
   if (lod > 0.02) {
-    for (const c of clumpOf.values()) {
+    for (const c of clumpList) {
       g.beginPath();
       g.arc(c.cx, c.cy, 22 + Math.sqrt(c.size) * 9, 0, Math.PI * 2);
       g.strokeStyle = `rgba(75,192,176,${0.5 * lod})`;
@@ -469,7 +487,7 @@ function render2d() {
     g.beginPath();
     g.arc(p.x, p.y, r, 0, Math.PI * 2);
     g.fillStyle = n.hub ? '#e9c46a' : n.local ? '#4bc0b0' : '#4a5f70';
-    g.globalAlpha = (n.local ? 1 : 0.5) * (1 - lod * 0.82);
+    g.globalAlpha = n.local ? 1 - lod * 0.82 : 0.5 * (1 - lod);
     g.fill();
     if (n.id === hover || n.id === focus) {
       g.globalAlpha = 1;
@@ -503,9 +521,15 @@ function drawLabels(lod) {
   // clump level, and 600 symbol labels would be noise anyway.
   if (lod > 0.35) {
     tx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-    for (const c of clumpOf.values()) {
+    // Largest first, and a label that would overlap one already drawn is
+    // skipped: two names printed over each other read as neither.
+    const taken = [];
+    for (const c of [...clumpList].sort((p, q) => q.size - p.size)) {
       const x = c.cx * view.k + view.x, y = c.cy * view.k + view.y;
       if (x < -80 || y < -40 || x > tc.width / dpr + 80 || y > tc.height / dpr + 40) continue;
+      const w = tx.measureText(c.label).width / 2 + 4;
+      if (taken.some(r => Math.abs(r.x - x) < r.w + w && Math.abs(r.y - y) < 22)) continue;
+      taken.push({x, y, w});
       tx.fillStyle = `rgba(230,238,245,${Math.min(1, lod * 1.4)})`;
       tx.fillText(c.label, x, y + 4);
       tx.font = '11px ui-monospace, monospace';
@@ -522,11 +546,17 @@ function drawLabels(lod) {
     tx.textAlign = 'left';
     const alpha = 1 - lod / 0.55;
     const w = tc.width / dpr, h = tc.height / dpr;
-    for (const n of DATA.nodes) {
-      if (!n.local) continue;
+    // The pointed-at symbol first, then by connections; a label that would
+    // cover one already drawn is left out rather than printed over it.
+    const rank = n => (n.id === hover || n.id === focus ? 1e9 : 0) + (n.hub ? 1e6 : 0) + n.degree;
+    const taken = [];
+    for (const n of DATA.nodes.filter(n => n.local).sort((p, q) => rank(q) - rank(p))) {
       if (view.k < 0.9 && !n.hub && n.id !== hover && n.id !== focus) continue;
       const x = n.x * view.k + view.x, y = n.y * view.k + view.y;
       if (x < -60 || y < -20 || x > w + 60 || y > h + 20) continue;
+      const tw = tx.measureText(n.label).width;
+      if (taken.some(r => x < r.x + r.w && r.x < x + tw + 8 && Math.abs(r.y - y) < 12)) continue;
+      taken.push({x, y, w: tw + 8});
       tx.fillStyle = n.id === hover || n.id === focus
         ? '#e6eef5' : `rgba(199,213,224,${alpha * 0.85})`;
       tx.fillText(n.label, x + 8, y + 4);
@@ -541,7 +571,7 @@ function draw() { render(); }
 /// also where it must be clicked.
 function project(n) {
   const lod = lodNow();
-  const c = clumpOf.get(n.community);
+  const c = clumpFor(n);
   if (!c) return {x: n.x, y: n.y, s: 1};
   return {x: n.x + (c.cx - n.x) * lod, y: n.y + (c.cy - n.y) * lod, s: 1};
 }
@@ -633,10 +663,7 @@ document.querySelectorAll('button[data-mode]').forEach(b => {
       .then(d => {
         OVERVIEW = d.clumps;
         BOUNDS = d.bounds;
-        clumpOf.clear();
-        for (const c of OVERVIEW) {
-          clumpOf.set(c.id, {cx: c.cx, cy: c.cy, label: c.label || '', size: c.size});
-        }
+        setOverview(OVERVIEW);
         rebuildSubsystemList();
         fitAll();
         fetchViewport();

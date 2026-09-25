@@ -254,21 +254,37 @@ pub fn viewport_json(
         })
         .collect();
 
-    // Only edges with both ends on screen: one dangling into the dark would be
-    // a line to nowhere.
+    // Only edges between the tree's own symbols, both ends on screen. A call
+    // into another file routes through the name it was written with, so the
+    // edge is drawn through that placeholder to the definition behind it —
+    // skipping placeholders outright dropped nearly every cross-file line.
+    let label = |c: Confidence| match c {
+        Confidence::Extracted => "extracted",
+        Confidence::Inferred => "inferred",
+        Confidence::Ambiguous => "ambiguous",
+    };
+    let own = |n: NodeId| served.defined.contains(&n) && shown.contains(&n);
+    let mut seen = std::collections::HashSet::new();
     let mut edges = Vec::new();
     for &s in &inside {
+        if !served.defined.contains(&s) {
+            continue;
+        }
         for e in served.snap.neighbors(s) {
-            if shown.contains(&e.target) {
-                edges.push(json!({
-                    "s": s,
-                    "t": e.target,
-                    "c": match e.confidence {
-                        Confidence::Extracted => "extracted",
-                        Confidence::Inferred => "inferred",
-                        Confidence::Ambiguous => "ambiguous",
-                    },
-                }));
+            let mut reach = Vec::new();
+            if own(e.target) {
+                reach.push((e.target, e.confidence));
+            } else if !served.defined.contains(&e.target) {
+                for e2 in served.snap.neighbors(e.target) {
+                    if own(e2.target) {
+                        reach.push((e2.target, e.confidence.min(e2.confidence)));
+                    }
+                }
+            }
+            for (t, c) in reach {
+                if t != s && seen.insert((s, t)) {
+                    edges.push(json!({"s": s, "t": t, "c": label(c)}));
+                }
             }
         }
     }
@@ -293,7 +309,10 @@ pub fn overview_json(served: &Served, layout: &Layout) -> Value {
             *slot = symbol.clone();
         }
     }
-    let mut out = Vec::new();
+    // Communities sharing a majority file are one subsystem on the map, as in
+    // the `overview` tool: several `mcp` circles named alike say nothing.
+    let mut by_file: std::collections::BTreeMap<String, (Vec<u32>, Vec<NodeId>)> =
+        Default::default();
     for cid in 0..served.communities.count() as u32 {
         let members: Vec<NodeId> = served
             .communities
@@ -304,19 +323,63 @@ pub fn overview_json(served: &Served, layout: &Layout) -> Value {
         if members.len() < 2 {
             continue;
         }
+        let file = majority_file(&members, &names).unwrap_or_default();
+        let entry = by_file.entry(file).or_default();
+        entry.0.push(cid);
+        entry.1.extend(members);
+    }
+    // A stem two subsystems share is told apart by its directory.
+    let mut stems: std::collections::HashMap<String, usize> = Default::default();
+    for file in by_file.keys() {
+        *stems.entry(stem(file, 1)).or_default() += 1;
+    }
+    let mut out = Vec::new();
+    for (file, (ids, members)) in &by_file {
         let (mut cx, mut cy) = (0.0f32, 0.0f32);
-        for &m in &members {
+        for &m in members {
             cx += layout.x[m as usize];
             cy += layout.y[m as usize];
         }
         let k = members.len() as f32;
+        let label = if stems[&stem(file, 1)] > 1 {
+            stem(file, 2)
+        } else {
+            stem(file, 1)
+        };
         out.push(json!({
-            "id": cid,
-            "label": community_label(cid, &members, &names),
+            "id": ids[0],
+            "ids": ids,
+            "file": file,
+            "label": label,
             "size": members.len(),
             "cx": cx / k,
             "cy": cy / k,
         }));
     }
     json!(out)
+}
+
+/// The file most of `members` live in.
+fn majority_file(members: &[NodeId], names: &[String]) -> Option<String> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for &m in members {
+        if let Some((file, _)) = names[m as usize].split_once('#') {
+            *counts.entry(file).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+        .map(|(f, _)| f.to_string())
+}
+
+/// A file's name without its extension, with `parts - 1` directories before it.
+fn stem(file: &str, parts: usize) -> String {
+    let segments: Vec<&str> = file.split('/').collect();
+    let from = segments.len().saturating_sub(parts);
+    let joined = segments[from..].join("/");
+    joined
+        .rsplit_once('.')
+        .filter(|(_, ext)| !ext.contains('/'))
+        .map_or(joined.clone(), |(s, _)| s.to_string())
 }

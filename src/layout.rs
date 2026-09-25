@@ -106,13 +106,177 @@ impl Mode {
     }
 }
 
-/// Lays out the graph by force relaxation.
+/// Lays out the graph. `file_of` is the file id per node, `u32::MAX` for a
+/// name the tree does not define (see `community::Context`).
+pub fn compute(snap: &GraphSnapshot, community: &[u32], file_of: &[u32], mode: Mode) -> Layout {
+    match mode {
+        Mode::Grouped => regions(snap, community, file_of),
+        Mode::Free => relax(snap, community, mode),
+    }
+}
+
+/// How far a node's push reaches in the free layout, and how hard it pushes.
+const REPEL_RANGE: f32 = 60.0;
+const REPEL: f32 = 60.0;
+
+/// Distance between neighbouring nodes inside a region, in layout units.
+const SPACING: f32 = 11.0;
+/// Empty margin around each region, so two regions never read as one.
+const GAP: f32 = 34.0;
+
+/// Subsystems as separate discs: every region gets its own area, sized by its
+/// member count and packed around the origin largest first, and inside it the
+/// most connected symbols sit at the centre. Relaxation alone cannot do this —
+/// with attraction only, every connected component falls onto one point, which
+/// is what the map showed before.
 ///
-/// Three forces, the standard set: neighbours attract, everything drifts
-/// toward the origin so the drawing stays bounded, and nodes in the same
-/// community attract more strongly — the last is what keeps the partition
-/// visible instead of dissolving into an even ball.
-pub fn compute(snap: &GraphSnapshot, community: &[u32], mode: Mode) -> Layout {
+/// A region is a file: the one most of a community's symbols live in, or a
+/// loose symbol's own. A name the tree does not define sits on the rim of the
+/// region that uses it most.
+fn regions(snap: &GraphSnapshot, community: &[u32], file_of: &[u32]) -> Layout {
+    use std::collections::HashMap;
+    let n = snap.width();
+    let local = |i: usize| file_of.get(i).is_some_and(|&f| f != u32::MAX);
+    let comm = |i: usize| community.get(i).copied().unwrap_or(u32::MAX);
+
+    let mut size: HashMap<u32, usize> = HashMap::new();
+    for i in (0..n).filter(|&i| local(i)) {
+        *size.entry(comm(i)).or_default() += 1;
+    }
+    // A community's region is the file most of its symbols live in, so
+    // communities sharing that file share a disc, as they share a name.
+    let mut counts: HashMap<u32, HashMap<u32, usize>> = HashMap::new();
+    for i in (0..n).filter(|&i| local(i) && size[&comm(i)] >= 2) {
+        *counts
+            .entry(comm(i))
+            .or_default()
+            .entry(file_of[i])
+            .or_default() += 1;
+    }
+    let home: HashMap<u32, u32> = counts
+        .iter()
+        .filter_map(|(c, files)| {
+            let (f, _) = files
+                .iter()
+                .max_by_key(|(f, v)| (**v, std::cmp::Reverse(**f)))?;
+            Some((*c, *f))
+        })
+        .collect();
+    // Region key: (0, file) for the tree's own symbols — a symbol in no
+    // community joins its own file's disc — and (2, 0) for names used by
+    // nothing local.
+    let mut region: Vec<Option<(u8, u32)>> = vec![None; n];
+    for i in (0..n).filter(|&i| local(i)) {
+        region[i] = Some((0, home.get(&comm(i)).copied().unwrap_or(file_of[i])));
+    }
+    // A foreign name goes where most of its users are.
+    let mut users: Vec<HashMap<(u8, u32), usize>> = vec![HashMap::new(); n];
+    for from in 0..n as NodeId {
+        let Some(r) = region[from as usize] else {
+            continue;
+        };
+        for e in snap.neighbors(from) {
+            let t = e.target as usize;
+            if t < n && region[t].is_none() {
+                *users[t].entry(r).or_default() += 1;
+            }
+        }
+    }
+    let foreign: Vec<Option<(u8, u32)>> = (0..n)
+        .map(|i| {
+            if region[i].is_some() {
+                return None;
+            }
+            users[i]
+                .iter()
+                .max_by_key(|(k, v)| (**v, std::cmp::Reverse(**k)))
+                .map(|(k, _)| *k)
+                .or(Some((2, 0)))
+        })
+        .collect();
+
+    let degree: Vec<usize> = {
+        let mut d = vec![0usize; n];
+        for from in 0..n as NodeId {
+            for e in snap.neighbors(from) {
+                d[from as usize] += 1;
+                if let Some(t) = d.get_mut(e.target as usize) {
+                    *t += 1;
+                }
+            }
+        }
+        d
+    };
+    let mut members: HashMap<(u8, u32), Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        if let Some(r) = region[i].or(foreign[i]) {
+            members.entry(r).or_default().push(i);
+        }
+    }
+    // Defined symbols first and the most connected innermost; foreign names
+    // after them, so they land on the rim.
+    for list in members.values_mut() {
+        list.sort_by_key(|&i| (!local(i), std::cmp::Reverse(degree[i]), i));
+    }
+    let mut order: Vec<(u8, u32)> = members.keys().copied().collect();
+    order.sort_by_key(|k| (std::cmp::Reverse(members[k].len()), *k));
+
+    let (mut x, mut y) = (vec![0.0f32; n], vec![0.0f32; n]);
+    let mut placed: Vec<(f32, f32, f32)> = Vec::with_capacity(order.len());
+    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    const PACK_CELL: f32 = 96.0;
+    let cells = |cx: f32, cy: f32, r: f32| {
+        let (x0, x1) = (
+            ((cx - r) / PACK_CELL).floor() as i32,
+            ((cx + r) / PACK_CELL).floor() as i32,
+        );
+        let (y0, y1) = (
+            ((cy - r) / PACK_CELL).floor() as i32,
+            ((cy + r) / PACK_CELL).floor() as i32,
+        );
+        (x0..=x1).flat_map(move |gx| (y0..=y1).map(move |gy| (gx, gy)))
+    };
+    let mut area = 0.0f32;
+    for (k, key) in order.iter().enumerate() {
+        let list = &members[key];
+        let r = SPACING * (list.len() as f32 + 1.0).sqrt() + GAP / 2.0;
+        area += r * r;
+        // Golden-angle spiral by cumulative area, pushed outward until clear.
+        let angle = k as f32 * 2.399_963_2;
+        let (dx, dy) = (angle.cos(), angle.sin());
+        let mut dist = if k == 0 { 0.0 } else { area.sqrt() * 0.9 };
+        let (cx, cy) = loop {
+            let (cx, cy) = (dx * dist, dy * dist);
+            let clash = cells(cx, cy, r).any(|c| {
+                grid.get(&c).is_some_and(|ids| {
+                    ids.iter().any(|&j| {
+                        let (px, py, pr) = placed[j];
+                        (px - cx).hypot(py - cy) < pr + r
+                    })
+                })
+            });
+            if !clash {
+                break (cx, cy);
+            }
+            dist += r * 0.25 + 1.0;
+        };
+        for c in cells(cx, cy, r) {
+            grid.entry(c).or_default().push(placed.len());
+        }
+        placed.push((cx, cy, r));
+        for (slot, &i) in list.iter().enumerate() {
+            let a = slot as f32 * 2.399_963_2;
+            let d = SPACING * (slot as f32 + 0.5).sqrt();
+            x[i] = cx + a.cos() * d;
+            y[i] = cy + a.sin() * d;
+        }
+    }
+    index(x, y)
+}
+
+/// A plain force relaxation: neighbours attract, everything drifts toward the
+/// origin, and a shared community pulls harder.
+fn relax(snap: &GraphSnapshot, community: &[u32], mode: Mode) -> Layout {
     let n = snap.width();
     if n == 0 {
         return Layout {
@@ -162,12 +326,51 @@ pub fn compute(snap: &GraphSnapshot, community: &[u32], mode: Mode) -> Layout {
 
     for pass in 0..PASSES {
         let cool = 1.0 - pass as f32 / PASSES as f32;
+        // Nearby nodes push apart, found through a grid rebuilt per pass so
+        // the cost stays linear. Without it nothing opposes the attraction
+        // and every connected node falls onto one point.
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        for i in 0..n {
+            cells
+                .entry((
+                    (x[i] / REPEL_RANGE).floor() as i32,
+                    (y[i] / REPEL_RANGE).floor() as i32,
+                ))
+                .or_default()
+                .push(i);
+        }
         // Forces read the previous positions and write velocities, so a pass is
         // embarrassingly parallel; positions are applied afterwards.
         let (fx, fy): (Vec<f32>, Vec<f32>) = parallel::map_range(n, |i| {
             let (px, py) = (x[i], y[i]);
             let mut ax = -px * 0.006;
             let mut ay = -py * 0.006;
+            let (gx, gy) = (
+                (px / REPEL_RANGE).floor() as i32,
+                (py / REPEL_RANGE).floor() as i32,
+            );
+            for cx in gx - 1..=gx + 1 {
+                for cy in gy - 1..=gy + 1 {
+                    for &j in cells.get(&(cx, cy)).map_or(&[][..], |v| v.as_slice()) {
+                        if j == i {
+                            continue;
+                        }
+                        let (dx, dy) = (px - x[j], py - y[j]);
+                        let d2 = dx * dx + dy * dy;
+                        if d2 < REPEL_RANGE * REPEL_RANGE {
+                            // Coincident nodes are split by id, not by chance.
+                            let (dx, dy, d2) = if d2 < 1e-4 {
+                                let a = (i as f32 - j as f32) * 2.399_963_2;
+                                (a.cos(), a.sin(), 1.0)
+                            } else {
+                                (dx, dy, d2)
+                            };
+                            ax += dx * REPEL / d2;
+                            ay += dy * REPEL / d2;
+                        }
+                    }
+                }
+            }
             let from = offsets[i] as usize;
             let to = offsets[i + 1] as usize;
             for &p in &peers[from..to] {
@@ -201,12 +404,23 @@ pub fn compute(snap: &GraphSnapshot, community: &[u32], mode: Mode) -> Layout {
 /// Writes a layout beside the graph it belongs to.
 pub fn write(layout: &Layout, path: &std::path::Path) -> std::io::Result<()> {
     let stored = StoredLayout {
-        parser_rules: native_parsers::rules::active().identity().to_owned(),
+        parser_rules: identity(),
         x: layout.x.clone(),
         y: layout.y.clone(),
     };
     let bytes = serde_json::to_vec(&stored).map_err(std::io::Error::other)?;
     std::fs::write(path, &bytes)
+}
+
+/// What a stored layout must match: the rules that produced the graph, and
+/// this algorithm's version — a layout from an older algorithm has the right
+/// length and the wrong picture.
+fn identity() -> String {
+    const LAYOUT_VERSION: u32 = 2;
+    format!(
+        "{} layout/{LAYOUT_VERSION}",
+        native_parsers::rules::active().identity()
+    )
 }
 
 /// Reads a stored layout and rebuilds its spatial index.
@@ -217,7 +431,7 @@ pub fn write(layout: &Layout, path: &std::path::Path) -> std::io::Result<()> {
 pub fn read(path: &std::path::Path, expected_nodes: usize) -> Option<Layout> {
     let bytes = std::fs::read(path).ok()?;
     let stored: StoredLayout = serde_json::from_slice(&bytes).ok()?;
-    if stored.parser_rules != native_parsers::rules::active().identity() {
+    if stored.parser_rules != identity() {
         return None;
     }
     let x = stored.x;
