@@ -86,7 +86,9 @@ jobs:
           WANT="${GITHUB_REF_NAME#control-}"
           WANT="${WANT#v}"
           WANT="${WANT%%-*}"
-          "$BIN" --version | tee /dev/stderr | grep -qx "glasir $WANT"
+          GOT=$("$BIN" --version | tr -d '\r')
+          echo "$GOT"
+          [ "$GOT" = "glasir $WANT" ]
 
       - name: install cargo-about
         run: cargo install cargo-about --locked --features cli
