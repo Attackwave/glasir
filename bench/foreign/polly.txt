@@ -1,0 +1,66 @@
+# App-vNext/Polly — structural ground truth on a foreign C# tree.
+#
+# The legacy API (src/Polly) and the current one (src/Polly.Core) share many
+# names; every question names something defined once. Call sites attributed
+# to the enclosing method by reading — a tuple return type or an expression
+# body (`Build() => new(BuildPipelineComponent(), ...)`) is still that
+# method. Type users: files naming the type outside `//` comments.
+
+find_callers src/Polly.Core/Timeout/TimeoutUtil.cs#ShouldApplyTimeout
+  Timeout/TimeoutResilienceStrategy.cs#ExecuteCore
+  Timeout/TimeoutUtilTests.cs#ShouldApplyTimeout_Ok
+
+find_callers src/Polly.Core/Utils/Pipeline/PipelineComponentFactory.cs#WithDisposableCallbacks
+  Registry/RegistryPipelineComponentBuilder.cs#CreateBuilder
+  Pipeline/PipelineComponentFactoryTests.cs#WithDisposableCallbacks_NoCallbacks_ReturnsOriginalComponent
+
+find_callers src/Polly.Core/Utils/Pipeline/PipelineComponentFactory.cs#CreateComposite
+  Polly.Core/ResiliencePipelineBuilderBase.cs#BuildPipelineComponent
+  Polly.Core.Tests/ResiliencePipelineTests.cs#DebuggerProxy_Ok
+
+find_callers src/Polly.Core/ResilienceContext.cs#InitializeFrom
+  Hedging/Controller/TaskExecution.cs#InitializeAsync
+  Polly.Core.Tests/ResilienceContextTests.cs#Initialize_From_Ok
+
+find_callers src/Polly.Core/Telemetry/TelemetryUtil.cs#ReportExecutionAttempt
+  Hedging/Controller/TaskExecution.cs#UpdateOutcomeAsync
+  Retry/RetryResilienceStrategy.cs#ExecuteCore
+
+find_callers src/Polly.Core/ResiliencePipelineBuilderBase.cs#BuildPipelineComponent
+  Registry/RegistryPipelineComponentBuilder.cs#CreateBuilder
+  Polly.Core/ResiliencePipelineBuilder.TResult.cs#Build
+  Polly.Core/ResiliencePipelineBuilder.cs#Build
+
+impact src/Polly.Core/Utils/Pipeline/ComponentDisposeHelper.cs#ComponentDisposeHelper
+  Polly.Core/ResiliencePipeline.cs
+  Polly.Core/ResiliencePipelineT.cs
+
+impact src/Polly.Core/Simmy/Utils/ChaosStrategyHelper.cs#ChaosStrategyHelper
+  Simmy/ChaosStrategy.cs
+  Simmy/ChaosStrategy.TResult.cs
+
+impact src/Polly.Core/Hedging/Controller/HedgedTaskType.cs#HedgedTaskType
+  Hedging/Controller/TaskExecution.cs
+  Hedging/Controller/HedgingExecutionContext.cs
+
+impact src/Polly.Core/Utils/DefaultPredicates.cs#DefaultPredicates
+  Hedging/HedgingStrategyOptions.TResult.cs
+  Retry/RetryStrategyOptions.TResult.cs
+  Fallback/FallbackStrategyOptions.TResult.cs
+  CircuitBreaker/CircuitBreakerStrategyOptions.TResult.cs
+
+impact src/Polly.Core/Utils/Pipeline/ReloadableComponent.cs#ReloadableComponent
+  Pipeline/PipelineComponentFactory.cs
+  Registry/RegistryPipelineComponentBuilder.cs
+
+affected_tests src/Polly.Core/Timeout/TimeoutUtil.cs#ShouldApplyTimeout
+  Timeout/TimeoutUtilTests.cs
+
+affected_tests src/Polly.Core/Utils/TypeNameFormatter.cs#TypeNameFormatter
+  Utils/TypeNameFormatterTests.cs
+
+affected_tests src/Polly.Core/Retry/RetryConstants.cs#RetryConstants
+  Retry/RetryConstantsTests.cs
+
+affected_tests src/Polly.Core/Hedging/Controller/HedgingController.cs#GetContext
+  Controller/HedgingControllerTests.cs

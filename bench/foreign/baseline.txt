@@ -6,4 +6,8 @@ gin               100
 spring-petclinic  88
 graphify          98
 ktor              99
+polly             59
+zod               98
+ripgrep           93
+pixelorama        93
 tolerance         3

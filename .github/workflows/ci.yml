@@ -66,7 +66,8 @@ jobs:
       - name: scaling gate
         run: python3 bench/scale.py target/release/glasir --check
 
-      # Structural answers on four foreign trees (Go, Java, Python, Kotlin),
+      # Structural answers on eight foreign trees (Go, Java, Python, Kotlin, C#,
+      # TypeScript, Rust, GDScript),
       # each fetched at the commit its ground truth was read from.
       - name: foreign benchmark
         run: |

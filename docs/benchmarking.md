@@ -25,9 +25,10 @@ equally to both methods; it must not be interpreted as a provider billing value.
 ## Foreign trees
 
 Every set above reads this repository. `bench/foreign/` asks structural
-questions — `find_callers`, `impact` on a type, `affected_tests` — about four
+questions — `find_callers`, `impact` on a type, `affected_tests` — about eight
 repositories written by other people: gin (Go), spring-petclinic (Java),
-graphify (Python) and ktor (Kotlin), each pinned to a commit in
+graphify (Python), ktor (Kotlin), Polly (C#), zod (TypeScript), ripgrep (Rust)
+and Pixelorama (GDScript), each pinned to a commit in
 `bench/foreign/repos.txt`. The expected answers were read out of those
 sources by hand: call sites found with grep and attributed to the function
 enclosing them by reading, and type users taken from code with comments and
