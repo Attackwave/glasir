@@ -182,6 +182,13 @@ cheapest to act on:
   in its own definition; what it cannot see — a library's public API, a name
   built at run time — is stated in each answer
 
+Every tool declares itself read-only, idempotent and closed-world
+(`readOnlyHint`, `openWorldHint: false`), so a client in a planning or
+read-only mode may call all of them. The three that list without bound —
+`impact`, `find_callers`, `find_unused` — take `limit` and `offset` and return
+`next_offset` while more remain; the order is stable, so pages add up to the
+whole answer.
+
 **Every answer comes twice: as prose and as `structuredContent`.** The text is
 laid out for a person to read; the structured half is the same facts as data,
 against a schema each tool declares, so an agent parses fields instead of

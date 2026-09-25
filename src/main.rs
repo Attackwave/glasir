@@ -5391,6 +5391,11 @@ fn demo_mcp() {
             t["name"]
         );
         assert!(
+            t["annotations"]["readOnlyHint"] == true && t["annotations"]["openWorldHint"] == false,
+            "{} must declare itself read-only and closed-world",
+            t["name"]
+        );
+        assert!(
             t["outputSchema"]["properties"].is_object(),
             "{} declares a schema with no properties",
             t["name"]
@@ -5652,6 +5657,40 @@ fn demo_mcp() {
     assert!(
         text.contains("2 symbols depend"),
         "depth 1 stops at charge and the placeholder: {text}"
+    );
+
+    // Pages keep the nearest-first order and add up to the whole answer.
+    let symbols = |v: &serde_json::Value| -> Vec<String> {
+        v["result"]["structuredContent"]["hops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|h| h["symbols"].as_array().unwrap().clone())
+            .map(|x| x["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let one = tool_call("impact", json!({"symbol": "src/c.rs#log", "limit": 2}));
+    let two = tool_call(
+        "impact",
+        json!({"symbol": "src/c.rs#log", "limit": 2, "offset": 2}),
+    );
+    assert_eq!(one["result"]["structuredContent"]["next_offset"], 2);
+    assert!(
+        two["result"]["structuredContent"]
+            .get("next_offset")
+            .is_none()
+    );
+    let mut paged = symbols(&one);
+    paged.extend(symbols(&two));
+    assert_eq!(
+        paged,
+        symbols(&i),
+        "pages must add up to the unpaged answer"
+    );
+    let text = one["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("3 symbols depend on this, within 2 hops") && text.contains("offset: 2"),
+        "a page still states the whole count and how to continue: {text}"
     );
 
     // A leaf nobody calls must say so — and say it differently from a name
