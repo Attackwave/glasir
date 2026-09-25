@@ -5989,6 +5989,11 @@ fn demo_references() {
             .to_string()
     };
     let text = ask("impact", "src/model.rs#Ledger");
+    // The dependents, not the files a plain text search adds after them: a
+    // word in a comment belongs there, and only there.
+    let (deps, named) = text.split_once("its name appears").unwrap_or((&text, ""));
+    assert!(named.contains("src/noise.rs"), "{text}");
+    let text = deps.to_string();
     assert!(
         text.contains("1 hop (1)") && text.contains("src/settle.rs#settle"),
         "{text}"
