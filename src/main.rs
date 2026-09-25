@@ -1030,6 +1030,7 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
         physics: physics::Physics::default(),
         now: now(),
         files: None,
+        mentions: None,
         root: None,
     };
     // Layout is stored beside the graph: it costs ~100 ms here but minutes on a
@@ -1557,6 +1558,7 @@ fn run_deep(tree: &std::path::Path, set: &std::path::Path) -> std::io::Result<f3
         physics: physics::Physics::default(),
         now: now(),
         files: None,
+        mentions: None,
         root: None,
     };
     let mut files: Vec<(String, String)> = Vec::new();
@@ -1611,6 +1613,7 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
         physics: physics::Physics::default(),
         now: now(),
         files: None,
+        mentions: None,
         root: None,
     };
 
@@ -1803,6 +1806,7 @@ fn run_why(args: &cli::Args) -> std::io::Result<()> {
         physics: physics::Physics::default(),
         now: now(),
         files: None,
+        mentions: None,
         root: None,
     };
 
@@ -2878,6 +2882,7 @@ fn served_state(root: &std::path::Path) -> std::io::Result<mcp::ServedState> {
         physics: physics::Physics::default(),
         now: now(),
         files: std::sync::OnceLock::new(),
+        mentions: std::sync::OnceLock::new(),
         root: root.to_path_buf(),
     })
 }
@@ -5252,6 +5257,7 @@ fn demo_mcp() {
         physics: physics::Physics::default(),
         now: 1_756_600_000,
         files: None,
+        mentions: None,
         root: None,
     };
     let call = |m: serde_json::Value| mcp::handle_for_test(&served, &m);
@@ -5865,7 +5871,7 @@ fn demo_change_tools() {
     // pay -> charge -> log, a test two hops from log and one three hops out,
     // and a test elsewhere that must not be named.
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..16u32 {
+    for _ in 0..18u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -5902,6 +5908,8 @@ fn demo_change_tools() {
         "src/tools.rs#helper",
         "src/tools.rs#used_by_text",
         "src/gen.rs#gen_fn",
+        "src/a.rs#twin",
+        "src/b.rs#twin",
     ]
     .iter()
     .enumerate()
@@ -5913,7 +5921,7 @@ fn demo_change_tools() {
     let tools = "#[test]\nfn checks_itself() {}\n\nfn helper() {}\n\nfn used_by_text() {}\n// see used_by_text\n";
     let at = tools.find("fn checks_itself").unwrap() as u32;
     reg.set_span(12, (at, at + 20));
-    let defined: std::collections::HashSet<csr::NodeId> = (0..16).collect();
+    let defined: std::collections::HashSet<csr::NodeId> = (0..18).collect();
     let comms = community::detect(
         &snap,
         &community::Params::default(),
@@ -5992,6 +6000,7 @@ fn demo_change_tools() {
         physics: physics::Physics::default(),
         now: 1_756_600_000,
         files: None,
+        mentions: None,
         root: Some(&dir),
     };
     let call = |tool: &str, args: serde_json::Value| {
@@ -6158,6 +6167,34 @@ fn demo_change_tools() {
     ] {
         assert!(!unused.contains(&kept), "{kept} is used or excused: {text}");
     }
+
+    // A name the graph has no edge for is still named by the files that write
+    // it: `view.rs` names log and render, `charge.rs` is already a dependent,
+    // `log.rs` is its own file, and `twin` is defined twice, so its mentions cannot be attributed.
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(dir.join("src/view.rs"), "// log, render, twin\n").unwrap();
+    std::fs::write(dir.join("src/charge.rs"), "// log\n").unwrap();
+    std::fs::write(dir.join("src/log.rs"), "fn log() {}\n").unwrap();
+    std::fs::write(dir.join("tests/view.rs"), "// render\n").unwrap();
+    let elsewhere = |v: &serde_json::Value| -> Vec<String> {
+        v["named_elsewhere"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect()
+    };
+    let (v, text) = call("impact", json!({"symbol": "src/log.rs#log"}));
+    assert_eq!(elsewhere(&v), ["src/view.rs"], "{text}");
+    let (v, text) = call("find_callers", json!({"symbol": "src/report.rs#render"}));
+    assert_eq!(elsewhere(&v), ["src/view.rs", "tests/view.rs"], "{text}");
+    assert!(text.contains("tests/view.rs"), "{text}");
+    let (v, text) = call("affected_tests", json!({"symbol": "src/report.rs#render"}));
+    assert_eq!(elsewhere(&v), ["tests/view.rs"], "{text}");
+    assert!(text.contains("run them"), "{text}");
+    let (v, text) = call("impact", json!({"symbol": "src/a.rs#twin"}));
+    assert!(elsewhere(&v).is_empty(), "{text}");
+    assert!(text.contains("breaks no caller"), "{text}");
 
     std::fs::remove_dir_all(&dir).unwrap();
     println!("changes ok: tests to run, what changes with it, which rule breaks");
@@ -6517,6 +6554,7 @@ thread scheduling"
         physics: physics::Physics::default(),
         now: 0,
         files: None,
+        mentions: None,
         root: None,
     };
     let seeds = mcp::seeds_for_test(&served, "src/parse_ast.rs#parse");
@@ -8786,6 +8824,7 @@ fn demo_subsystem_scale() {
             physics: physics::Physics::default(),
             now: now(),
             files: None,
+            mentions: None,
             root: None,
         };
         let t = std::time::Instant::now();
@@ -9537,6 +9576,7 @@ fn demo_overview() {
         physics: physics::Physics::default(),
         now: now(),
         files: None,
+        mentions: None,
         root: None,
     };
 
@@ -9672,6 +9712,7 @@ fn demo_cycles() {
         // asserts below then cover it — a cache that stored one caller's
         // filtered answer would hand it to the next.
         files: Some(&files_cache),
+        mentions: None,
         root: None,
     };
     let call = |args: serde_json::Value| {
@@ -9776,6 +9817,7 @@ fn demo_view() {
         physics: physics::Physics::default(),
         now: 1_756_600_000,
         files: None,
+        mentions: None,
         root: None,
     };
     let layout = layout::compute(&snap, &comms.of_node, layout::Mode::Grouped);
