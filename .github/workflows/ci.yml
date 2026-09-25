@@ -60,6 +60,12 @@ jobs:
       - name: retrieval benchmark
         run: ./target/release/glasir benchmark . --check
 
+      # The same work on a 100k- and a 1M-line tree, as a ratio on this runner:
+      # linear reads ~10x, a quadratic wall ~100x. Every wall so far was
+      # invisible on this repository.
+      - name: scaling gate
+        run: python3 bench/scale.py target/release/glasir --check
+
       # The other half. The benchmark above reads this repository, which is
       # Rust, so it cannot see a scanner that stopped extracting from Julia.
       # `bench/langs` is 25 files of our own — a corpus of foreign code would
