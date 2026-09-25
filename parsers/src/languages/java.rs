@@ -195,7 +195,15 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             j += 1;
                         }
                         let mut is_method_def = false;
-                        if !crate::scope::is_control_keyword(ident)
+                        // `new Pet() { … }` is an anonymous class, not a
+                        // method called `Pet`.
+                        let after_new = tokens[..i]
+                            .iter()
+                            .rev()
+                            .find(|t| t.kind != TokenKind::Newline)
+                            .is_some_and(|t| matches!(t.kind, TokenKind::Ident("new") | TokenKind::Keyword("new")));
+                        if !after_new
+                            && !crate::scope::is_control_keyword(ident)
                             && j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
                         {
