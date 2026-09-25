@@ -11,6 +11,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    // Where the modifiers before a declaration begin, so its range, and the
+    // snippet handed back for it, starts at `public static` and not at the name.
+    let mut declared_at: Option<u32> = None;
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -39,12 +42,24 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 }
                 continue;
             }
+            // A statement ends a definition that has no braces of its own: a
+            // `const`, an expression-bodied member. Without it both stayed
+            // open to the end of the class and took every call after them.
+            TokenKind::Symbol(';') => {
+                declared_at = None;
+                scope.on_statement_end(tok.end as usize, &mut facts);
+                scope.had_receiver = false;
+                i += 1;
+                continue;
+            }
             TokenKind::Symbol('{') => {
+                declared_at = None;
                 scope.on_open_delimiter();
                 i += 1;
                 continue;
             }
             TokenKind::Symbol('}') => {
+                declared_at = None;
                 scope.on_close_delimiter(tok.end as usize, &mut facts);
                 i += 1;
                 continue;
@@ -74,6 +89,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         | "partial"
                         | "required"
                 ) {
+                    declared_at.get_or_insert(tok.start);
                     i += 1;
                     continue;
                 }
@@ -127,7 +143,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             if let TokenKind::Ident(name) = tokens[k].kind {
                                 scope.open_statement_definition(
                                     name,
-                                    tok.start as usize,
+                                    declared_at.take().unwrap_or(tok.start) as usize,
                                     &mut facts,
                                 );
                                 scope.on_word(name);
@@ -137,7 +153,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                     }
                     "class" | "struct" | "interface" | "enum" | "record" => {
-                        let start_byte = tok.start;
+                        let start_byte = declared_at.take().unwrap_or(tok.start);
                         let mut j = i + 1;
                         if j < tokens.len()
                             && matches!(tokens[j].kind, TokenKind::Ident("class" | "struct"))
@@ -160,11 +176,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                     }
                     _ => {
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
+                        let mut j = skip_newlines(&tokens, i + 1);
+                        // `Run<TResult>(` is a method as much as `Run(`.
+                        if let Some(after) = skip_type_arguments(&tokens, j) {
+                            j = skip_newlines(&tokens, after);
                         }
+                        let call_paren = j;
                         let mut is_method_def = false;
+                        let mut expression_bodied = false;
                         if !crate::scope::is_control_keyword(ident)
                             && j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
@@ -179,37 +198,46 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 }
                                 k += 1;
                             }
+                            // Constraints and a constructor's `: base(...)` sit
+                            // between the parameters and the body.
                             while k < tokens.len()
                                 && (tokens[k].kind == TokenKind::Newline
                                     || matches!(
                                         tokens[k].kind,
                                         TokenKind::Ident(_)
                                             | TokenKind::Symbol(':')
-                                            | TokenKind::DoubleSymbol("=>")
+                                            | TokenKind::Symbol(',')
                                     ))
                             {
                                 k += 1;
                             }
-                            if k < tokens.len()
-                                && tokens[k].kind == TokenKind::Symbol('{')
-                                && scope.depth > 0
-                            {
-                                is_method_def = true;
+                            if k < tokens.len() && scope.depth > 0 {
+                                match tokens[k].kind {
+                                    TokenKind::Symbol('{') => is_method_def = true,
+                                    // `Run(int x) => x > 0;`: the body is one
+                                    // expression and ends at the semicolon.
+                                    TokenKind::DoubleSymbol("=>") => {
+                                        is_method_def = true;
+                                        expression_bodied = true;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
 
                         if is_method_def {
-                            let start_byte = tok.start;
-                            scope.open_definition(*ident, start_byte as usize, true, &mut facts);
+                            let start_byte = declared_at.take().unwrap_or(tok.start) as usize;
+                            if expression_bodied {
+                                scope.open_statement_definition(*ident, start_byte, &mut facts);
+                            } else {
+                                scope.open_definition(*ident, start_byte, true, &mut facts);
+                            }
                             scope.on_word(ident);
                             i += 1;
                             continue;
                         }
 
-                        let mut j = i + 1;
-                        while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
-                            j += 1;
-                        }
+                        let j = call_paren;
                         if j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
                             && calls.allows(ident)
@@ -234,4 +262,38 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+fn skip_newlines(tokens: &[crate::lexer::Token<'_>], mut j: usize) -> usize {
+    while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
+        j += 1;
+    }
+    j
+}
+
+/// The index after `<...>` when `j` opens a type argument list, `None` when
+/// the `<` is a comparison. Only names, dots, commas, `?` and brackets may sit
+/// inside, which `a < b` fails as soon as it reaches an operator or a paren.
+fn skip_type_arguments(tokens: &[crate::lexer::Token<'_>], j: usize) -> Option<usize> {
+    if tokens.get(j)?.kind != TokenKind::Symbol('<') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut k = j;
+    while let Some(t) = tokens.get(k) {
+        match t.kind {
+            TokenKind::Symbol('<') => depth += 1,
+            TokenKind::Symbol('>') => depth -= 1,
+            TokenKind::DoubleSymbol(">>") => depth -= 2,
+            TokenKind::Ident(_)
+            | TokenKind::Symbol('.' | ',' | '?' | '[' | ']')
+            | TokenKind::Newline => {}
+            _ => return None,
+        }
+        k += 1;
+        if depth <= 0 {
+            return (depth == 0).then_some(k);
+        }
+    }
+    None
 }

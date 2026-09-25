@@ -15,9 +15,8 @@ use std::time::Duration;
 
 const MUTATIONS: u64 = 200;
 const RISKY: &[&str] = &[
-    "\"", "'", "`", "\\", "/*", "*/", "//", "#", "(", ")", "{", "}", "[", "]", "<", ">",
-    "\"\"\"", "r\"", "r#\"", "--[[", "{-", "(*", "<!--", "$", "@", ":", "—", "é", "€", "😀",
-    "\n", "\t",
+    "\"", "'", "`", "\\", "/*", "*/", "//", "#", "(", ")", "{", "}", "[", "]", "<", ">", "\"\"\"",
+    "r\"", "r#\"", "--[[", "{-", "(*", "<!--", "$", "@", ":", "—", "é", "€", "😀", "\n", "\t",
 ];
 
 fn splitmix(state: &mut u64) -> u64 {
@@ -87,11 +86,18 @@ fn mutated_fixtures_neither_panic_nor_hang() {
             match rx.recv_timeout(Duration::from_secs(10)) {
                 Ok(true) => {}
                 Ok(false) => failures.push(format!("{name} seed {seed}: panicked on {mutated:?}")),
-                Err(_) => failures.push(format!("{name} seed {seed}: no answer in 10 s on {mutated:?}")),
+                Err(_) => failures.push(format!(
+                    "{name} seed {seed}: no answer in 10 s on {mutated:?}"
+                )),
             }
         }
     }
-    assert!(failures.is_empty(), "{} failure(s):\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} failure(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// Inputs that crashed a scanner once, kept so the fix stays checked without
@@ -112,4 +118,3 @@ fn inputs_that_crashed_once() {
         native_parsers::rules::active().identifiers(lang, src);
     }
 }
-
