@@ -18,7 +18,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             .rfind('\n')
             .map(|p| p + 1)
             .unwrap_or(0);
-        let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
+        // The line's indentation, not the token's column: in `static func f`
+        // the `func` sits at column 7 and would nest inside the class above.
+        let current_line_indent = src[line_start_pos..tok.start as usize]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count() as i32;
 
         match &tok.kind {
             TokenKind::DocComment(text) | TokenKind::LineComment(text) => {

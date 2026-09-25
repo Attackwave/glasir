@@ -9,7 +9,7 @@ ktor              99
 polly             100
 zod               100
 ripgrep           100
-pixelorama        93
+pixelorama        100
 jhipster          100
 eshop             100
 tolerance         3

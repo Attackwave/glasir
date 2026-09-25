@@ -69,7 +69,7 @@ Elixir                    150    100      10
 # name inside it reads as one.
 Erlang                    126    220       5
 Fennel                    176    176      10
-GdScript                  180    103      10
+GdScript                  240    103      10
 Go                        133    133      10
 GoTemplate                160    214      10
 Hare                      142    142      10
