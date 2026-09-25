@@ -85,7 +85,7 @@ fn main() -> std::io::Result<()> {
         // useful by hand: it moves the cost of a cold analysis off the moment
         // an agent is waiting for an answer.
         "analyse" | "analyze" => {
-            let root = std::path::Path::new(&args.path).canonicalize()?;
+            let root = canonical(std::path::Path::new(&args.path))?;
             let t = std::time::Instant::now();
             let a = analyse(&root)?;
             eprintln!(
@@ -114,14 +114,14 @@ fn main() -> std::io::Result<()> {
         // it is a separate command rather than part of the self-checks.
         "lspcheck" => probe_lsp(&args.path),
         "lspfile" => {
-            let root = std::path::Path::new(&args.path).canonicalize()?;
+            let root = canonical(std::path::Path::new(&args.path))?;
             // Named, not panicked: a missing argument is a usage mistake, and
             // an unwrap here printed a backtrace where one line would do.
             let Some(f) = std::env::args().nth(3) else {
                 eprintln!("usage: glasir lspfile <root> <file>");
                 std::process::exit(2);
             };
-            probe_lsp_file(&root, &std::path::Path::new(&f).canonicalize()?)
+            probe_lsp_file(&root, &canonical(std::path::Path::new(&f))?)
         }
         other => {
             eprintln!("unknown command: {other}\n");
@@ -137,7 +137,7 @@ fn main() -> std::io::Result<()> {
 fn probe_lsp(root: &str) -> std::io::Result<()> {
     use std::time::{Duration, Instant};
 
-    let root = std::path::Path::new(root).canonicalize()?;
+    let root = canonical(std::path::Path::new(root))?;
     let file = walk(&root)
         .into_iter()
         // build.rs sits outside the crate graph, so a server answers about it
@@ -417,10 +417,10 @@ impl Target {
     /// Config path for the requested scope, if this target has one.
     fn path(&self, root: &std::path::Path, user_scope: bool) -> Option<std::path::PathBuf> {
         if user_scope {
-            let home = std::env::var_os("HOME")?;
-            self.user.map(|p| std::path::Path::new(&home).join(p))
+            let home = home()?;
+            self.user.map(|p| join_rel(&home, p))
         } else {
-            self.project.map(|p| root.join(p))
+            self.project.map(|p| join_rel(root, p))
         }
     }
 
@@ -431,7 +431,7 @@ impl Target {
         if !self.is_client() {
             return true;
         }
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = home();
         self.markers.iter().any(|m| root.join(m).exists())
             || home.is_some_and(|h| self.home_markers.iter().any(|m| h.join(m).exists()))
             || self.binaries.iter().any(|b| on_path(b))
@@ -654,6 +654,47 @@ struct Analysed {
     communities: community::Communities,
     defined: std::collections::HashSet<csr::NodeId>,
     from_snapshot: bool,
+}
+
+/// The user's home directory. Windows sets `USERPROFILE` and usually no
+/// `HOME`, so reading `HOME` alone made `--user` refuse and every client's
+/// home-directory marker invisible there. `HOME` first, which is what the
+/// checks set.
+fn home() -> Option<std::path::PathBuf> {
+    home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+fn home_from(
+    home: Option<std::ffi::OsString>,
+    profile: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    home.or(profile).map(std::path::PathBuf::from)
+}
+
+/// A `/`-separated relative path joined component by component, so Windows
+/// prints `tree\.vscode\mcp.json` rather than `tree\.vscode/mcp.json`.
+fn join_rel(base: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    rel.split('/')
+        .fold(base.to_path_buf(), |p, part| p.join(part))
+}
+
+/// `canonicalize`, without the `\\?\` prefix Windows puts on every result.
+///
+/// Measured on Windows: `install` wrote `\\?\C:\Users\…\tree` into a
+/// client's configuration and `status` printed it. Both work — the prefix is
+/// a valid path — but a client that passes the path on through a shell or a
+/// URL does not expect it, and a person reading it should not have to. Only a
+/// drive path short of `MAX_PATH` loses it: a longer one needs the prefix to
+/// be opened at all, and `\\?\UNC\` is left as it is.
+fn canonical(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let full = path.canonicalize()?;
+    if let Some(plain) = full.to_str().and_then(|s| s.strip_prefix(r"\\?\"))
+        && plain.as_bytes().get(1) == Some(&b':')
+        && plain.len() < 260
+    {
+        return Ok(std::path::PathBuf::from(plain));
+    }
+    Ok(full)
 }
 
 fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
@@ -989,7 +1030,7 @@ fn refresh_files(
 
 /// Layout cost against graph size, which decides whether it can run at startup.
 fn bench_layout(root: &str) -> std::io::Result<()> {
-    let root = &std::path::Path::new(root).canonicalize()?;
+    let root = &canonical(std::path::Path::new(root))?;
     let a = analyse(root)?;
     let t = std::time::Instant::now();
     let l = layout::compute(&a.snap, &a.communities.of_node, layout::Mode::Grouped);
@@ -1020,7 +1061,7 @@ fn bench_layout(root: &str) -> std::io::Result<()> {
 /// one answers a person's first question about an unfamiliar tree — what is in
 /// here, and what talks to what.
 fn run_view(args: &cli::Args) -> std::io::Result<()> {
-    let root = &std::path::Path::new(&args.path).canonicalize()?;
+    let root = &canonical(std::path::Path::new(&args.path))?;
     let addr = http::addr_for(args.value("port").unwrap_or("7878"));
 
     let t = std::time::Instant::now();
@@ -1142,7 +1183,7 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
 /// Registers this binary as an MCP server with the assistants in use.
 fn run_install(args: &cli::Args) -> std::io::Result<()> {
     let root = std::path::Path::new(&args.path);
-    let abs = root.canonicalize().unwrap_or_else(|_| root.into());
+    let abs = canonical(root).unwrap_or_else(|_| root.into());
     let exe = std::env::current_exe()?;
     let user_scope = args.has("user");
     let dry = args.has("dry-run");
@@ -1371,7 +1412,7 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
     }
 
     if !user_scope {
-        let abs = root.canonicalize().unwrap_or_else(|_| root.into());
+        let abs = canonical(root).unwrap_or_else(|_| root.into());
         let notes = uninstall_hooks(&abs, dry);
         for note in &notes {
             if !quiet {
@@ -1434,7 +1475,7 @@ fn is_registered(target: &Target, path: &std::path::Path) -> bool {
 /// Reports what is registered and what the graph over this tree looks like.
 fn run_status(args: &cli::Args) -> std::io::Result<()> {
     let root = std::path::Path::new(&args.path);
-    let abs = root.canonicalize().unwrap_or_else(|_| root.into());
+    let abs = canonical(root).unwrap_or_else(|_| root.into());
     println!("{}\n", abs.display());
 
     println!("assistants:");
@@ -1556,7 +1597,7 @@ fn run_tree(
     set: &std::path::Path,
     structural: bool,
 ) -> std::io::Result<f32> {
-    let tree = tree.canonicalize()?;
+    let tree = canonical(tree)?;
     let questions = bench::load_questions(set)?;
     // A benchmark measures this build, never a cache of an older one. The
     // snapshot expires on source mtimes, and the fixture's sources never
@@ -1637,7 +1678,7 @@ fn run_foreign(
 }
 
 fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
-    let root = &std::path::Path::new(&args.path).canonicalize()?;
+    let root = &canonical(std::path::Path::new(&args.path))?;
     if let Some(clones) = args.value("foreign") {
         return run_foreign(root, std::path::Path::new(clones), args.has("check"));
     }
@@ -1870,7 +1911,7 @@ fn enforce_floors(
 /// Explains one question: what it seeded on, what came back, and where the
 /// expected symbols ranked if they were reached at all.
 fn run_why(args: &cli::Args) -> std::io::Result<()> {
-    let root = std::path::Path::new(".").canonicalize()?;
+    let root = canonical(std::path::Path::new("."))?;
     let question = args.rest.join(" ");
     let question = if question.is_empty() {
         args.path.clone()
@@ -1945,7 +1986,7 @@ fn run_why(args: &cli::Args) -> std::io::Result<()> {
 fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     use std::sync::Arc;
 
-    let root = &std::path::Path::new(&args.path).canonicalize()?;
+    let root = &canonical(std::path::Path::new(&args.path))?;
     let state = Arc::new(published::Published::from_pointee(served_state(root)?));
     {
         let s = state.load();
@@ -2133,7 +2174,7 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
 fn run_impact_of(args: &cli::Args) -> std::io::Result<()> {
     print!(
         "{}",
-        impact_of_report(args, &std::path::Path::new(".").canonicalize()?)?
+        impact_of_report(args, &canonical(std::path::Path::new("."))?)?
     );
     Ok(())
 }
@@ -2413,7 +2454,7 @@ fn demo_impact_of() {
 /// A report tells you what the architecture was on the day it ran; this tells
 /// you it still holds, on every commit.
 fn run_guard(args: &cli::Args) -> std::io::Result<()> {
-    let root = std::path::Path::new(&args.path).canonicalize()?;
+    let root = canonical(std::path::Path::new(&args.path))?;
     let path = args
         .value("rules")
         .map(std::path::PathBuf::from)
@@ -2628,7 +2669,7 @@ fn demo_guard() {
 /// type. `--path` is not offered for the same reason — a token file belongs to
 /// the tree you are standing in.
 fn run_token(args: &cli::Args) -> std::io::Result<()> {
-    let root = std::path::Path::new(".").canonicalize()?;
+    let root = canonical(std::path::Path::new("."))?;
     let path = auth::token_path(&root);
     let verb = args.path.as_str();
     let name = args.rest.first().map(String::as_str);
@@ -3036,7 +3077,7 @@ fn run_watch(root: &str) -> std::io::Result<()> {
 
     // Canonical, or strip_prefix fails against the absolute paths the watcher
     // reports and every symbol keeps a "./" prefix.
-    let root = &std::path::Path::new(root).canonicalize()?;
+    let root = &canonical(std::path::Path::new(root))?;
     let g = Arc::new(graph::Graph::new(csr::CsrBuilder::new().build()));
     let mut arena = arena::SymbolArena::new();
     let mut reg = ingest::SymbolRegistry::new(0);
@@ -6452,6 +6493,16 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
     assert_eq!(mcp["mcpServers"]["glasir"]["type"], "stdio");
     assert_eq!(mcp["mcpServers"]["glasir"]["args"][0], "serve");
+    // The tree as a person writes it: Windows' `\\?\` prefix from
+    // `canonicalize` reached the client's configuration verbatim.
+    assert_eq!(home_from(None, Some("C:\\U".into())), Some("C:\\U".into()));
+    assert_eq!(
+        home_from(Some("/h".into()), Some("C:\\U".into())),
+        Some("/h".into())
+    );
+    let tree = mcp["mcpServers"]["glasir"]["args"][1].as_str().unwrap();
+    assert!(!tree.starts_with(r"\\?\"), "{tree}");
+    assert_eq!(std::path::Path::new(tree), canonical(&dir).unwrap());
 
     // Installing twice must not duplicate anything.
     run_install(&args("install", &["--platform", "mcp"])).unwrap();
@@ -10107,7 +10158,7 @@ fn demo_view() {
 /// with `--check` it fails the build against `bench/languages.txt` the way
 /// `benchmark --check` does against `bench/baseline.txt`.
 fn run_langcheck(args: &cli::Args) -> std::io::Result<()> {
-    let root = std::path::Path::new(&args.path).canonicalize()?;
+    let root = canonical(std::path::Path::new(&args.path))?;
     let by_dir = args.has("by-dir");
     let measured = langcheck::measure(&root, by_dir);
     if measured.is_empty() {
