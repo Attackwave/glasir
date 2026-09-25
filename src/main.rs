@@ -6113,6 +6113,19 @@ fn demo_references() {
         std::fs::create_dir_all(dir.join("ts")).unwrap();
         std::fs::write(dir.join(file), body).unwrap();
     }
+    // The innermost definition holding a use is its user: the method, not
+    // the class around it.
+    std::fs::write(dir.join("ts/wallet.py"), "class Wallet:\n    pass\n").unwrap();
+    std::fs::write(
+        dir.join("ts/shop.py"),
+        "class Shop:\n    def pay(self, w: Wallet):\n        return w\n",
+    )
+    .unwrap();
+    let text = ask("find_callers", "ts/wallet.py#Wallet");
+    assert!(
+        text.contains("ts/shop.py#pay") && !text.contains("ts/shop.py#Shop"),
+        "{text}"
+    );
     let text = ask("find_callers", "ts/a.ts#Account");
     assert!(
         text.contains("ts/use.ts#settle") && !text.contains("ts/named.ts#keep"),

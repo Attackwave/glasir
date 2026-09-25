@@ -58,7 +58,11 @@ pub struct FileFacts {
     /// uses without calling it — a type, a constant, a base class; resolved
     /// against the whole tree later, since only then is it known what a name
     /// names. See `references`.
-    pub refs: Vec<(String, String, Option<String>)>,
+    ///
+    /// The definition is an index into `ranges`, `MODULE` for the file's top
+    /// level: a function's name repeated once per identifier it uses was most
+    /// of what these cost while a whole tree's facts wait to be folded.
+    pub refs: Vec<(u32, Box<str>, Option<Box<str>>)>,
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
@@ -311,32 +315,41 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
 /// Each identifier attributed to the innermost definition whose range holds
 /// it, `<module>` outside all of them. One sweep: identifiers arrive in
 /// order, and ranges sorted by start nest.
+/// The top level of a file, as the definition index of a reference.
+pub const MODULE: u32 = u32::MAX;
+
 fn references(
     lang: Lang,
     src: &str,
     ranges: &[(String, (u32, u32))],
-) -> Vec<(String, String, Option<String>)> {
+) -> Vec<(u32, Box<str>, Option<Box<str>>)> {
     let idents = native_parsers::rules::active().identifiers(lang, src);
-    let mut sorted: Vec<&(String, (u32, u32))> = ranges.iter().collect();
-    sorted.sort_by_key(|(_, (start, end))| (*start, std::cmp::Reverse(*end)));
-    let mut open: Vec<&(String, (u32, u32))> = Vec::new();
+    let mut sorted: Vec<u32> = (0..ranges.len() as u32).collect();
+    sorted.sort_by_key(|&k| {
+        let (start, end) = ranges[k as usize].1;
+        (start, std::cmp::Reverse(end))
+    });
+    let mut open: Vec<u32> = Vec::new();
     let mut next = 0;
-    let mut out: std::collections::HashSet<(&str, &str, Option<&str>)> = Default::default();
+    let mut out: std::collections::HashSet<(u32, &str, Option<&str>)> = Default::default();
     for (at, name, qualifier) in idents {
-        while next < sorted.len() && sorted[next].1.0 <= at {
+        while next < sorted.len() && ranges[sorted[next] as usize].1.0 <= at {
             open.push(sorted[next]);
             next += 1;
         }
-        open.retain(|(_, (_, end))| *end > at);
-        let enclosing = open.last().map_or("<module>", |(n, _)| n.as_str());
+        open.retain(|&k| ranges[k as usize].1.1 > at);
+        let enclosing = open.last().copied().unwrap_or(MODULE);
+        let enclosing_name = open
+            .last()
+            .map_or("<module>", |&k| ranges[k as usize].0.as_str());
         // Two letters name a loop variable, not a symbol worth an edge.
-        if name != enclosing && name.len() > 2 {
+        if name != enclosing_name && name.len() > 2 {
             out.insert((enclosing, name, qualifier));
         }
     }
-    let mut refs: Vec<(String, String, Option<String>)> = out
+    let mut refs: Vec<(u32, Box<str>, Option<Box<str>>)> = out
         .into_iter()
-        .map(|(a, b, q)| (a.to_string(), b.to_string(), q.map(str::to_string)))
+        .map(|(k, n, q)| (k, n.into(), q.map(Into::into)))
         .collect();
     refs.sort_unstable();
     refs
