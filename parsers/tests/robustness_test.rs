@@ -78,6 +78,7 @@ fn mutated_fixtures_neither_panic_nor_hang() {
             std::thread::spawn(move || {
                 let ok = std::panic::catch_unwind(|| {
                     native_parsers::rules::active().parse(lang, &input);
+                    native_parsers::rules::active().identifiers(lang, &input);
                 })
                 .is_ok();
                 let _ = tx.send(ok);
@@ -108,6 +109,7 @@ fn inputs_that_crashed_once() {
     ] {
         let lang = Language::from_extension(ext).unwrap();
         native_parsers::rules::active().parse(lang, src);
+        native_parsers::rules::active().identifiers(lang, src);
     }
 }
 

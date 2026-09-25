@@ -16,4 +16,5 @@ fuzz_target!(|data: &[u8]| {
     };
     let src = String::from_utf8_lossy(rest);
     native_parsers::rules::active().parse(lang, &src);
+    native_parsers::rules::active().identifiers(lang, &src);
 });
