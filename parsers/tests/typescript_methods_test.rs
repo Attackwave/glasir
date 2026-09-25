@@ -6,9 +6,9 @@ use native_parsers::Language;
 
 #[test]
 fn annotated_and_generic_methods_are_definitions() {
-    let src = "export class S {\n  create(a: NewA): Observable<IA> {\n    return this.http.post<IA>(this.u, a);\n  }\n  pick<T>(a: T): Promise<T | undefined> {\n    return go(a);\n  }\n  many(): string[] {\n    return list();\n  }\n}\n";
+    let src = "export class S {\n  create(a: NewA): Observable<IA> {\n    return this.http.post<IA>(this.u, a);\n  }\n  pick<T>(a: T): Promise<T | undefined> {\n    return go(a);\n  }\n  many(): string[] {\n    return list();\n  }\n  delete(id: number): Observable<undefined> {\n    return remove(id);\n  }\n}\n";
     let f = native_parsers::rules::active().parse(Language::TypeScript, src);
-    for name in ["S", "create", "pick", "many"] {
+    for name in ["S", "create", "pick", "many", "delete"] {
         assert!(f.defines.iter().any(|d| d == name), "{name} missing: {:?}", f.defines);
     }
     assert!(f.calls.iter().any(|(from, to, _)| from == "pick" && to == "go"), "{:?}", f.calls);

@@ -125,7 +125,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                         let call_paren = j;
                         let mut is_method_def = false;
-                        if !crate::scope::is_control_keyword(ident)
+                        // `delete(id) {` in a class body is a method: the
+                        // operator never takes a parameter list and a body.
+                        if (!crate::scope::is_control_keyword(ident) || *ident == "delete")
                             && j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
                         {
