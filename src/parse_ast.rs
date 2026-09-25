@@ -53,6 +53,12 @@ pub struct FileFacts {
     /// Import statements, for resolving a call through a module to the file it
     /// names. See `imports`.
     pub imports: Vec<crate::imports::Import>,
+    /// (enclosing definition, name) for every identifier outside comments and
+    /// strings that is not in call position, once per pair. What a definition
+    /// uses without calling it — a type, a constant, a base class; resolved
+    /// against the whole tree later, since only then is it known what a name
+    /// names. See `references`.
+    pub refs: Vec<(String, String)>,
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
@@ -289,6 +295,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
     // removed from `go.toml` changed nothing on any indexing path, while the
     // snapshot still discarded itself over the changed rule identity.
     let f = native_parsers::rules::active().parse(lang, src);
+    let refs = references(lang, src, &f.ranges);
     Some(FileFacts {
         defines: f.defines,
         ranges: f.ranges,
@@ -296,8 +303,39 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         calls: f.calls,
         call_modules: f.call_modules,
         imports: crate::imports::read(lang, src),
+        refs,
         had_errors: f.had_errors,
     })
+}
+
+/// Each identifier attributed to the innermost definition whose range holds
+/// it, `<module>` outside all of them. One sweep: identifiers arrive in
+/// order, and ranges sorted by start nest.
+fn references(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Vec<(String, String)> {
+    let idents = native_parsers::rules::active().identifiers(lang, src);
+    let mut sorted: Vec<&(String, (u32, u32))> = ranges.iter().collect();
+    sorted.sort_by_key(|(_, (start, end))| (*start, std::cmp::Reverse(*end)));
+    let mut open: Vec<&(String, (u32, u32))> = Vec::new();
+    let mut next = 0;
+    let mut out: std::collections::HashSet<(&str, &str)> = Default::default();
+    for (at, name) in idents {
+        while next < sorted.len() && sorted[next].1.0 <= at {
+            open.push(sorted[next]);
+            next += 1;
+        }
+        open.retain(|(_, (_, end))| *end > at);
+        let enclosing = open.last().map_or("<module>", |(n, _)| n.as_str());
+        // Two letters name a loop variable, not a symbol worth an edge.
+        if name != enclosing && name.len() > 2 {
+            out.insert((enclosing, name));
+        }
+    }
+    let mut refs: Vec<(String, String)> = out
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    refs.sort_unstable();
+    refs
 }
 
 /// Tier 2 is syntactic: shapes are real, resolution is by name.

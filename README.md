@@ -159,7 +159,9 @@ agent:
 - `cycles` — dependency cycles, compiler-resolved edges only by default
 - `get_code_snippet` — the source a symbol names, from the range the parser
   recorded, so nothing has to open the file or guess a line
-- `find_callers` — the direct callers of one symbol, as one list
+- `find_callers` — the direct callers of one symbol, as one list, and the
+  definitions that use it by name without calling it (a type in a signature,
+  a constant read, a base class)
 - `detect_changes` — a git diff mapped to the definitions whose lines it
   touches (new files included) and what depends on them, with a risk level
   and its reasons: changed code that has callers and no test reaching it, and

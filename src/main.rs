@@ -554,6 +554,7 @@ fn build_graph(
         }
         ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, root, &markdown, now);
     });
+    reg.prune_refs();
     link_placeholders_quiet(&g, &reg);
     Ok((g, reg, arena))
 }
@@ -696,6 +697,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (node, span) in &stored.spans {
                 registry.set_span(*node, *span);
             }
+            for (file, refs) in stored.refs {
+                registry.set_refs(&file, refs);
+            }
             let g = std::sync::Arc::new(graph::Graph::new(stored.csr));
 
             let refreshed =
@@ -810,6 +814,13 @@ fn store_snapshot(
         sorted_by_node(reg.spans().iter().map(|(&n, &s)| (n, s))),
         snapshot::source_times(root, files),
     );
+    let mut refs: Vec<(String, Vec<(csr::NodeId, String)>)> = reg
+        .refs()
+        .iter()
+        .map(|(f, r)| (f.clone(), r.clone()))
+        .collect();
+    refs.sort();
+    stored.refs = refs;
     let contract_path = root.join(".glasir/contracts.json");
     if contract_path.exists() {
         stored.contracts =
@@ -955,6 +966,7 @@ fn refresh_files(
     // Tier 3 runs over the whole registry, not per file: a call is routinely
     // parsed before the file defining it, and its links are re-applied as a set
     // rather than added.
+    reg.prune_refs();
     link_placeholders_quiet(g, reg);
 
     // A deleted file's placeholders outlive it — see `forget_orphans`. Runs
@@ -1031,6 +1043,7 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
         now: now(),
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
     // Layout is stored beside the graph: it costs ~100 ms here but minutes on a
@@ -1558,6 +1571,7 @@ fn run_tree(
     let search = search::SearchIndex::build_with_docs(&a.registry, a.registry.docs());
     let names = mcp::name_table(&a.registry, a.snap.width());
     let mentions = std::sync::OnceLock::new();
+    let refs_cache = std::sync::OnceLock::new();
     let served = mcp::Served {
         snap: &a.snap,
         names: &names,
@@ -1570,6 +1584,7 @@ fn run_tree(
         now: now(),
         files: None,
         mentions: Some(&mentions),
+        references: Some(&refs_cache),
         root: structural.then_some(tree.as_path()),
     };
     let mut files: Vec<(String, String)> = Vec::new();
@@ -1653,6 +1668,7 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     let embeddings = embed::embed(&a.snap, 4);
     let search = search::SearchIndex::build_with_docs(&a.registry, a.registry.docs());
     let names = mcp::name_table(&a.registry, a.snap.width());
+    let refs_cache = std::sync::OnceLock::new();
     let served = mcp::Served {
         snap: &a.snap,
         names: &names,
@@ -1665,6 +1681,7 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
         now: now(),
         files: None,
         mentions: None,
+        references: Some(&refs_cache),
         root: None,
     };
 
@@ -1877,6 +1894,7 @@ fn run_why(args: &cli::Args) -> std::io::Result<()> {
         now: now(),
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
 
@@ -2953,6 +2971,7 @@ fn served_state(root: &std::path::Path) -> std::io::Result<mcp::ServedState> {
         now: now(),
         files: std::sync::OnceLock::new(),
         mentions: std::sync::OnceLock::new(),
+        references: std::sync::OnceLock::new(),
         root: root.to_path_buf(),
     })
 }
@@ -3584,6 +3603,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_mcp();
     demo_change_tools();
     demo_imports();
+    demo_references();
     demo_install();
     demo_search();
     demo_snapshot();
@@ -5331,6 +5351,7 @@ fn demo_mcp() {
         now: 1_756_600_000,
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
     let call = |m: serde_json::Value| mcp::handle_for_test(&served, &m);
@@ -5923,6 +5944,92 @@ fn demo_imports() {
     println!("imports ok: a call through an import reaches the definition it names");
 }
 
+/// What a definition uses without calling reaches `impact` and `find_callers`:
+/// a type in a signature, a constant read. Not a word in a comment or a
+/// string, not a name defined twice, and only at the first hop.
+fn demo_references() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("glasir-refs-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    for (file, body) in [
+        (
+            "model.rs",
+            "pub struct Ledger {\n    pub total: u32,\n}\n\npub const LIMIT: u32 = 3;\n",
+        ),
+        (
+            "settle.rs",
+            "fn settle(l: &Ledger) -> u32 {\n    l.total + LIMIT\n}\n",
+        ),
+        (
+            "top.rs",
+            "fn top() -> u32 {\n    settle(&make())\n}\n\nfn keep() {\n    let f = settle;\n}\n",
+        ),
+        (
+            "noise.rs",
+            "// Ledger\nfn noise() -> &'static str {\n    \"Ledger\"\n}\n",
+        ),
+        ("twin_a.rs", "struct Twin;\n"),
+        ("twin_b.rs", "struct Twin;\n"),
+        ("pair.rs", "fn pair(t: Twin) {}\n"),
+    ] {
+        std::fs::write(dir.join("src").join(file), body).unwrap();
+    }
+    let ask = |tool: &str, symbol: &str| -> String {
+        let state = served_state(&dir).unwrap();
+        let r = mcp::handle_for_test(
+            &state.as_served(),
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap();
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let text = ask("impact", "src/model.rs#Ledger");
+    // The dependents, not the files a plain text search adds after them: a
+    // word in a comment belongs there, and only there.
+    let (deps, named) = text.split_once("its name appears").unwrap_or((&text, ""));
+    assert!(named.contains("src/noise.rs"), "{text}");
+    let text = deps.to_string();
+    assert!(
+        text.contains("1 hop (1)") && text.contains("src/settle.rs#settle"),
+        "{text}"
+    );
+    assert!(
+        text.contains("src/top.rs#top"),
+        "a caller of a user, through the call: {text}"
+    );
+    assert!(
+        !text.contains("keep"),
+        "names count at the first hop only: {text}"
+    );
+    assert!(
+        !text.contains("noise"),
+        "a comment or a string is not a use: {text}"
+    );
+    let text = ask("find_callers", "src/model.rs#LIMIT");
+    assert!(text.contains("src/settle.rs#settle"), "{text}");
+    let text = ask("impact", "src/twin_a.rs#Twin");
+    assert!(
+        !text.contains("pair"),
+        "a name defined twice cannot be attributed: {text}"
+    );
+
+    // Stored with the graph and replaced per file: an edit reaches the next
+    // start, and the untouched files' uses come back from the snapshot.
+    std::fs::write(dir.join("src/noise.rs"), "fn noise(l: Ledger) {}\n").unwrap();
+    let text = ask("impact", "src/model.rs#Ledger");
+    assert!(
+        text.contains("src/noise.rs#noise") && text.contains("src/settle.rs#settle"),
+        "{text}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("references ok: a use by name reaches impact, once, and not from a comment");
+}
+
 /// The three tools that answer what to do before a commit: which tests to run,
 /// what else usually changes, and whether a boundary breaks.
 fn demo_change_tools() {
@@ -6083,6 +6190,7 @@ fn demo_change_tools() {
         now: 1_756_600_000,
         files: None,
         mentions: None,
+        references: None,
         root: Some(&dir),
     };
     let call = |tool: &str, args: serde_json::Value| {
@@ -6637,6 +6745,7 @@ thread scheduling"
         now: 0,
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
     let seeds = mcp::seeds_for_test(&served, "src/parse_ast.rs#parse");
@@ -8931,6 +9040,7 @@ fn demo_subsystem_scale() {
             now: now(),
             files: None,
             mentions: None,
+            references: None,
             root: None,
         };
         let t = std::time::Instant::now();
@@ -9683,6 +9793,7 @@ fn demo_overview() {
         now: now(),
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
 
@@ -9819,6 +9930,7 @@ fn demo_cycles() {
         // filtered answer would hand it to the next.
         files: Some(&files_cache),
         mentions: None,
+        references: None,
         root: None,
     };
     let call = |args: serde_json::Value| {
@@ -9924,6 +10036,7 @@ fn demo_view() {
         now: 1_756_600_000,
         files: None,
         mentions: None,
+        references: None,
         root: None,
     };
     let layout = layout::compute(&snap, &comms.of_node, layout::Mode::Grouped);
