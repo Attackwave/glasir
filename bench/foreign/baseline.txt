@@ -5,7 +5,7 @@
 gin               100
 spring-petclinic  94
 graphify          100
-ktor              99
+ktor              100
 polly             100
 zod               100
 ripgrep           100
