@@ -13,6 +13,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    // Braces before this index belong to a signature, not to a scope.
+    let mut header_end = 0usize;
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -32,6 +34,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 while i < tokens.len() && tokens[i].kind != TokenKind::Newline {
                     i += 1;
                 }
+                continue;
+            }
+            // A brace in a signature is a type, `(o: { id: string })`, and
+            // closing on it ended the function before its body.
+            TokenKind::Symbol('{' | '}') if i < header_end => {
+                i += 1;
                 continue;
             }
             TokenKind::Symbol('{') => {
@@ -71,6 +79,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                                header_end = signature_end(&tokens, i + 2);
                                 scope.open_definition_with_body_docs(
                                     name,
                                     start_byte as usize,
@@ -165,6 +174,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 && scope.depth > 0
                             {
                                 is_method_def = true;
+                                header_end = k;
                             }
                         }
 
@@ -201,6 +211,35 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+/// The index of a function's body `{` (or of whatever ends a body-less
+/// overload), from just after its name.
+fn signature_end(tokens: &[crate::lexer::Token<'_>], j: usize) -> usize {
+    let mut k = skip_newlines(tokens, j);
+    if let Some(after) = skip_type_arguments(tokens, k) {
+        k = skip_newlines(tokens, after);
+    }
+    if tokens.get(k).map(|t| &t.kind) != Some(&TokenKind::Symbol('(')) {
+        return k;
+    }
+    let mut depth = 0;
+    while let Some(t) = tokens.get(k) {
+        match t.kind {
+            TokenKind::Symbol('(') => depth += 1,
+            TokenKind::Symbol(')') => depth -= 1,
+            _ => {}
+        }
+        k += 1;
+        if depth == 0 {
+            break;
+        }
+    }
+    k = skip_newlines(tokens, k);
+    if tokens.get(k).map(|t| &t.kind) == Some(&TokenKind::Symbol(':')) {
+        k = skip_return_type(tokens, k + 1);
+    }
+    k
 }
 
 fn skip_newlines(tokens: &[crate::lexer::Token<'_>], mut j: usize) -> usize {
@@ -241,8 +280,28 @@ fn skip_type_arguments(tokens: &[crate::lexer::Token<'_>], j: usize) -> Option<u
 fn skip_return_type(tokens: &[crate::lexer::Token<'_>], mut k: usize) -> usize {
     let mut angle = 0i32;
     let mut paren = 0i32;
+    // Whether a type has just ended: a `{` after one is the body, a `{`
+    // anywhere else opens an object type, `(): { id: string } {`.
+    let mut ended = false;
     while let Some(t) = tokens.get(k) {
         match t.kind {
+            TokenKind::Symbol('{') if !ended => {
+                let mut depth = 0;
+                while let Some(t) = tokens.get(k) {
+                    match t.kind {
+                        TokenKind::Symbol('{') => depth += 1,
+                        TokenKind::Symbol('}') => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        break;
+                    }
+                    k += 1;
+                }
+                ended = true;
+                k += 1;
+                continue;
+            }
             TokenKind::Symbol('{') if angle == 0 && paren == 0 => return k,
             TokenKind::Symbol('<') => angle += 1,
             TokenKind::Symbol('>') => angle -= 1,
@@ -259,6 +318,14 @@ fn skip_return_type(tokens: &[crate::lexer::Token<'_>], mut k: usize) -> usize {
         if angle < 0 {
             return k;
         }
+        ended = matches!(
+            t.kind,
+            TokenKind::Ident(_)
+                | TokenKind::StringLit(_)
+                | TokenKind::Number(_)
+                | TokenKind::Symbol(']' | '>' | ')')
+                | TokenKind::DoubleSymbol(">>")
+        );
         k += 1;
     }
     k

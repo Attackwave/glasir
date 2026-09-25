@@ -14,3 +14,18 @@ fn annotated_and_generic_methods_are_definitions() {
     assert!(f.calls.iter().any(|(from, to, _)| from == "pick" && to == "go"), "{:?}", f.calls);
     assert!(f.calls.iter().any(|(from, to, _)| from == "many" && to == "list"), "{:?}", f.calls);
 }
+
+#[test]
+fn a_brace_in_a_signature_is_a_type_not_a_scope() {
+    let facts = native_parsers::rules::active().parse(
+        Language::TypeScript,
+        "export function f(input: A | B<{ id?: string }>): any {\n  init(input);\n}\n\nclass C {\n  m(o: { a: string }): { b: number } {\n    return make(o);\n  }\n}\n",
+    );
+    for (caller, callee) in [("f", "init"), ("m", "make")] {
+        assert!(
+            facts.calls.iter().any(|c| c.0 == caller && c.1 == callee),
+            "{caller} -> {callee}: {:?}",
+            facts.calls
+        );
+    }
+}
