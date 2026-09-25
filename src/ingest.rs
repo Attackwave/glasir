@@ -219,6 +219,30 @@ fn qualify(file: &str, name: &str) -> String {
     format!("{file}#{name}")
 }
 
+/// Bare name -> the one symbol defining it; `None` marks a name defined more
+/// than once, refused for the reason tier 3 refuses it.
+type MarkdownNames = HashMap<String, Option<NodeId>>;
+
+/// Built once per batch of documents and extended as they mint sections.
+/// Rebuilt per document it was O(documents x symbols): 30 of 34 seconds on a
+/// tree with 401 documents and 222,585 symbols.
+fn markdown_names(registry: &SymbolRegistry) -> MarkdownNames {
+    let mut by_tail = MarkdownNames::new();
+    for (symbol, &node) in registry.entries() {
+        note_tail(&mut by_tail, symbol, node);
+    }
+    by_tail
+}
+
+fn note_tail(by_tail: &mut MarkdownNames, symbol: &str, node: NodeId) {
+    if let Some((_, tail)) = symbol.split_once('#') {
+        by_tail
+            .entry(tail.to_owned())
+            .and_modify(|slot| *slot = None)
+            .or_insert(Some(node));
+    }
+}
+
 /// Re-parses one file and replaces its edges in the delta.
 ///
 /// A callee is resolved against the registry by qualified name first (same
@@ -239,15 +263,43 @@ fn qualify(file: &str, name: &str) -> String {
 /// symbol this tree does not define is describing something else. Ordering
 /// therefore matters: markdown is ingested after the code, so the symbols are
 /// there to be found.
-pub fn ingest_markdown(
-    graph: &Arc<Graph>,
+///
+/// Runs inside the caller's `update_batch`, after the code, so a whole tree's
+/// documents cost no publish of their own: one `update` each copied the delta
+/// per document, 401 copies of a million edges.
+#[allow(clippy::too_many_arguments)]
+pub fn ingest_markdown_into(
+    snap: &GraphSnapshot,
+    d: &mut DeltaStore,
+    arena: &mut SymbolArena,
+    registry: &mut SymbolRegistry,
+    root: &Path,
+    documents: &[(std::path::PathBuf, String)],
+    now: u64,
+) {
+    let mut names = markdown_names(registry);
+    for (path, src) in documents {
+        let doc = markdown_facts(arena, registry, path, root, src, now, &mut names);
+        apply_markdown(snap, d, doc);
+    }
+}
+
+/// One document's sections and edges, resolved but not yet in the graph.
+struct MarkdownDoc {
+    file_key: u32,
+    nodes: Vec<NodeId>,
+    edges: Vec<(NodeId, Edge)>,
+}
+
+fn markdown_facts(
     arena: &mut SymbolArena,
     registry: &mut SymbolRegistry,
     path: &Path,
     root: &Path,
     source: &str,
     now: u64,
-) -> usize {
+    by_tail: &mut MarkdownNames,
+) -> MarkdownDoc {
     let file = relative_path(path, root);
     let stem = file
         .rsplit('/')
@@ -256,38 +308,22 @@ pub fn ingest_markdown(
         .map_or(file.as_str(), |(s, _)| s)
         .to_string();
 
-    // Bare name -> the one symbol defining it, built once per document rather
-    // than scanned per mention. The scan was O(mentions × symbols) and cost
-    // 2.4 s of a 5 s cold start on a 153k-line tree — invisible on this repo,
-    // where both numbers are small.
-    let mut by_tail: HashMap<&str, Option<NodeId>> = HashMap::new();
-    for (symbol, &node) in registry.entries() {
-        if let Some((_, tail)) = symbol.split_once('#') {
-            // `None` marks a name defined more than once: ambiguity is refused
-            // for the reason tier 3 refuses it, a wrong edge being worse than a
-            // missing one.
-            by_tail
-                .entry(tail)
-                .and_modify(|slot| *slot = None)
-                .or_insert(Some(node));
-        }
-    }
-    let by_tail: HashMap<String, NodeId> = by_tail
-        .into_iter()
-        .filter_map(|(k, v)| v.map(|n| (k.to_string(), n)))
-        .collect();
-
     let mut nodes = Vec::new();
     let mut edges: Vec<(NodeId, Edge)> = Vec::new();
+    let mut minted = Vec::new();
     for section in crate::docs::sections(source, &stem) {
-        let node = registry.get_or_mint(&qualify(&file, &section.title));
+        let key = qualify(&file, &section.title);
+        if registry.node_of(&key).is_none() {
+            minted.push(key.clone());
+        }
+        let node = registry.get_or_mint(&key);
         nodes.push(node);
         registry.set_doc(node, section.prose.clone());
 
         for name in &section.mentions {
             let Some(target) = registry
                 .node_of(name)
-                .or_else(|| by_tail.get(name.as_str()).copied())
+                .or_else(|| by_tail.get(name.as_str()).copied().flatten())
             else {
                 continue;
             };
@@ -309,22 +345,34 @@ pub fn ingest_markdown(
         }
     }
 
-    let file_key = arena.intern(&file);
-    let count = edges.len();
-    graph.update(|snap: &GraphSnapshot, d: &mut DeltaStore| {
-        let targets: HashMap<NodeId, Vec<NodeId>> = d
-            .file_nodes(file_key)
-            .iter()
-            .map(|&n| (n, snap.base_targets(n)))
-            .collect();
-        d.replace_file_edges(
-            file_key,
-            |n| targets.get(&n).cloned().unwrap_or_default(),
-            edges.clone(),
-            &nodes,
-        );
-    });
-    count
+    // A section minted here becomes visible to the next document, not to this
+    // one — the order a table rebuilt per document produced.
+    for key in minted {
+        if let Some(node) = registry.node_of(&key) {
+            note_tail(by_tail, &key, node);
+        }
+    }
+
+    MarkdownDoc {
+        file_key: arena.intern(&file),
+        nodes,
+        edges,
+    }
+}
+
+/// The graph half: replaces the document's previous sections and edges.
+fn apply_markdown(snap: &GraphSnapshot, d: &mut DeltaStore, doc: MarkdownDoc) {
+    let targets: HashMap<NodeId, Vec<NodeId>> = d
+        .file_nodes(doc.file_key)
+        .iter()
+        .map(|&n| (n, snap.base_targets(n)))
+        .collect();
+    d.replace_file_edges(
+        doc.file_key,
+        |n| targets.get(&n).cloned().unwrap_or_default(),
+        doc.edges,
+        &doc.nodes,
+    );
 }
 
 /// Attaches documentation to symbols a higher tier already defined.
