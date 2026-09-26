@@ -8333,8 +8333,11 @@ fn demo_audit() {
         bytes: 40,
         ok: false,
     });
+    // Patience, not speed, is what this asserts: a Windows runner scanning
+    // each new file ran over 2 s once under the parallel suite. A writer
+    // that never drains still fails, only later.
     assert!(
-        log.flush(std::time::Duration::from_secs(2)),
+        log.flush(std::time::Duration::from_secs(20)),
         "a controlled shutdown can wait for all accepted audit records"
     );
 
