@@ -6015,6 +6015,17 @@ fn demo_imports() {
             "ex/pay.ex",
             "defmodule Shop.Pay do\n  alias Shop.Cart, as: C\n  def full(c), do: Shop.Cart.total(c)\n  def short(c), do: C.total(c)\nend\n",
         ),
+        // Java names the class through the declared type. `mixed` is declared
+        // with both types, so a call through it stays refused.
+        (
+            "jv/Hull.java",
+            "class Hull {\n    void seal(int n) { }\n}\n",
+        ),
+        ("jv/Lid.java", "class Lid {\n    void seal(int n) { }\n}\n"),
+        (
+            "jv/Dock.java",
+            "class Dock {\n    private Lid lid;\n    void moor(Hull hull) {\n        hull.seal(1);\n        this.lid.seal(2);\n    }\n    void one(Hull mixed) { }\n    void two(Lid mixed) {\n        mixed.seal(3);\n    }\n}\n",
+        ),
     ] {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -6042,6 +6053,10 @@ fn demo_imports() {
         ("ex/pay.ex#full", "ex/cart.ex#total", true),
         ("ex/pay.ex#short", "ex/cart.ex#total", true),
         ("ex/pay.ex#full", "ex/order.ex#total", false),
+        ("jv/Dock.java#moor", "jv/Hull.java#seal", true),
+        ("jv/Dock.java#moor", "jv/Lid.java#seal", true),
+        ("jv/Dock.java#two", "jv/Lid.java#seal", false),
+        ("jv/Dock.java#two", "jv/Hull.java#seal", false),
     ] {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
