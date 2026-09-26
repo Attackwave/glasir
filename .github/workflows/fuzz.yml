@@ -16,13 +16,15 @@ jobs:
   scanners:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          toolchain: nightly
       - run: cargo install cargo-fuzz --locked
       - working-directory: parsers
         run: cargo fuzz run parse -- -max_total_time=1200 -timeout=10 -rss_limit_mb=4096
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-artifacts
           path: parsers/fuzz/artifacts
