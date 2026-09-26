@@ -24,7 +24,10 @@ const gl = new Proxy({
   // undefined would fail the shader-compile checks and mask the real error.
   get: (t, k) => k in t ? t[k] : (() => ({})),
 });
-const ctx2d = new Proxy({}, {get: () => () => {}, set: () => true});
+// measureText must answer like a browser's: label placement reads `.width`.
+const ctx2d = new Proxy({measureText: t => ({width: 6 * String(t).length})}, {
+  get: (t, k) => k in t ? t[k] : () => {}, set: () => true,
+});
 // `withGL` false makes getContext('webgl') return null, which is how the
 // fallback path gets exercised. It is also how a real bug was caught: an
 // earlier version took a 2D context on the canvas *before* asking for WebGL,
