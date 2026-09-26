@@ -5557,7 +5557,7 @@ fn demo_mcp() {
     // client has no way to know the shape it is being handed.
     let listed = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 13);
+    assert_eq!(tools.len(), 14);
     for t in tools {
         assert!(
             t["outputSchema"]["type"] == "object",
@@ -5665,7 +5665,7 @@ fn demo_mcp() {
     let list = tools["result"]["tools"].as_array().unwrap();
     // The count is asserted so adding a tool is a deliberate act: a client's
     // whole picture of this server is this list.
-    assert_eq!(list.len(), 13, "query_graph, overview and the other eleven");
+    assert_eq!(list.len(), 14, "query_graph, overview and the other twelve");
     for t in list {
         assert!(t["name"].is_string());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -6152,6 +6152,35 @@ fn demo_routes() {
         let text = callers(handler);
         assert_eq!(text.contains(caller), want, "{handler} <- {caller}: {text}");
     }
+    // The same routes and requests, handed out for joining trees.
+    let surface = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "http_surface", "arguments": {}}}),
+    )
+    .unwrap();
+    let surface = &surface["result"]["structuredContent"];
+    let has = |key: &str, want: serde_json::Value| {
+        surface[key].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|i| want.as_object().unwrap().iter().all(|(k, v)| &i[k] == v))
+        })
+    };
+    assert!(
+        has(
+            "routes",
+            json!({"handler": "api/VetController.java#showVet", "verb": "GET", "segments": ["vets", "*"]})
+        ),
+        "{surface}"
+    );
+    assert!(
+        has(
+            "requests",
+            json!({"sender": "web/vet.service.ts#one", "verb": "GET", "segments": ["vets", "*"]})
+        ),
+        "{surface}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
     println!("routes ok: a request reaches the handler of the route it names");
 }

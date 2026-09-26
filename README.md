@@ -149,7 +149,7 @@ source and extraction configuration still match.
 
 ## What it serves
 
-Thirteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
+Fourteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
@@ -190,6 +190,14 @@ cheapest to act on:
   repositories in five languages, every name it reported appeared nowhere but
   in its own definition; what it cannot see — a library's public API, a name
   built at run time — is stated in each answer
+
+One is for joining trees:
+
+- `http_surface` — the HTTP routes this tree declares with their handlers, and
+  the requests it sends with their senders, as matchable segments. Within a
+  tree `find_callers` and `impact` already follow a request to its handler;
+  Glasir Control uses this to do the same across the repositories of a
+  workspace, where the client and its server live apart
 
 Every tool declares itself read-only, idempotent and closed-world
 (`readOnlyHint`, `openWorldHint: false`), so a client in a planning or

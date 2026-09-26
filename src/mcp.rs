@@ -896,6 +896,42 @@ fn tool_list() -> Value {
                 },
                 "required": ["path", "checked", "count", "unused"]
             }
+        },
+        {
+            "name": "http_surface",
+            "title": "What this tree serves and requests over HTTP",
+            "description": "The HTTP routes this tree declares, each with the \
+    handler that serves it, and the requests it sends, each with the definition \
+    sending it. Paths are reduced to segments, a parameter as `*`, which is how \
+    a request is matched to a route. Within the tree `find_callers` and `impact` \
+    already follow these; this is for joining trees, where a client lives in one \
+    repository and its server in another.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "outputSchema": {
+                "type": "object",
+                "properties": {
+                    "routes": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "handler": {"type": "string"},
+                            "verb": {"type": "string", "description": "GET, POST, PUT, PATCH, DELETE or ANY"},
+                            "segments": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["handler", "verb", "segments"]
+                    }},
+                    "requests": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "sender": {"type": "string"},
+                            "verb": {"type": "string"},
+                            "path": {"type": "string", "description": "As written, a base URL dropped"},
+                            "segments": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["sender", "verb", "path", "segments"]
+                    }}
+                },
+                "required": ["routes", "requests"]
+            }
         }
     ])
 }
@@ -2076,6 +2112,9 @@ pub struct References {
     /// Handlers reached over HTTP, by the definitions sending the request.
     /// See `routes`.
     by_route: std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// Every route with its resolved handler, as matched: what
+    /// `http_surface` hands a control plane joining several trees.
+    routes: Vec<(NodeId, crate::routes::Verb, Vec<String>)>,
 }
 
 impl Served<'_> {
@@ -2191,6 +2230,7 @@ impl Served<'_> {
             References {
                 by_target,
                 by_route,
+                routes,
             }
         })
     }
@@ -2680,6 +2720,68 @@ const NOT_CALLED_NAMES: &[&str] = &["Makefile", "Justfile", "Dockerfile", "Rakef
 /// anything else points at it, *or* if any call anywhere names it bare —
 /// which covers `self.x()`, calls through an import alias, and names defined
 /// in several places. What it cannot see is named in the answer.
+fn verb_label(verb: crate::routes::Verb) -> String {
+    format!("{verb:?}").to_ascii_uppercase()
+}
+
+fn http_surface(served: &Served) -> Result<Value, String> {
+    let local = std::sync::OnceLock::new();
+    let mut routes: Vec<Value> = served
+        .references(&local)
+        .routes
+        .iter()
+        .map(|(node, verb, segments)| {
+            json!({"handler": served.name(*node), "verb": verb_label(*verb), "segments": segments})
+        })
+        .collect();
+    let mut requests: Vec<Value> = Vec::new();
+    for http in served.registry.http().values() {
+        for (from, verb, path) in &http.requests {
+            requests.push(json!({
+                "sender": served.name(*from),
+                "verb": verb_label(*verb),
+                "path": path,
+                "segments": crate::routes::segments(path),
+            }));
+        }
+    }
+    // The registry is a hash map; the answer must not depend on its order.
+    let key = |v: &Value| v.to_string();
+    routes.sort_by_key(key);
+    requests.sort_by_key(key);
+    Ok(json!({"routes": routes, "requests": requests}))
+}
+
+fn render_http_surface(v: &Value) -> String {
+    let mut out = String::new();
+    let list = |key: &str| v[key].as_array().cloned().unwrap_or_default();
+    out.push_str(&format!("{} route(s):\n", list("routes").len()));
+    for r in list("routes") {
+        out.push_str(&format!(
+            "  {:6} /{}  {}\n",
+            r["verb"].as_str().unwrap_or(""),
+            r["segments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("/"),
+            r["handler"].as_str().unwrap_or("")
+        ));
+    }
+    out.push_str(&format!("{} request(s):\n", list("requests").len()));
+    for r in list("requests") {
+        out.push_str(&format!(
+            "  {:6} {}  {}\n",
+            r["verb"].as_str().unwrap_or(""),
+            r["path"].as_str().unwrap_or(""),
+            r["sender"].as_str().unwrap_or("")
+        ));
+    }
+    out
+}
+
 fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     let scope = args["path"].as_str().unwrap_or("").trim_start_matches("./");
     let (offset, limit) = page(args, 50);
@@ -3771,6 +3873,7 @@ fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, St
         "co_changes" => co_changes(served, args),
         "check_architecture" => check_architecture(served, args),
         "find_unused" => find_unused(served, args),
+        "http_surface" => http_surface(served),
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -3791,6 +3894,7 @@ fn render(name: &str, v: &Value) -> String {
         "co_changes" => render_co_changes(v),
         "check_architecture" => render_check_architecture(v),
         "find_unused" => render_find_unused(v),
+        "http_surface" => render_http_surface(v),
         _ => String::new(),
     }
 }
