@@ -2735,7 +2735,7 @@ fn run_token(args: &cli::Args) -> std::io::Result<()> {
                     format!("expires in {days} days")
                 }
             );
-            eprintln!("  Authorization: Bearer {secret}");
+            eprintln!("  send it as: Authorization: Bearer <the token above>");
             ignore_generated_files(&root, GENERATED);
             Ok(())
         }
