@@ -1039,12 +1039,27 @@ fn refresh_files(
     Some(())
 }
 
+/// File id per node for the layout, `u32::MAX` for a name the tree does not
+/// define. Ids follow path order: the layout breaks ties on them, and the
+/// registry's own order changes from run to run.
+fn file_ids(reg: &ingest::SymbolRegistry, width: usize) -> Vec<u32> {
+    let mut names: Vec<(&str, csr::NodeId)> =
+        reg.entries().map(|(s, &n)| (s.as_str(), n)).collect();
+    names.sort_unstable();
+    community::Context::from_names(None, width, names.into_iter()).file_of
+}
+
 /// Layout cost against graph size, which decides whether it can run at startup.
 fn bench_layout(root: &str) -> std::io::Result<()> {
     let root = &canonical(std::path::Path::new(root))?;
     let a = analyse(root)?;
     let t = std::time::Instant::now();
-    let l = layout::compute(&a.snap, &a.communities.of_node, layout::Mode::Grouped);
+    let l = layout::compute(
+        &a.snap,
+        &a.communities.of_node,
+        &file_ids(&a.registry, a.snap.width()),
+        layout::Mode::Grouped,
+    );
     let elapsed = t.elapsed();
     let edges: usize = (0..a.snap.width() as csr::NodeId)
         .map(|n| a.snap.neighbors(n).count())
@@ -1114,7 +1129,12 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
             Some(l) => l,
             None => {
                 let t = std::time::Instant::now();
-                let l = layout::compute(snap, &communities.of_node, mode);
+                let l = layout::compute(
+                    snap,
+                    &communities.of_node,
+                    &file_ids(reg, snap.width()),
+                    mode,
+                );
                 eprintln!(
                     "laid out {} nodes ({name}) in {:?}",
                     snap.width(),
@@ -7238,7 +7258,12 @@ fn demo_deterministic() {
         let _ = std::fs::remove_file(dir.join(".glasir-graph"));
         let a = analyse(dir).unwrap();
         let emb = embed::embed(&a.snap, 4);
-        let lay = layout::compute(&a.snap, &a.communities.of_node, layout::Mode::Grouped);
+        let lay = layout::compute(
+            &a.snap,
+            &a.communities.of_node,
+            &file_ids(&a.registry, a.snap.width()),
+            layout::Mode::Grouped,
+        );
         let search = search::SearchIndex::build_with_docs(&a.registry, a.registry.docs());
         let names = mcp::name_table(&a.registry, a.snap.width());
         // Symbol -> id, the numbering every other stage is expressed in.
@@ -10220,7 +10245,7 @@ fn demo_cycles() {
 /// read "subsystem 12".
 fn demo_view() {
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..4u32 {
+    for _ in 0..7u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -10234,6 +10259,12 @@ fn demo_view() {
     b.add_edge(1, e(0));
     b.add_edge(2, e(3));
     b.add_edge(3, e(2));
+    // A second, unconnected pair in pay.rs: its own community, same file.
+    b.add_edge(4, e(5));
+    b.add_edge(5, e(4));
+    // charge calls `error` by name, and tier 3 linked the name to log.py.
+    b.add_edge(0, e(6));
+    b.add_edge(6, e(3));
     let g = graph::Graph::new(b.build());
     let snap = g.load();
 
@@ -10242,7 +10273,10 @@ fn demo_view() {
     reg.insert("src/pay.rs#refund".into(), 1);
     reg.insert("src/log.py#warn".into(), 2);
     reg.insert("src/log.py#error".into(), 3);
-    let defined = std::collections::HashSet::from([0, 1, 2, 3]);
+    reg.insert("src/pay.rs#settle".into(), 4);
+    reg.insert("src/pay.rs#void".into(), 5);
+    reg.insert("error".into(), 6);
+    let defined = std::collections::HashSet::from([0, 1, 2, 3, 4, 5]);
     let comms = community::detect(
         &snap,
         &community::Params::default(),
@@ -10270,7 +10304,12 @@ fn demo_view() {
         references: None,
         root: None,
     };
-    let layout = layout::compute(&snap, &comms.of_node, layout::Mode::Grouped);
+    let layout = layout::compute(
+        &snap,
+        &comms.of_node,
+        &file_ids(&reg, snap.width()),
+        layout::Mode::Grouped,
+    );
     let stored_path = std::env::temp_dir().join(format!("glasir-view-rules-{}", fixture_id()));
     layout::write(&layout, &stored_path).unwrap();
     assert!(layout::read(&stored_path, snap.width()).is_some());
@@ -10297,6 +10336,42 @@ fn demo_view() {
         labels.iter().all(|l| !l.contains('.')),
         "extension must be stripped: {labels:?}"
     );
+    // Communities sharing a file are one subsystem, not two named alike.
+    assert_eq!(
+        labels.iter().filter(|l| **l == "pay").count(),
+        1,
+        "{labels:?}"
+    );
+
+    // Each file's symbols form their own disc: before, attraction alone put
+    // every connected symbol on one point.
+    let disc = |nodes: &[usize]| {
+        let k = nodes.len() as f32;
+        let cx = nodes.iter().map(|&i| layout.x[i]).sum::<f32>() / k;
+        let cy = nodes.iter().map(|&i| layout.y[i]).sum::<f32>() / k;
+        let r = nodes
+            .iter()
+            .map(|&i| (layout.x[i] - cx).hypot(layout.y[i] - cy))
+            .fold(0.0f32, f32::max);
+        (cx, cy, r)
+    };
+    let (pay, log) = (disc(&[0, 1, 4, 5]), disc(&[2, 3]));
+    assert!(
+        (pay.0 - log.0).hypot(pay.1 - log.1) > pay.2 + log.2,
+        "pay {pay:?} and log {log:?} overlap"
+    );
+
+    // The call is drawn from caller to definition, through the name it was
+    // written with, and the name itself is not.
+    let view = view::viewport_json(&served, &layout, -1e6, -1e6, 1e6, 1e6);
+    let edges: Vec<(u64, u64)> = view["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["s"].as_u64().unwrap(), e["t"].as_u64().unwrap()))
+        .collect();
+    assert!(edges.contains(&(0, 3)), "{edges:?}");
+    assert!(edges.iter().all(|&(s, t)| s != 6 && t != 6), "{edges:?}");
 }
 
 /// `glasir langcheck <dir>` — what each language yields on this tree.
