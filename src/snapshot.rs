@@ -39,7 +39,7 @@ use std::path::Path;
 /// 28: Erlang and Elixir module calls scoped to the module's file.
 /// 29: references through an import stored scoped to the imported file.
 /// 30: HTTP routes and requests per file (`http`).
-const FORMAT_VERSION: u32 = 31;
+const FORMAT_VERSION: u32 = 32;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {

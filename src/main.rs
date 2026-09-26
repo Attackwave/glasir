@@ -6082,6 +6082,18 @@ fn demo_routes() {
             "public static class Items\n{\n    public static void Map(WebApplication app)\n    {\n        var api = app.MapGroup(\"/api/items\");\n        api.MapGet(\"/{id:int}\", GetItem);\n        api.MapGet(\"/by\", GetByIds);\n    }\n\n    public static Item GetItem(int id) { return null; }\n\n    public static Item[] GetByIds(int[] ids) { return null; }\n}\n",
         ),
         (
+            "spec/openapi.yml",
+            "openapi: 3.0.1\npaths:\n  /vets/{vetId}:\n    get:\n      operationId: showVet\n    delete:\n      operationId: dropVet\n  /vets:\n    post:\n      operationId: addVet\n",
+        ),
+        (
+            "api/VetController.java",
+            "@RequestMapping(\"api\")\npublic class VetController implements VetsApi {\n    public Vet showVet(int vetId) { return null; }\n    public Vet dropVet(int vetId) { return null; }\n    public Vet addVet(Vet v) { return v; }\n}\n",
+        ),
+        (
+            "web/vet.service.ts",
+            "export class VetService {\n  url = environment.REST_API_URL + 'vets';\n\n  one(id: number) {\n    return this.http.get<{ vet: Vet }>(this.url + '/' + id);\n  }\n\n  drop(id: number) {\n    return this.http\n      .delete<void>(this.url + '/' + id);\n  }\n\n  addVet(v: Vet) {\n    return this.http.post<{ vet: Vet }>('/vets', v);\n  }\n}\n",
+        ),
+        (
             "web/client.ts",
             "export class Client {\n  private url = '/api/owners';\n\n  one(id: number) {\n    return this.http.get(`${this.url}/${id}`);\n  }\n\n  search() {\n    return this.http.get(`${this.url}/find`);\n  }\n\n  save(o: Owner) {\n    return this.http.post(this.url, o);\n  }\n\n  drop(id: number) {\n    return this.http.delete(`${this.url}/${id}`);\n  }\n\n  item(id: number) {\n    return fetch(`/api/items/${id}`);\n  }\n\n  some() {\n    return fetch('/api/items/by');\n  }\n}\n",
         ),
@@ -6112,6 +6124,30 @@ fn demo_routes() {
         ("api/Items.cs#GetItem", "web/client.ts#item", true),
         ("api/Items.cs#GetItem", "web/client.ts#some", false),
         ("api/Items.cs#GetByIds", "web/client.ts#some", true),
+        // An OpenAPI route names its handler by operationId; the client builds
+        // the URL by concatenation and types the answer with an object type.
+        (
+            "api/VetController.java#showVet",
+            "web/vet.service.ts#one",
+            true,
+        ),
+        (
+            "api/VetController.java#showVet",
+            "web/vet.service.ts#drop",
+            false,
+        ),
+        (
+            "api/VetController.java#dropVet",
+            "web/vet.service.ts#drop",
+            true,
+        ),
+        // The client's method carries the operationId too; the handler is the
+        // definition in the file that declares routes.
+        (
+            "api/VetController.java#addVet",
+            "web/vet.service.ts#addVet",
+            true,
+        ),
     ] {
         let text = callers(handler);
         assert_eq!(text.contains(caller), want, "{handler} <- {caller}: {text}");
