@@ -1,4 +1,5 @@
 <!doctype html>
+<html lang="en">
 <meta charset="utf-8">
 <title>__TITLE__</title>
 <style>
@@ -52,24 +53,24 @@ li span{color:var(--faint);font-family:ui-monospace,monospace;font-size:11px;fle
   <h1>__TITLE__</h1>
   <p class="sub" id="stats"></p>
 
-  <h2>Ansicht</h2>
-  <button data-mode="grouped" aria-pressed="true">Teilsysteme gruppiert</button>
-  <button data-mode="free" aria-pressed="false">Freies Kräftelayout</button>
+  <h2>View</h2>
+  <button data-mode="grouped" aria-pressed="true">Grouped by subsystem</button>
+  <button data-mode="free" aria-pressed="false">Free force layout</button>
 
-  <h2>Suche</h2>
-  <input id="q" placeholder="Symbol oder Datei" autocomplete="off">
+  <h2>Search</h2>
+  <input id="q" placeholder="Symbol or file" autocomplete="off">
   <ul id="hits"></ul>
 
-  <h2>Kanten</h2>
-  <div class="key"><i style="background:var(--extracted)"></i>extracted — Compiler</div>
-  <div class="key"><i style="background:var(--inferred)"></i>inferred — Syntaxbaum</div>
-  <div class="key"><i style="background:var(--ambiguous)"></i>ambiguous — Namensabgleich</div>
+  <h2>Edges</h2>
+  <div class="key"><i style="background:var(--extracted)"></i>extracted — compiler</div>
+  <div class="key"><i style="background:var(--inferred)"></i>inferred — syntax tree</div>
+  <div class="key"><i style="background:var(--ambiguous)"></i>ambiguous — name match</div>
 
-  <h2>Teilsysteme</h2>
+  <h2>Subsystems</h2>
   <ul id="comms"></ul>
 </aside>
 <div id="tip"></div>
-<div id="hint">Ziehen zum Verschieben · Scrollen zum Zoomen · Klick auf einen Knoten isoliert ihn</div>
+<div id="hint">Drag to pan · scroll to zoom · click a node to isolate it</div>
 
 <script>
 // Clumps for the whole graph, sent once: small at any repository size, and
@@ -112,7 +113,7 @@ const clumpFor = n => clumpOf.get(n.community) || (n.local ? clumpByFile.get(n.f
 
 // Filled in by each viewport response: what is on screen, not what exists.
 document.getElementById('stats').textContent =
-  `${OVERVIEW.length} Teilsysteme · lädt…`;
+  `${OVERVIEW.length} subsystems · loading…`;
 
 /* ---- Streaming --------------------------------------------------------
    The page holds no graph. It asks the server what falls inside the current
@@ -147,8 +148,8 @@ function fetchViewport() {
       upload();
       draw();
       document.getElementById('stats').textContent =
-        `${d.nodes.length} Knoten sichtbar · ${d.edges.length} Kanten` +
-        (d.clipped ? ' · Ausschnitt gekürzt' : '');
+        `${d.nodes.length} nodes visible · ${d.edges.length} edges` +
+        (d.clipped ? ' · view clipped' : '');
     })
     .catch(() => {});
 }
@@ -622,8 +623,8 @@ addEventListener('mousemove', e => {
     tip.style.display = 'block';
     tip.style.left = Math.min(e.clientX + 14, innerWidth - 310) + 'px';
     tip.style.top = (e.clientY + 14) + 'px';
-    tip.innerHTML = `<b>${esc(n.label)}</b><code>${esc(n.file || 'extern')}</code><br>
-      ${n.degree} Kanten${n.hub ? ' · Verbindungsknoten' : ''}`;
+    tip.innerHTML = `<b>${esc(n.label)}</b><code>${esc(n.file || 'external')}</code><br>
+      ${n.degree} edges${n.hub ? ' · connector' : ''}`;
   } else { hover = null; tip.style.display = 'none'; }
   draw();
 });
@@ -709,7 +710,7 @@ function rebuildSubsystemList() {
   comms.innerHTML = '';
   [...OVERVIEW].sort((a, b) => b.size - a.size).slice(0, 16).forEach(c => {
     const li = document.createElement('li');
-    li.innerHTML = `<b>${esc(c.label || 'Teilsystem ' + c.id)}</b><span>${c.size}</span>`;
+    li.innerHTML = `<b>${esc(c.label || 'Subsystem ' + c.id)}</b><span>${c.size}</span>`;
     li.onclick = () => {
       setFocus(null);
       view.k = Math.max(view.k, 1.2);
