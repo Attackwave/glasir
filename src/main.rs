@@ -2200,6 +2200,7 @@ fn impact_of_report(args: &cli::Args, root: &std::path::Path) -> std::io::Result
     // Default to the working tree against HEAD, which is what someone typing
     // this mid-change means. A revision compares that revision to HEAD.
     let rev = args.path.as_str();
+    mcp::check_rev(rev).map_err(std::io::Error::other)?;
     let (range, what): (Vec<&str>, String) = match rev {
         "." | "" => (
             vec!["diff", "--name-only", "HEAD"],
@@ -6473,6 +6474,24 @@ fn demo_change_tools() {
     std::fs::write(dir.join("src/pay.rs"), "edited").unwrap();
     std::fs::write(dir.join("src/report.rs"), "edited").unwrap();
     std::fs::write(dir.join("src/new.rs"), "new").unwrap();
+    // A revision git would read as an option is refused before git runs:
+    // `--output=<path>` makes `git diff` write a file wherever it may.
+    let planted = dir.join("planted");
+    for tool in ["detect_changes", "affected_tests"] {
+        let r = mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"rev": format!("--output={}", planted.display())}}}),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{tool}: {r}");
+        assert!(
+            !planted.exists(),
+            "{tool} let git write {}",
+            planted.display()
+        );
+    }
+
     let (v, text) = call("detect_changes", json!({}));
     assert_eq!(v["risk"]["level"], "high", "{text}");
     assert_eq!(
