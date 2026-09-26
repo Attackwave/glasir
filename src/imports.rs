@@ -4,9 +4,10 @@
 //! Go, `utils.parse()` in TypeScript — reached a bare placeholder, and tier 3
 //! refuses a name defined in several places, so the call linked to nothing.
 //! The import line names the file, which makes the target decidable rather
-//! than guessed. Only Python, Go and JavaScript/TypeScript are read: they write
-//! a module-qualified call as `alias.name()`, and their import syntax is
-//! regular enough to read line by line.
+//! than guessed. Python, Go and JavaScript/TypeScript write a module-qualified
+//! call as `alias.name()`, and their import syntax is regular enough to read
+//! line by line. Elixir's `alias` reads the same way, and Java's declarations
+//! do: a variable's declared type names the class a call through it reaches.
 
 use crate::parse_ast::Lang;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
         Lang::Go => go(src),
         Lang::TypeScript | Lang::JavaScript => javascript(src),
         Lang::Elixir => elixir(src),
+        Lang::Java => java(src),
         _ => Vec::new(),
     }
 }
@@ -58,6 +60,99 @@ fn elixir(src: &str) -> Vec<Import> {
                 alias: alias.to_string(),
                 spec: spec.to_string(),
             });
+        }
+    }
+    out
+}
+
+/// Java states a variable's type where it declares it, so a call through a
+/// variable names the method in the class the declaration gives. Fields, parameters, locals and loop variables are read alike, as
+/// `Type name` followed by `=`, `;`, `,`, `)` or `:`. A name declared with two
+/// types in one file is left out: without scopes, either could be meant.
+fn java(src: &str) -> Vec<Import> {
+    let words = java_tokens(src);
+    let mut types: std::collections::BTreeMap<&str, Option<&str>> = Default::default();
+    let mut i = 0;
+    while i + 1 < words.len() {
+        let ty = words[i];
+        if !ty.starts_with(|c: char| c.is_ascii_uppercase()) {
+            i += 1;
+            continue;
+        }
+        // Skip type arguments and array brackets between the type and the name.
+        let mut j = i + 1;
+        let mut depth = 0;
+        while j < words.len() {
+            match words[j] {
+                "<" => depth += 1,
+                ">" => depth -= 1,
+                "[" | "]" => {}
+                _ if depth > 0 => {}
+                _ => break,
+            }
+            j += 1;
+        }
+        let (Some(name), Some(next)) = (words.get(j), words.get(j + 1)) else {
+            break;
+        };
+        if name.starts_with(|c: char| c.is_ascii_lowercase())
+            && matches!(*next, "=" | ";" | "," | ")" | ":")
+        {
+            let seen = types.entry(name).or_insert(Some(ty));
+            if *seen != Some(ty) {
+                *seen = None;
+            }
+        }
+        i += 1;
+    }
+    types
+        .into_iter()
+        .filter_map(|(alias, ty)| {
+            ty.map(|ty| Import::Module {
+                alias: alias.to_string(),
+                spec: ty.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Identifiers and single punctuation of a Java source, with comments and
+/// string and character literals removed.
+fn java_tokens(src: &str) -> Vec<&str> {
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+        } else if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < b.len() && b[i] != c {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+        } else if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80 {
+            let start = i;
+            while i < b.len()
+                && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$' || b[i] >= 0x80)
+            {
+                i += 1;
+            }
+            out.push(&src[start..i]);
+        } else {
+            if !c.is_ascii_whitespace() {
+                out.push(&src[i..i + 1]);
+            }
+            i += 1;
         }
     }
     out
@@ -296,6 +391,7 @@ pub fn resolve(lang: Lang, file: &str, spec: &str, root: &Path) -> Option<String
         Lang::Go => go_target(dir, spec, root),
         Lang::TypeScript | Lang::JavaScript => js_target(dir, spec, root),
         Lang::Elixir => module_file(lang, spec),
+        Lang::Java => Some(format!("@{spec}")),
         _ => None,
     }
 }
