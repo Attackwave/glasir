@@ -2128,12 +2128,30 @@ impl Served<'_> {
                 sources.dedup();
             }
             // A handler named by reference in another file is found by its
-            // name when the tree defines it once.
+            // name when the tree defines it once, or else when one of its
+            // definitions sits in a file declaring routes itself: a service
+            // and a client routinely share the name the controller carries.
+            let routing: std::collections::HashSet<&str> = self
+                .registry
+                .http()
+                .iter()
+                .filter(|(_, http)| !http.routes.is_empty())
+                .map(|(file, _)| file.as_str())
+                .collect();
             let handler = |symbol: &str| -> Option<NodeId> {
                 if symbol.contains('#') {
                     return self.registry.node_of(symbol);
                 }
-                resolve(symbol)
+                resolve(symbol).or_else(|| {
+                    let mut routed = defs
+                        .get(symbol)?
+                        .iter()
+                        .filter(|(file, _)| routing.contains(file));
+                    match (routed.next(), routed.next()) {
+                        (Some(&(_, node)), None) => Some(node),
+                        _ => None,
+                    }
+                })
             };
             let mut routes: Vec<(NodeId, crate::routes::Verb, Vec<String>)> = Vec::new();
             for file in self.registry.http().values() {

@@ -165,6 +165,9 @@ const REQUESTS: &[(&str, usize)] = &[
 ];
 
 pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
+    if lang == Lang::Yaml {
+        return openapi(src);
+    }
     let tokens = native_parsers::rules::active().tokens(lang, src);
     if tokens.is_empty() {
         return Http::default();
@@ -188,11 +191,8 @@ pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
     // Strings assigned to a name: `resourceUrl = \`...\``, `var uri = $"..."`,
     // `private const string ApiUrlBase = "api/catalog"`. Kept with the
     // definition they are assigned in, so each method's `uri` is its own.
-    let mut consts: Vec<(&str, u32, &str)> = Vec::new();
+    let mut consts: Vec<(&str, u32, String)> = Vec::new();
     for (i, t) in tokens.iter().enumerate() {
-        let TokenKind::StringLit(value) = t.kind else {
-            continue;
-        };
         if i >= 2
             && matches!(
                 tokens[i - 1].kind,
@@ -200,7 +200,13 @@ pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
             )
             && let TokenKind::Ident(name) = tokens[i - 2].kind
         {
-            consts.push((name, enclosing(t.start), value));
+            let value = match t.kind {
+                TokenKind::StringLit(value) => Some(value.to_string()),
+                _ => concatenation(&tokens[i..]).map(|(v, _)| v),
+            };
+            if let Some(value) = value {
+                consts.push((name, enclosing(t.start), value));
+            }
         }
     }
     let resolve = |n: &str, d: u32, depth: usize| lookup_inner(&consts, &contains, n, d, depth);
@@ -390,13 +396,17 @@ pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
                     ..
                 },
             ] => resolve(n, here, 0),
-            _ => None,
+            chain => concatenation(chain)
+                .filter(|(_, used)| *used == chain.len())
+                .and_then(|(raw, _)| template(&raw, here, 0, &resolve)),
         };
         // A generic verb (`get`, `delete`) is a URL only when the argument
         // reads as a path; `cache.get("user")` is not a request.
         let generic = name.chars().next().is_some_and(|c| c.is_lowercase());
-        let Some(url) = url.filter(|u| !segments(u).is_empty() && (u.contains('/') || !generic))
-        else {
+        // Markup or prose in a string is not a path.
+        let Some(url) = url.filter(|u| {
+            !segments(u).is_empty() && (u.contains('/') || !generic) && !u.contains(['<', '>', ' '])
+        }) else {
             continue;
         };
         let verb = match name {
@@ -422,8 +432,71 @@ pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
     out
 }
 
+/// Routes an OpenAPI document declares: `paths:`, a path under it, a verb
+/// under that, and the `operationId` naming the handler a code generator
+/// makes the server implement. Read by indentation, like the document.
+fn openapi(src: &str) -> Http {
+    let mut out = Http::default();
+    if !src
+        .lines()
+        .any(|l| l.starts_with("openapi:") || l.starts_with("swagger:"))
+    {
+        return out;
+    }
+    let key = |line: &str| -> Option<(usize, String, String)> {
+        let indent = line.len() - line.trim_start().len();
+        let (k, v) = line.trim().split_once(':')?;
+        Some((
+            indent,
+            k.trim_matches(|c| c == '"' || c == '\'').to_string(),
+            v.trim().to_string(),
+        ))
+    };
+    let mut in_paths = false;
+    let mut path: Option<(usize, String)> = None;
+    let mut verb: Option<(usize, Verb)> = None;
+    for line in src.lines() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((indent, k, v)) = key(line) else {
+            continue;
+        };
+        if indent == 0 {
+            in_paths = k == "paths";
+            path = None;
+            verb = None;
+            continue;
+        }
+        if !in_paths {
+            continue;
+        }
+        if k.starts_with('/') && path.as_ref().is_none_or(|(i, _)| indent <= *i) {
+            path = Some((indent, k));
+            verb = None;
+        } else if let Some((pi, _)) = &path
+            && indent > *pi
+            && verb.as_ref().is_none_or(|(vi, _)| indent <= *vi)
+        {
+            verb = Verb::from_name(&k)
+                .filter(|_| k.chars().all(|c| c.is_ascii_lowercase()))
+                .map(|v| (indent, v));
+        } else if k == "operationId"
+            && let (Some((_, p)), Some((vi, method))) = (&path, &verb)
+            && indent > *vi
+        {
+            let id = v.trim_matches(|c| c == '"' || c == '\'');
+            if !id.is_empty() {
+                out.routes
+                    .push((Handler::Name(id.to_string()), *method, p.clone()));
+            }
+        }
+    }
+    out
+}
+
 fn lookup_inner(
-    consts: &[(&str, u32, &str)],
+    consts: &[(&str, u32, String)],
     contains: &dyn Fn(u32, u32) -> bool,
     name: &str,
     at_def: u32,
@@ -450,6 +523,57 @@ fn lookup_inner(
     template(raw, *def, depth + 1, &|n, d, depth| {
         lookup_inner(consts, contains, n, d, depth)
     })
+}
+
+/// A `+` chain of string literals and names, as one template: `'/a/' + id`
+/// reads as `` `/a/${id}` ``, so the chain resolves exactly as a template
+/// does. Any other operand is an unknown. Returns the template and how many
+/// tokens the chain spans; `None` without a `+` or without a literal.
+fn concatenation(tokens: &[Token<'_>]) -> Option<(String, usize)> {
+    let mut out = String::from("`");
+    let mut k = 0;
+    let mut literal = false;
+    let mut pieces = 0;
+    loop {
+        match tokens.get(k).map(|t| &t.kind) {
+            Some(TokenKind::StringLit(raw)) => {
+                let body = raw
+                    .trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == '$' || c == '@');
+                out.push_str(body.get(1..body.len().saturating_sub(1))?);
+                literal = true;
+                k += 1;
+            }
+            Some(TokenKind::Ident(_)) => {
+                let start = k;
+                while matches!(
+                    tokens.get(k + 1).map(|t| &t.kind),
+                    Some(TokenKind::Symbol('.'))
+                ) && matches!(
+                    tokens.get(k + 2).map(|t| &t.kind),
+                    Some(TokenKind::Ident(_))
+                ) {
+                    k += 2;
+                }
+                let name = match (&tokens[start].kind, &tokens[k].kind) {
+                    (TokenKind::Ident("this" | "self"), TokenKind::Ident(n)) if k == start + 2 => n,
+                    (TokenKind::Ident(n), _) if k == start => n,
+                    _ => "?",
+                };
+                out.push_str("${");
+                out.push_str(name);
+                out.push('}');
+                k += 1;
+            }
+            _ => return None,
+        }
+        pieces += 1;
+        if tokens.get(k).map(|t| &t.kind) != Some(&TokenKind::Symbol('+')) {
+            break;
+        }
+        k += 1;
+    }
+    out.push('`');
+    (literal && pieces > 1).then_some((out, k))
 }
 
 /// A string literal or template as a path: quotes and prefixes gone, the
@@ -644,7 +768,12 @@ fn call_paren(tokens: &[Token<'_>], i: usize) -> Option<usize> {
                 TokenKind::Symbol('<') => depth += 1,
                 TokenKind::Symbol('>') => depth -= 1,
                 TokenKind::DoubleSymbol(">>") => depth -= 2,
-                TokenKind::Ident(_) | TokenKind::Symbol('.' | ',' | '?' | '[' | ']') => {}
+                // An object type is a type argument too: `<{ id: T }>`.
+                TokenKind::Ident(_)
+                | TokenKind::StringLit(_)
+                | TokenKind::Symbol(
+                    '.' | ',' | '?' | '[' | ']' | '{' | '}' | ':' | ';' | '|' | '&',
+                ) => {}
                 _ => return None,
             }
             k += 1;
