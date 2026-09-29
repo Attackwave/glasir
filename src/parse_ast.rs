@@ -187,6 +187,10 @@ impl LangExt for Lang {
 /// naming what it *is* would mean a second table of languages we do not scan.
 /// A file dropped here contributes nothing, which is what it already did.
 const AMBIGUOUS: &[(&str, &[&str])] = &[
+    // Erlang's compiler writes BEAM assembly as `.S`: Erlang terms, not a
+    // machine's instructions.
+    ("S", &["{module,", "{function,"]),
+    ("s", &["{module,", "{function,"]),
     // Rocq/Coq vocabulary; Verilog has none of these words.
     (
         "v",
@@ -240,18 +244,29 @@ const AMBIGUOUS: &[(&str, &[&str])] = &[
 /// test expectations holding a list of
 /// file names. A binary has no stable head to match on, so the test is turned
 /// around: a file claiming to be ReScript must read like one.
-const MUST_IDENTIFY: &[(&str, &[&str])] = &[(
-    "res",
-    &[
-        "let ",
-        "open ",
-        "module ",
-        "type ",
-        "external ",
-        "@react",
-        "->",
-    ],
-)];
+const MUST_IDENTIFY: &[(&str, &[&str])] = &[
+    (
+        "res",
+        &[
+            "let ",
+            "open ",
+            "module ",
+            "type ",
+            "external ",
+            "@react",
+            "->",
+        ],
+    ),
+    // An assembly include shares `.i` with SWIG interfaces and preprocessed
+    // C, and only the assembler writes these directives.
+    (
+        "i",
+        &[
+            "EQU\t", "EQU ", "equ\t", "equ ", "MACRO", "ENDM", "endm", "DC.", "dc.", "DS.", "ds.",
+            "XDEF", "xdef", ".equ", ".macro", "RSRESET", "rsreset",
+        ],
+    ),
+];
 
 /// Whether the extension table's guess is contradicted by the file itself.
 ///

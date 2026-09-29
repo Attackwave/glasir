@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/29";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/30";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -38,7 +38,7 @@ macro_rules! builtins {
     };
 }
 
-const BUILTINS: [Builtin; 121] = builtins![
+const BUILTINS: [Builtin; 122] = builtins![
     // Native modules: syntax a description cannot carry.
     ("crystal", Crystal, false),
     ("cmake", Cmake, true),
@@ -60,6 +60,7 @@ const BUILTINS: [Builtin; 121] = builtins![
     ("gotemplate", GoTemplate, true),
     ("liquid", Liquid, true),
     ("nasm", Nasm, true),
+    ("assembly", Assembly, true),
     ("just", Just, true),
     ("hare", Hare, false),
     ("move", Move, false),
@@ -204,6 +205,11 @@ struct Lexical {
     /// See `CommentStyle::quote_identifiers`.
     #[serde(default)]
     quote_identifiers: bool,
+    /// Whether `name(` addresses memory rather than calls: assembly's
+    /// `OFFSET(A2)` is a displacement, and taking it for a call hid every
+    /// structure offset a routine reads from the uses a change breaks.
+    #[serde(default)]
+    parenthesis_is_operand: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -418,7 +424,8 @@ impl RuleFile {
                 continue;
             };
             let next = significant.get(i + 1).map(|t| &t.kind);
-            if matches!(next, Some(TokenKind::Symbol('('))) {
+            if matches!(next, Some(TokenKind::Symbol('('))) && !self.lexical.parenthesis_is_operand
+            {
                 continue;
             }
             let qualifier = match (
@@ -897,6 +904,7 @@ mod tests {
         ("gotemplate", "{{define \"run\"}}\n  {{template \"notify\" .}}\n{{end}}"),
         ("liquid", "{% capture run %}\n  {% include 'notify' %}\n{% endcapture %}"),
         ("nasm", "; Doc.\nrun:\n    call notify\n    ret"),
+        ("assembly", "; Doc.\nrun:\n            BSR     notify\n            RTS"),
         ("just", "# Doc.\nrun:\n\tnotify\n"),
         ("hare", "// Doc.\nfn run(x: int) int = {\n\treturn notify(x);\n};"),
         ("move", "/// Doc.\nmodule m::c {\n    fun run(x: u64): u64 { notify(x) }\n}"),

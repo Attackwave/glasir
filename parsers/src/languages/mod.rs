@@ -1,5 +1,6 @@
 pub(crate) mod ada;
 pub(crate) mod arrow;
+pub(crate) mod asm;
 pub(crate) mod blockconf;
 pub(crate) mod c;
 pub(crate) mod clojure;
@@ -25,7 +26,6 @@ pub(crate) mod lua;
 pub(crate) mod makefile;
 pub(crate) mod meson;
 pub(crate) mod mojo;
-pub(crate) mod nasm;
 pub(crate) mod nim;
 pub(crate) mod objc;
 pub(crate) mod ocaml;
@@ -93,7 +93,7 @@ pub(crate) fn parse(
         // Go templates and Liquid name a block inside a delimiter; the
         // openers differ, the shape does not.
         "gotemplate" | "liquid" => template::parse(src, style, calls),
-        "nasm" => nasm::parse(src, style, calls),
+        "nasm" | "assembly" => asm::parse(src, style, calls),
         // Just is Make's shape — `target:` then an indented recipe.
         "just" => makefile::parse(src, style, calls),
         // Luau and Teal are Lua with type annotations; the annotation sits
