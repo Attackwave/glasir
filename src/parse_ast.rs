@@ -68,6 +68,10 @@ pub struct FileFacts {
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
+    /// Macros this file defines whose invocations define their first argument.
+    pub macro_definers: Vec<String>,
+    /// Macro invocations naming an argument: (macro, argument, line range).
+    pub macro_calls: Vec<(String, String, (u32, u32))>,
 }
 
 /// A language we can extract from.
@@ -328,7 +332,33 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         refs,
         http,
         had_errors: f.had_errors,
+        macro_definers: f.macro_definers,
+        macro_calls: f.macro_calls,
     })
+}
+
+/// Turns each invocation of a macro in `definers` into a definition of its
+/// argument, spanning the invocation's line. The macro usually lives in
+/// another file, so this runs once the whole batch is parsed rather than in
+/// the scanner. References are attributed again afterwards, or the line that
+/// defines a name would count as a use of it.
+pub fn apply_defining_macros(
+    facts: &mut FileFacts,
+    lang: Lang,
+    src: &str,
+    definers: &std::collections::HashSet<String>,
+) {
+    let mut added = false;
+    for (mac, arg, range) in &facts.macro_calls {
+        if definers.contains(mac) && !facts.defines.contains(arg) {
+            facts.defines.push(arg.clone());
+            facts.ranges.push((arg.clone(), *range));
+            added = true;
+        }
+    }
+    if added {
+        facts.refs = references(lang, src, &facts.ranges);
+    }
 }
 
 /// Each identifier attributed to the innermost definition whose range holds

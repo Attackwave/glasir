@@ -261,7 +261,8 @@ external grammar dependency. Among them Rust, Python, JavaScript,
 TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity,
 Erlang and assembly (Motorola 68000, GNU as and NASM: labels, `EQU`
-constants, macros, and calls through `JSR`/`BSR`/`BRA`/`call`). The
+constants, macros — including ones that define the name they are given —
+and calls through `JSR`/`BSR`/`BRA`/`call`). The
 checked-in language fixtures exercise extraction floors for every
 supported language variant, so an empty or materially degraded scanner fails
 the build rather than quietly yielding nothing. Markdown is indexed as a source

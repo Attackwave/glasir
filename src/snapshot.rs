@@ -39,7 +39,9 @@ use std::path::Path;
 /// 28: Erlang and Elixir module calls scoped to the module's file.
 /// 29: references through an import stored scoped to the imported file.
 /// 30: HTTP routes and requests per file (`http`).
-const FORMAT_VERSION: u32 = 33;
+/// 34: invocations of an argument-defining macro define that argument, and
+/// each file's defining macros are stored (`definers`).
+const FORMAT_VERSION: u32 = 34;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -79,6 +81,8 @@ pub struct Snapshot {
     pub refs: Vec<(String, Vec<(NodeId, String)>)>,
     /// Per file, HTTP routes and requests. Stored for the reason `refs` is.
     pub http: Vec<(String, crate::ingest::FileHttp)>,
+    /// Per file, the macros whose invocations define their first argument.
+    pub definers: Vec<(String, Vec<String>)>,
 }
 
 impl Snapshot {
@@ -107,6 +111,7 @@ impl Snapshot {
             contracts: serde_json::Value::Null,
             refs: Vec::new(),
             http: Vec::new(),
+            definers: Vec::new(),
         }
     }
 }

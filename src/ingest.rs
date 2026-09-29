@@ -10,7 +10,7 @@ use crate::csr::{Edge, NodeId};
 use crate::delta::DeltaStore;
 use crate::graph::{Graph, GraphSnapshot};
 use crate::parse_ast::{self, Lang, LangExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -68,6 +68,9 @@ pub struct SymbolRegistry {
     /// and the requests it sends — sending node, verb, path. Matched against
     /// each other when served. See `routes`.
     http: HashMap<String, FileHttp>,
+    /// Per file, the macros it defines whose invocations define their first
+    /// argument. Kept so a partial re-parse knows the whole tree's set.
+    definers: HashMap<String, Vec<String>>,
     next: NodeId,
 }
 
@@ -82,6 +85,7 @@ impl SymbolRegistry {
             placeholder_lang: HashMap::new(),
             refs: HashMap::new(),
             http: HashMap::new(),
+            definers: HashMap::new(),
             next: base_node_count as NodeId,
         }
     }
@@ -144,6 +148,27 @@ impl SymbolRegistry {
 
     pub fn http(&self) -> &HashMap<String, FileHttp> {
         &self.http
+    }
+
+    pub fn set_definers(&mut self, file: &str, definers: Vec<String>) {
+        if definers.is_empty() {
+            self.definers.remove(file);
+        } else {
+            self.definers.insert(file.to_owned(), definers);
+        }
+    }
+
+    pub fn definers(&self) -> &HashMap<String, Vec<String>> {
+        &self.definers
+    }
+
+    /// Every argument-defining macro in the tree, leaving out `except`.
+    pub fn definer_set(&self, except: &HashSet<String>) -> HashSet<String> {
+        self.definers
+            .iter()
+            .filter(|(f, _)| !except.contains(*f))
+            .flat_map(|(_, d)| d.iter().cloned())
+            .collect()
     }
 
     /// Keeps only references to a name the tree defines exactly once, the only
@@ -251,6 +276,7 @@ impl SymbolRegistry {
         self.by_name.retain(|k, _| !k.starts_with(&prefix));
         self.refs.remove(file);
         self.http.remove(file);
+        self.definers.remove(file);
         for n in gone {
             self.docs.remove(&n);
             // A span into a file that is gone points at bytes that are not
@@ -500,7 +526,16 @@ pub fn ingest_file(
     now: u64,
 ) -> Option<usize> {
     let lang = Lang::from_path(path)?;
-    let facts = parse_ast::parse_file(path, source, lang)?;
+    let mut facts = parse_ast::parse_file(path, source, lang)?;
+    if !facts.macro_calls.is_empty() {
+        // The rest of the tree's argument-defining macros as last read, plus
+        // this file's own. An edit that changes another file's set is picked
+        // up when that file is saved or the tree is analysed again.
+        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+        let mut definers = registry.definer_set(&HashSet::from([rel.to_string()]));
+        definers.extend(facts.macro_definers.iter().cloned());
+        parse_ast::apply_defining_macros(&mut facts, lang, source, &definers);
+    }
     Some(apply_facts(graph, arena, registry, path, root, facts, now))
 }
 
@@ -657,6 +692,7 @@ fn prepare_facts(
     refs.sort_unstable();
     refs.dedup();
     registry.set_refs(&file, refs);
+    registry.set_definers(&file, facts.macro_definers.clone());
 
     // Handlers are kept as symbols: one passed by name may live in another
     // file, and only the served tree knows which.

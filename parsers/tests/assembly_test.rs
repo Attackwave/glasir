@@ -127,3 +127,35 @@ fn a_displacement_is_a_use_not_a_call() {
         .collect();
     assert!(names.contains(&"ENTRY_SIZE"), "{names:?}");
 }
+
+#[test]
+fn a_macro_that_defines_its_argument_is_reported_with_its_calls() {
+    let facts = parse(
+        "\
+VAR         MACRO
+\\1          EQU     BASE+__off
+__off       SET     __off+(\\2)
+            ENDM
+SAVE        MACRO
+            MOVE.L  \\1,-(SP)
+            ENDM
+.macro slot name
+\\name:
+.endm
+            VAR     balance,4
+            SAVE    balance
+            RTS
+",
+    );
+    assert_eq!(facts.macro_definers, vec!["VAR", "slot"]);
+    let calls: Vec<(&str, &str)> = facts
+        .macro_calls
+        .iter()
+        .map(|(m, a, _)| (m.as_str(), a.as_str()))
+        .collect();
+    assert_eq!(calls, vec![("VAR", "balance"), ("SAVE", "balance")]);
+    // The range is the invocation's line, which is what a snippet shows.
+    let (_, _, (start, end)) = &facts.macro_calls[0];
+    let src_line = "            VAR     balance,4";
+    assert_eq!((end - start) as usize, src_line.len());
+}
