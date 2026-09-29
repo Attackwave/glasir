@@ -1,0 +1,38 @@
+# Retrieval floors for the public Glasir Core corpus, in percent.
+#
+# These values are measured from the checked-in source and public
+# documentation with `glasir benchmark . --check`. They are regression floors,
+# not product targets: raise a value only in the same change that demonstrably
+# improves the corresponding result.
+#
+# The corpus was recalibrated after public housekeeping removed internal design
+# material and replaced it with the published architecture, operations, and
+# cross-repository contracts. Structural and deep-tree floors are retained from
+# their unchanged dedicated fixtures.
+#
+# That recalibration was measured in a working copy holding an untracked
+# CLAUDE.md, which the indexer read as documentation because the instruction
+# files had dropped out of `docs::NOT_DOCUMENTATION`. The file outranks the code
+# it describes, so the floors were set 17 to 25 points below what a clean clone
+# measures, and CI, which checks out a clean clone, could lose that much without
+# failing. With the exclusion restored, a clean clone and a working copy agree:
+# 93 / 93 / 100 / 47 / 92, and the floors are those values again.
+#
+# questions-docs 100 -> 95: two questions added (licence, client certificate),
+# the certificate one half answered. partition 47 -> 62: it now scores code
+# answers only — a Markdown section is never a subsystem member, and counting
+# the documentation answers moved the floor with every question added.
+questions                93
+questions-identifier     93
+questions-docs           95
+# German: the documentation questions asked in German against English
+# documentation. Without the spelling fold, or with the earlier z->t fold, it
+# reads 50%.
+questions-docs-de        65
+structural               100
+partition                62
+deep                     92
+
+# A tolerance of three points catches material regressions while avoiding a
+# failure caused by one answer in a small fixed question set.
+tolerance                3

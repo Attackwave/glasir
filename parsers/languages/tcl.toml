@@ -1,0 +1,10 @@
+schema_version = 1
+language = "tcl"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "else", "elseif", "while", "for", "foreach", "switch", "return", "break", "continue", "set", "global", "expr", "catch", "proc"]

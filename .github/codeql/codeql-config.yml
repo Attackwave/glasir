@@ -1,0 +1,6 @@
+# The fixtures under bench/ are sample code in many languages, written to be
+# parsed, not run; scanning them reports on code that never ships.
+paths-ignore:
+  - bench/langs
+  - bench/deep
+  - tmp

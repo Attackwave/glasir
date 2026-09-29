@@ -1,0 +1,13 @@
+schema_version = 1
+language = "ocaml"
+revision = 1
+
+[lexical]
+# `'` opens a name here, not a string (type variables: `'a`).
+quote_identifiers = true
+line_comments = []
+doc_comments = []
+block_comment = ["(*", "*)"]
+
+[calls]
+exclude = []

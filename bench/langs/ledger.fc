@@ -1,0 +1,21 @@
+;; Keeps the running balance for one account.
+
+const int LIMIT = 5000;
+
+int refuse(slice owner) impure {
+    warn_owner(owner);
+    return 0;
+}
+
+int commit_entry(slice owner, int amount) impure {
+    write_entry(owner, amount);
+    return amount;
+}
+
+;; Bills the account and returns what is left.
+int charge(slice owner, int amount) impure {
+    if (amount > LIMIT) {
+        return refuse(owner);
+    }
+    return commit_entry(owner, amount);
+}

@@ -1,0 +1,11 @@
+schema_version = 1
+language = "ini"
+revision = 1
+
+[lexical]
+identifier_dashes = true
+line_comments = ["#", ";"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["true", "false", "null"]

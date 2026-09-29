@@ -1,0 +1,16 @@
+# Keeps the running balance for one account.
+
+$limit = 5000
+
+# Hyprland groups settings in named blocks, and a block may pull in another
+# file — which is the reference worth indexing. A file-level `source =` has no
+# enclosing block and would measure the format rather than the scanner.
+device {
+    name = charge
+    source = refuse.hypr
+}
+
+device {
+    name = commit_entry
+    source = charge.hypr
+}

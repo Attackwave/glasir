@@ -1,0 +1,23 @@
+schema_version = 1
+language = "flatbuffers"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = []
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "table", scope = "body" },
+    { keyword = "struct", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "union", scope = "body" },
+    { keyword = "rpc_service", scope = "body" },
+    { keyword = "namespace", scope = "bare" },
+]

@@ -1,0 +1,19 @@
+# Keeps the running balance for one account.
+
+# One entry against an account.
+type Entry {
+  owner: String!
+  amount: Int!
+}
+
+# What a charge returned.
+type Result {
+  remaining: Int!
+  refused: Boolean!
+}
+
+# Bills accounts and reports what is left.
+type Mutation {
+  charge(entry: Entry!): Result!
+  refuse(entry: Entry!): Result!
+}

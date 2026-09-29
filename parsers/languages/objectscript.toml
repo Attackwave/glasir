@@ -1,0 +1,22 @@
+schema_version = 1
+language = "objectscript"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//", ";"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "elseif", "for", "while", "do", "quit", "set", "new", "kill", "write", "return", "try", "catch"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "ClassMethod", scope = "body_with_docs" },
+    { keyword = "Method", scope = "body_with_docs" },
+    { keyword = "Class", scope = "body" },
+    { keyword = "Property", scope = "statement" },
+    { keyword = "Parameter", scope = "statement" },
+]

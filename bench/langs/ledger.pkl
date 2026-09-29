@@ -1,0 +1,11 @@
+// Keeps the running balance for one account.
+
+limit = 5000
+
+function refuse(owner) = warnOwner(owner)
+
+function commitEntry(owner, amount) = writeEntry(owner, amount)
+
+/// Bills the account and returns what is left.
+function charge(owner, amount) =
+  if (amount > limit) refuse(owner) else commitEntry(owner, amount)

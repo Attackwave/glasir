@@ -1,0 +1,10 @@
+schema_version = 1
+language = "smali"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "goto", "return", "move", "const", "new-instance", "iget", "iput", "sget", "sput"]

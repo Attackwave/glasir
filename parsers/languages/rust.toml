@@ -1,0 +1,13 @@
+schema_version = 1
+language = "rust"
+revision = 1
+
+[lexical]
+# `'` opens a name here, not a string (lifetimes: `'a`).
+quote_identifiers = true
+line_comments = ["///", "//!", "//"]
+doc_comments = ["///", "//!"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "while", "for", "match", "return", "let", "in", "loop", "Some", "None", "Ok", "Err"]

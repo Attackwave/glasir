@@ -1,0 +1,14 @@
+/* Keeps the running balance for one account. */
+
+.charge {
+  background: #1e88e5;
+  color: white;
+}
+
+.refuse {
+  background: #e53935;
+}
+
+.commit-entry {
+  border: 1px solid #999;
+}

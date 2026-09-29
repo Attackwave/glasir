@@ -1,0 +1,59 @@
+# Retrieval ground truth: one question per block.
+#
+# Format: the question, then the symbols an answer must reach, one per line,
+# indented. A blank line ends the block, `#` is a comment.
+#
+# The symbols are what someone would actually have to read to answer, chosen by
+# reading the code rather than by running either method — otherwise the set
+# would be a description of whichever tool it was derived from. Where a
+# question has one obvious answer plus supporting context, only the load-bearing
+# symbols are listed: crediting a tool for finding everything adjacent would
+# make precision meaningless.
+
+how are buffered writes folded back into the base graph?
+  src/graph.rs#compact
+  src/graph.rs#spawn_compaction
+  src/graph.rs#COMPACTION_THRESHOLD
+
+what stops a burst of file saves from starting one rebuild per save?
+  src/watcher.rs#watch
+  src/watcher.rs#DEBOUNCE
+
+how does the code notice that a compiler index has gone out of date?
+  src/import_scip.rs#stale_since
+  src/import_scip.rs#rebuild_in_background
+
+what protects the http server against a hostile web page?
+  src/http.rs#origin_allowed
+  src/http.rs#addr_for
+
+how is the codebase split into subsystems?
+  src/community.rs#detect
+
+how does a call get linked to the function it calls when the parser could not tell?
+  src/resolve.rs#resolve
+  src/resolve.rs#link_edges
+
+what decides which nodes are worth returning for a query?
+  src/physics.rs#expand
+  src/physics.rs#Physics
+
+how does a question in plain words reach a symbol name?
+  src/search.rs#tokenize
+  src/search.rs#SearchIndex
+
+how is the analysed graph kept between runs?
+  src/snapshot.rs#write
+  src/snapshot.rs#read
+  src/snapshot.rs#source_times
+
+what makes the embeddings reproducible instead of random?
+  src/embed.rs#embed
+
+how does the map decide what to send to the browser?
+  src/view.rs#viewport_json
+  src/layout.rs#compute
+
+how does the parser handle a language it has no compiler index for?
+  src/parse_ast.rs#parse
+  src/ingest.rs#ingest_file

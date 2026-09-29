@@ -1,0 +1,10 @@
+schema_version = 1
+language = "liquid"
+revision = 1
+
+[lexical]
+line_comments = ["{% comment %}"]
+doc_comments = ["{% comment %}"]
+
+[calls]
+exclude = ["if", "else", "end", "for", "range", "with", "return", "true", "false", "null"]

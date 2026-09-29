@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: core-token
+  namespace: glasir-smoke
+type: Opaque
+stringData:
+  .glasir-tokens: |
+    dc49c0647234e706b48175f8406a87b5603288ece924ab6dcc9ce37d8b1160e2	control	0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-alpha
+  namespace: glasir-smoke
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: core-alpha, app.kubernetes.io/component: glasir-core } }
+  template:
+    metadata: { labels: { app: core-alpha, app.kubernetes.io/component: glasir-core } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: core
+          image: glasir-core:mtls-check
+          imagePullPolicy: Never
+          args: [serve, /repo, --http, 0.0.0.0:7001, --behind-control-plane, --control-plane-cidr, 10.1.0.0/16, --tls-cert, /run/tls/core.crt, --tls-key, /run/tls/core.key, --control-plane-client-ca, /run/tls/ca.crt]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          ports: [{ name: http, containerPort: 7001 }]
+          volumeMounts:
+            - { name: token, mountPath: /repo/.glasir-tokens, subPath: .glasir-tokens, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: mtls, mountPath: /run/tls, readOnly: true }
+      volumes:
+        - { name: token, secret: { secretName: core-token } }
+        - { name: tmp, emptyDir: {} }
+        - { name: mtls, secret: { secretName: mtls } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-alpha
+  namespace: glasir-smoke
+spec:
+  selector: { app: core-alpha }
+  ports: [{ name: http, port: 7001, targetPort: http }]

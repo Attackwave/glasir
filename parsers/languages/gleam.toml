@@ -1,0 +1,18 @@
+schema_version = 1
+language = "gleam"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["if", "else", "case", "let", "panic", "todo", "assert", "import", "pub", "type", "fn"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "fn", scope = "body_with_docs" },
+    { keyword = "type", scope = "body" },
+]

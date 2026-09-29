@@ -1,0 +1,10 @@
+schema_version = 1
+language = "nickel"
+revision = 1
+
+[lexical]
+line_comments = ["#", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["if", "then", "else", "let", "in", "fun", "function", "true", "false", "null", "import"]

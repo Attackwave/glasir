@@ -1,0 +1,16 @@
+{% comment %} Keeps the running balance for one account. {% endcomment %}
+
+{% assign limit = 5000 %}
+
+{% capture refuse %}
+  {% include 'warnOwner' %}
+{% endcapture %}
+
+{% capture commitEntry %}
+  {% include 'writeEntry' %}
+{% endcapture %}
+
+{% capture charge %}
+  {% include 'refuse' %}
+  {% include 'commitEntry' %}
+{% endcapture %}

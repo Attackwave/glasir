@@ -1,0 +1,22 @@
+schema_version = 1
+language = "pascal"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["///", "//"]
+block_comment = ["{", "}"]
+
+[calls]
+exclude = ["if", "then", "else", "while", "do", "for", "repeat", "until", "case", "begin", "end", "var", "const", "type", "uses", "interface", "implementation"]
+
+[generic]
+braces = false
+block_open = ["begin"]
+block_end = ["end"]
+receivers = ["."]
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+    { keyword = "procedure", scope = "body_with_docs" },
+    { keyword = "unit", scope = "bare" },
+]

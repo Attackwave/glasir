@@ -1,0 +1,20 @@
+; Keeps the running balance for one account.
+;
+; No `(mod …)` wrapper: that form has no enclosing name, so every call at its
+; top level legitimately lands on `<module>` — the same class as RSpec's
+; blocks. A fixture must measure the scanner, never the shape of the program,
+; and a ceiling above 30% cannot catch a scope bug.
+
+(defconstant limit 5000)
+
+(defun refuse (owner)
+  (warn-owner owner))
+
+(defun commit-entry (owner amount)
+  (write-entry owner amount))
+
+; Bills the account and returns what is left.
+(defun charge (owner amount)
+  (if (> amount limit)
+      (refuse owner)
+      (commit-entry owner amount)))

@@ -1,0 +1,20 @@
+schema_version = 1
+language = "cfscript"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "switch", "return", "var", "new", "try", "catch", "finally", "throw"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+    { keyword = "component", scope = "body" },
+    { keyword = "interface", scope = "body" },
+]

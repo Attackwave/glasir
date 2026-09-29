@@ -1,0 +1,14 @@
+schema_version = 1
+language = "fortran"
+revision = 1
+
+[lexical]
+line_comments = ["!"]
+doc_comments = ["!"]
+
+[calls]
+# `result` belongs here — Fortran writes `function two(x) result(y)` and the
+# word is syntax, not a call — but the hand-written scanner has no exclusion
+# list of its own and would keep the edge. Adding it breaks the identity the
+# admission test requires, so it waits for a change made against the scanner.
+exclude = ["if", "then", "else", "elseif", "do", "select", "case", "where", "return", "write", "read", "print", "allocate", "deallocate"]

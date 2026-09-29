@@ -1,0 +1,11 @@
+schema_version = 1
+language = "elm"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["{-", "-}"]
+
+[calls]
+exclude = ["if", "then", "else", "case", "of", "let", "in", "exposing", "as", "import", "module", "type", "port"]

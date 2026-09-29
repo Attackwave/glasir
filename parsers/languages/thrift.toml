@@ -1,0 +1,23 @@
+schema_version = 1
+language = "thrift"
+revision = 1
+
+[lexical]
+line_comments = ["//", "#"]
+doc_comments = ["/**", "///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = []
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "service", scope = "body" },
+    { keyword = "struct", scope = "body" },
+    { keyword = "union", scope = "body" },
+    { keyword = "exception", scope = "body" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "typedef", scope = "bare" },
+]

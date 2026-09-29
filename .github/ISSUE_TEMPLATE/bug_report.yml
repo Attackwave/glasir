@@ -1,0 +1,26 @@
+name: Bug report
+description: Report a reproducible defect in Glasir.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include command, minimal repository shape, and output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Glasir version
+      placeholder: glasir --version
+    validations:
+      required: true

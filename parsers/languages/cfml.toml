@@ -1,0 +1,11 @@
+schema_version = 1
+language = "cfml"
+revision = 1
+
+[lexical]
+line_comments = []
+doc_comments = []
+block_comment = ["<!---", "--->"]
+
+[calls]
+exclude = ["cfset", "cfreturn", "cfargument", "cfif", "cfelse", "cfloop", "cfoutput", "arguments", "var"]

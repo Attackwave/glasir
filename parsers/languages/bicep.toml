@@ -1,0 +1,23 @@
+schema_version = 1
+language = "bicep"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "for", "in", "existing", "true", "false", "null"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "resource", scope = "body_with_docs" },
+    { keyword = "module", scope = "body_with_docs" },
+    { keyword = "param", scope = "statement" },
+    { keyword = "var", scope = "statement" },
+    { keyword = "output", scope = "statement" },
+    { keyword = "type", scope = "statement" },
+]

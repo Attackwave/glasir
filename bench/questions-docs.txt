@@ -1,0 +1,34 @@
+# Retrieval ground truth for current public architecture and operations
+# documentation. Each expected answer is a root-relative Markdown section.
+
+how does the Core discover, extract, resolve, store, and query source code?
+  docs/architecture.md#Processing pipeline
+
+what trust boundary applies when Core runs behind the control plane?
+  docs/architecture.md#Trust boundary
+
+how are cross-repository links prevented from becoming guessed dependencies?
+  docs/architecture.md#Cross-repository contracts
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts
+
+which operational properties keep snapshots and requests safe?
+  docs/architecture.md#Operational properties
+
+how are individual user tokens revoked for a team server?
+  README.md#Running it for a team
+
+how should an enterprise deployment separate Core from Glasir Control?
+  README.md#Deployment boundary
+
+which endpoint reports readiness and which endpoint exposes metrics?
+  README.md#Operating it
+
+what information must an explicit cross-repository contract carry?
+  docs/cross-repo-contracts.md#Cross-repository evidence contracts
+
+under which licence is Glasir published, and how are its dependencies' licences shipped?
+  README.md#Licence
+
+how does the Core check the control plane's client certificate?
+  README.md#Deployment boundary
+  SECURITY.md#Serving over HTTP

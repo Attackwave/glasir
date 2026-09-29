@@ -1,0 +1,16 @@
+// Keeps the running balance for one account.
+namespace bench.ledger;
+
+// One entry against an account.
+table Entry {
+  owner: string;
+  amount: long;
+}
+
+// What a charge returned.
+table Result {
+  remaining: long;
+  refused: bool;
+}
+
+root_type Entry;

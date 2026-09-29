@@ -1,0 +1,5 @@
+{
+  "charge": { "limit": 5000 },
+  "refuse": { "reason": "over limit" },
+  "commit_entry": { "written": true }
+}

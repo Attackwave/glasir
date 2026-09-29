@@ -1,0 +1,19 @@
+schema_version = 1
+language = "templ"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "for", "range", "return", "package", "import", "templ"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "templ", scope = "body_with_docs" },
+    { keyword = "func", scope = "body_with_docs" },
+]

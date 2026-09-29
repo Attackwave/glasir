@@ -1,0 +1,11 @@
+schema_version = 1
+language = "lua"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["--[[", "]]"]
+
+[calls]
+exclude = ["if", "then", "else", "elseif", "while", "repeat", "until", "for", "do", "return", "local"]

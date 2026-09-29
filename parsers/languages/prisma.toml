@@ -1,0 +1,21 @@
+schema_version = 1
+language = "prisma"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+
+[calls]
+exclude = ["true", "false", "null", "env"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "model", scope = "body_with_docs" },
+    { keyword = "enum", scope = "body" },
+    { keyword = "type", scope = "body" },
+    { keyword = "generator", scope = "body" },
+    { keyword = "datasource", scope = "body" },
+]

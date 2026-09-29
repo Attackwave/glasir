@@ -1,0 +1,28 @@
+/// Keeps the running balance for one account.
+Class Ledger.Account Extends %Persistent
+{
+
+Parameter LIMIT = 5000;
+
+/// Bills the account and returns what is left.
+ClassMethod Charge(owner As %String, amount As %Integer) As %Integer
+{
+    If (amount > ..#LIMIT) {
+        Return ..Refuse(owner)
+    }
+    Return ..CommitEntry(owner, amount)
+}
+
+ClassMethod Refuse(owner As %String) As %Integer
+{
+    Do ..WarnOwner(owner)
+    Return 0
+}
+
+ClassMethod CommitEntry(owner As %String, amount As %Integer) As %Integer
+{
+    Do ..WriteEntry(owner, amount)
+    Return amount
+}
+
+}

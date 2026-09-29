@@ -1,0 +1,11 @@
+schema_version = 1
+language = "plsql"
+revision = 1
+
+[lexical]
+line_comments = ["--"]
+doc_comments = ["--"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "then", "else", "elsif", "end", "loop", "while", "for", "begin", "declare", "return", "is", "as", "select", "from", "where", "into", "values", "and", "or", "not", "null"]

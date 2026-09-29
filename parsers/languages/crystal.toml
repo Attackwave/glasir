@@ -1,0 +1,22 @@
+schema_version = 1
+language = "crystal"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "unless", "while", "until", "case", "when", "return", "yield", "begin", "rescue", "ensure", "else", "elsif", "end", "do", "require"]
+
+[generic]
+braces = false
+block_open = ["do"]
+block_end = ["end"]
+receivers = ["."]
+definitions = [
+    { keyword = "def", scope = "body_with_docs" },
+    { keyword = "class", scope = "body" },
+    { keyword = "module", scope = "body" },
+    { keyword = "struct", scope = "body" },
+]

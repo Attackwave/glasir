@@ -1,0 +1,17 @@
+// Keeps the running balance for one account.
+//
+// No outer wrapper: a top-level struct has no enclosing declaration, so its
+// own fields legitimately belong to nothing — a property of the document, not
+// of the scanner. Same reason ChiaLisp's `(mod …)` is absent from its fixture.
+[
+    Charge(
+        fallback: Refuse,
+        success: CommitEntry,
+    ),
+    Refuse(
+        reason: "over limit",
+    ),
+    CommitEntry(
+        written: true,
+    ),
+]

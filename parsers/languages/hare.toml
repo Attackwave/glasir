@@ -1,0 +1,19 @@
+schema_version = 1
+language = "hare"
+revision = 1
+
+[lexical]
+line_comments = ["//"]
+doc_comments = ["//"]
+
+[calls]
+exclude = ["if", "else", "for", "switch", "match", "return", "let", "const", "case", "yield", "break"]
+
+[generic]
+braces = true
+receivers = ["::", "."]
+definitions = [
+    { keyword = "fn", scope = "body_with_docs" },
+    { keyword = "type", scope = "statement" },
+    { keyword = "def", scope = "statement" },
+]

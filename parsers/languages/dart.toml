@@ -1,0 +1,11 @@
+schema_version = 1
+language = "dart"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///", "/**"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "do", "switch", "case", "default", "catch", "on", "finally", "try", "throw", "rethrow", "return", "break", "continue", "yield", "await", "assert", "this", "super", "class", "mixin", "extension", "enum", "typedef", "library", "import", "export", "part", "is", "as", "in", "new", "const", "var", "final", "late", "factory", "get", "set"]

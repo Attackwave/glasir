@@ -1,0 +1,14 @@
+# Keeps the running balance for one account.
+
+Host charge
+    HostName charge.example.com
+    User ledger
+    ProxyJump refuse
+
+Host refuse
+    HostName refuse.example.com
+    User ledger
+
+Host commit_entry
+    HostName commit.example.com
+    ProxyJump charge

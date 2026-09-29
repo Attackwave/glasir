@@ -1,0 +1,17 @@
+schema_version = 1
+language = "awk"
+revision = 1
+
+[lexical]
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["if", "else", "while", "for", "do", "return", "next", "exit", "print", "printf", "getline", "delete", "BEGIN", "END"]
+
+[generic]
+braces = true
+receivers = []
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+]

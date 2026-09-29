@@ -1,0 +1,26 @@
+syntax = "proto3";
+package scip;
+
+// A minimal subset of the SCIP schema (github.com/sourcegraph/scip): only the
+// fields this importer reads. Field numbers must match the upstream schema —
+// protobuf identifies fields by number, so unknown ones are skipped for free
+// and a full index decodes correctly against this subset.
+message Index {
+  repeated Document documents = 2;
+}
+
+message Document {
+  string relative_path = 1;
+  repeated Occurrence occurrences = 2;
+}
+
+message Occurrence {
+  // [startLine, startChar, endLine, endChar], or three elements when the
+  // range is on one line. Deprecated upstream in favour of typed variants,
+  // but still emitted by current indexers and enough to nest a reference
+  // inside the definition that encloses it.
+  repeated int32 range = 1;
+  string symbol = 2;
+  // Bit flags; bit 0x1 marks a definition, everything else is a reference.
+  int32 symbol_roles = 3;
+}

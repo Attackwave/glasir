@@ -1,0 +1,12 @@
+schema_version = 1
+language = "r"
+revision = 1
+
+[lexical]
+# Roxygen documentation is `#'`, an ordinary comment `#`. The order matters:
+# the longer prefix has to be tested first or every `#'` reads as `#`.
+line_comments = ["#'", "#"]
+doc_comments = ["#'"]
+
+[calls]
+exclude = ["if", "else", "for", "while", "repeat", "function", "return", "break", "next"]

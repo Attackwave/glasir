@@ -1,0 +1,25 @@
+// Keeps the running balance for one account.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Bills the account and returns what is left.
+model Charge {
+  id     Int    @id @default(autoincrement())
+  owner  String
+  amount Int
+  refuse Refuse @relation(fields: [refuseId], references: [id])
+}
+
+model Refuse {
+  id     Int     @id @default(autoincrement())
+  reason String
+  charge Charge[]
+}
+
+enum CommitEntry {
+  PENDING
+  WRITTEN
+}

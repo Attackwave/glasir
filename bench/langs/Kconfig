@@ -1,0 +1,12 @@
+# Keeps the running balance for one account.
+
+config CHARGE
+	bool "Charge an account"
+	select REFUSE
+	depends on COMMIT_ENTRY
+
+config REFUSE
+	bool "Refuse over the limit"
+
+config COMMIT_ENTRY
+	bool "Write the entry"

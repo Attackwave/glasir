@@ -1,0 +1,21 @@
+schema_version = 1
+language = "move"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "while", "loop", "return", "let", "abort", "assert", "move", "copy", "public", "native"]
+
+[generic]
+braces = true
+receivers = ["::", "."]
+definitions = [
+    { keyword = "fun", scope = "body_with_docs" },
+    { keyword = "module", scope = "body" },
+    { keyword = "struct", scope = "body" },
+    { keyword = "const", scope = "statement" },
+]

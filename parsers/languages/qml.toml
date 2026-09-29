@@ -1,0 +1,21 @@
+schema_version = 1
+language = "qml"
+revision = 1
+
+[lexical]
+line_comments = ["///", "//"]
+doc_comments = ["///"]
+block_comment = ["/*", "*/"]
+
+[calls]
+exclude = ["if", "else", "for", "while", "return", "var", "let", "const", "function", "property", "signal", "import"]
+
+[generic]
+braces = true
+receivers = ["."]
+definitions = [
+    { keyword = "function", scope = "body_with_docs" },
+    { keyword = "property", scope = "statement" },
+    { keyword = "signal", scope = "statement" },
+    { keyword = "component", scope = "body" },
+]

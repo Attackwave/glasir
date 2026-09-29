@@ -1,0 +1,12 @@
+schema_version = 1
+language = "fennel"
+revision = 1
+
+[lexical]
+# `'` opens a name here, not a string (quoted forms: `'sym`).
+quote_identifiers = true
+line_comments = [";;", ";"]
+doc_comments = [";;", ";"]
+
+[calls]
+exclude = ["if", "else", "elseif", "then", "end", "for", "while", "do", "return", "local", "function", "include", "block", "endblock", "section", "endsection", "let"]

@@ -1,0 +1,11 @@
+schema_version = 1
+language = "kconfig"
+revision = 1
+
+[lexical]
+identifier_dashes = true
+line_comments = ["#"]
+doc_comments = ["#"]
+
+[calls]
+exclude = ["config", "select", "depends", "on", "bool", "string", "int", "help", "default", "sources", "deps"]

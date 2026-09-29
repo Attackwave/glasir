@@ -1,0 +1,11 @@
+schema_version = 1
+language = "wolfram"
+revision = 1
+
+[lexical]
+block_comment = ["(*", "*)"]
+line_comments = []
+doc_comments = []
+
+[calls]
+exclude = ["define", "declare", "call", "ret", "global", "br", "icmp", "load", "store", "alloca", "If", "Module", "Return"]

@@ -1,0 +1,3 @@
+# Bounds for bench/scale.py: cost on a 1M-line tree over cost on a 100k-line
+# tree, same machine, same run. Linear work reads ~10x, quadratic ~100x.
+default 30
