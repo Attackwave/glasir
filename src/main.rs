@@ -505,7 +505,7 @@ fn build_graph(
     // server holding a monorepo resident is the case that matters, and there
     // the memory is the risk rather than a fifth of a second at startup.
     let paths = walk(root);
-    let mut parsed: Vec<(
+    let parsed: Vec<(
         std::path::PathBuf,
         Option<String>,
         Option<parse_ast::FileFacts>,
@@ -513,12 +513,22 @@ fn build_graph(
         let src = read_source(path)?;
         let facts = parse_ast::Lang::from_path(path)
             .and_then(|lang| parse_ast::parse_file(path, &src, lang));
-        let keep = docs::is_markdown(path).then_some(src);
+        // A file invoking macros keeps its text until the tree's defining
+        // macros are known; see `define_macro_arguments`.
+        let keep = (docs::is_markdown(path)
+            || facts.as_ref().is_some_and(|f| !f.macro_calls.is_empty()))
+        .then_some(src);
         Some((path.clone(), keep, facts))
     })
     .into_iter()
     .flatten()
     .collect();
+    let definers: std::collections::HashSet<String> = parsed
+        .iter()
+        .filter_map(|(_, _, f)| f.as_ref())
+        .flat_map(|f| f.macro_definers.iter().cloned())
+        .collect();
+    let mut parsed = define_macro_arguments(parsed, &definers);
 
     // One delta for the whole tree rather than one published snapshot per
     // file. `update` clones the delta on every call so readers are never
@@ -559,6 +569,35 @@ fn build_graph(
     reg.prune_refs();
     link_placeholders_quiet(&g, &reg);
     Ok((g, reg, arena))
+}
+
+/// Applies the tree's argument-defining macros to every parsed file that
+/// invokes one, then drops the text kept for that, keeping only Markdown's.
+fn define_macro_arguments(
+    parsed: Vec<(
+        std::path::PathBuf,
+        Option<String>,
+        Option<parse_ast::FileFacts>,
+    )>,
+    definers: &std::collections::HashSet<String>,
+) -> Vec<(
+    std::path::PathBuf,
+    Option<String>,
+    Option<parse_ast::FileFacts>,
+)> {
+    parsed
+        .into_iter()
+        .map(|(path, src, mut facts)| {
+            if let (Some(f), Some(text)) = (facts.as_mut(), src.as_deref())
+                && !f.macro_calls.is_empty()
+                && let Some(lang) = parse_ast::Lang::from_path(&path)
+            {
+                parse_ast::apply_defining_macros(f, lang, text, definers);
+            }
+            let src = src.filter(|_| docs::is_markdown(&path));
+            (path, src, facts)
+        })
+        .collect()
 }
 
 /// Largest source file read, in bytes.
@@ -746,6 +785,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (file, refs) in stored.refs {
                 registry.set_refs(&file, refs);
             }
+            for (file, definers) in stored.definers {
+                registry.set_definers(&file, definers);
+            }
             let g = std::sync::Arc::new(graph::Graph::new(stored.csr));
 
             let refreshed =
@@ -874,6 +916,13 @@ fn store_snapshot(
         .collect();
     http.sort_by(|a, b| a.0.cmp(&b.0));
     stored.http = http;
+    let mut definers: Vec<(String, Vec<String>)> = reg
+        .definers()
+        .iter()
+        .map(|(f, d)| (f.clone(), d.clone()))
+        .collect();
+    definers.sort();
+    stored.definers = definers;
     let contract_path = root.join(".glasir/contracts.json");
     if contract_path.exists() {
         stored.contracts =
@@ -952,6 +1001,35 @@ fn refresh_files(
         .into_iter()
         .flatten()
         .collect();
+
+    // Which macros define their argument is a property of the whole tree. A
+    // re-parse that changes it would leave every unchanged file that invokes
+    // one reading the old set, so it hands over to a full build instead —
+    // rare, since it takes an edit to such a macro.
+    let rels: std::collections::HashSet<String> = paths
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+    let mut definers = reg.definer_set(&rels);
+    for facts in parsed.values().flatten() {
+        definers.extend(facts.macro_definers.iter().cloned());
+    }
+    if definers != reg.definer_set(&Default::default()) {
+        return None;
+    }
+    for (path, facts) in parsed.iter_mut() {
+        if let Some(facts) = facts
+            && !facts.macro_calls.is_empty()
+            && let (Some(lang), Some(src)) = (parse_ast::Lang::from_path(path), read_source(path))
+        {
+            parse_ast::apply_defining_macros(facts, lang, &src, &definers);
+        }
+    }
 
     // One buffer for the whole run rather than one published snapshot per file.
     // `update` copies the buffer on every call, which is right while agents are
@@ -3650,6 +3728,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_imports();
     demo_routes();
     demo_references();
+    demo_defining_macros();
     demo_install();
     demo_search();
     demo_snapshot();
@@ -6182,6 +6261,85 @@ fn demo_routes() {
 /// What a definition uses without calling reaches `impact` and `find_callers`:
 /// a type in a signature, a constant read. Not a word in a comment or a
 /// string, not a name defined twice, and only at the first hop.
+/// A macro whose body defines its first argument defines a name at every
+/// invocation, and the uses of that name reach it — on a full build, on a
+/// partial one, and after the macro stops defining it.
+fn demo_defining_macros() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("glasir-macros-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Enough other files that one or two edits stay a partial re-parse.
+    for n in 0..12 {
+        std::fs::write(
+            dir.join(format!("part{n}.s")),
+            format!("part{n}:\n            RTS\n"),
+        )
+        .unwrap();
+    }
+    let slot = "SLOT        MACRO\n\\1          EQU     BASE+__off\n__off       SET     __off+(\\2)\n            ENDM\n";
+    std::fs::write(dir.join("macros.i"), slot).unwrap();
+    std::fs::write(
+        dir.join("data.s"),
+        "            SLOT    balance,4\n            SLOT    limit,4\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ledger.s"),
+        "charge:\n            MOVE.L  balance,D0\n            RTS\n",
+    )
+    .unwrap();
+    let callers = |symbol: &str| -> String {
+        let state = served_state(&dir).unwrap();
+        let r = mcp::handle_for_test(
+            &state.as_served(),
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap();
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let text = callers("data.s#balance");
+    assert!(text.contains("ledger.s#charge"), "{text}");
+    let listed = text.split_once("caller(s):").map_or("", |(_, l)| l);
+    assert!(
+        !listed.contains("data.s#"),
+        "the defining line is no use: {text}"
+    );
+
+    // A partial re-parse keeps the tree's set of defining macros.
+    std::fs::write(
+        dir.join("ledger.s"),
+        "charge:\n            MOVE.L  balance,D0\n            RTS\nrefuse:\n            ADDQ.L  #1,limit\n            RTS\n",
+    )
+    .unwrap();
+    assert!(callers("data.s#limit").contains("ledger.s#refuse"));
+    std::fs::write(
+        dir.join("data.s"),
+        "            SLOT    balance,4\n            SLOT    limit,4\n            SLOT    total,4\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ledger.s"),
+        "charge:\n            MOVE.L  balance,D0\n            ADD.L   total,D0\n            RTS\n",
+    )
+    .unwrap();
+    assert!(callers("data.s#total").contains("ledger.s#charge"));
+
+    // The macro no longer defines its argument: the names go with it.
+    std::fs::write(
+        dir.join("macros.i"),
+        "SLOT        MACRO\n            DC.L    \\1\n            ENDM\n",
+    )
+    .unwrap();
+    let text = callers("data.s#balance");
+    assert!(!text.contains("ledger.s#charge"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn demo_references() {
     use serde_json::json;
     let dir = std::env::temp_dir().join(format!("glasir-refs-{}", fixture_id()));

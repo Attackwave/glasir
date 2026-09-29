@@ -70,6 +70,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut in_constant = false;
     // The first word of a statement is its opcode; the rest are operands.
     let mut seen_opcode = false;
+    // The macro whose body is being read, and the name of its first
+    // parameter where the dialect names it (`.macro var name`).
+    let mut macro_name: Option<(String, Option<String>)> = None;
+    let line_of = |at: usize| {
+        let start = src[..at].rfind('\n').map_or(0, |n| n + 1);
+        let end = src[at..].find('\n').map_or(src.len(), |n| at + n);
+        (start as u32, end as u32)
+    };
 
     let open_body = |scope: &mut ScopeStack,
                      in_body: &mut bool,
@@ -122,6 +130,21 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 }
                 continue;
             }
+            // `\1 EQU …` or `\1:` in column zero of a macro body: every
+            // invocation of this macro defines its first argument.
+            TokenKind::Symbol('\\') if at_column_zero(tok) && macro_name.is_some() => {
+                let (name, param) = macro_name.as_ref().expect("checked");
+                let first = match kind(i + 1) {
+                    Some(TokenKind::Number(n)) => *n == "1",
+                    Some(TokenKind::Ident(p)) => param.as_deref() == Some(*p),
+                    _ => false,
+                };
+                let defines = matches!(kind(i + 2), Some(TokenKind::Symbol(':' | '=')))
+                    || matches!(kind(i + 2), Some(TokenKind::Ident(w)) if is(w, &["equ", "set", "equr", "reg"]));
+                if first && defines && !facts.macro_definers.contains(name) {
+                    facts.macro_definers.push(name.clone());
+                }
+            }
             // GNU directives: `.macro name`, `.endm`, `.equ name, value`. Any
             // other dot is a local label, a directive or a size suffix, and
             // what follows it is not a statement's opcode.
@@ -129,6 +152,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 match kind(i + 1) {
                     Some(TokenKind::Ident(d)) if d.eq_ignore_ascii_case("macro") => {
                         if let Some(TokenKind::Ident(name)) = kind(i + 2) {
+                            let param = match kind(i + 3) {
+                                Some(TokenKind::Ident(p)) => Some(p.to_string()),
+                                _ => None,
+                            };
+                            macro_name = Some((name.to_string(), param));
                             open_body(
                                 &mut scope,
                                 &mut in_body,
@@ -142,6 +170,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                     }
                     Some(TokenKind::Ident(d)) if d.eq_ignore_ascii_case("endm") => {
+                        macro_name = None;
                         if in_body {
                             scope.on_close_delimiter(tokens[i + 1].end as usize, &mut facts);
                             in_body = false;
@@ -189,6 +218,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     }
                     // `name MACRO`: a body up to `ENDM`.
                     Some(TokenKind::Ident(w)) if w.eq_ignore_ascii_case("macro") => {
+                        macro_name = Some((ident.to_string(), None));
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         i += 2;
                         seen_opcode = true;
@@ -246,12 +276,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         continue;
                     }
                 } else if ident.eq_ignore_ascii_case("endm") {
+                    macro_name = None;
                     if in_body {
                         scope.on_close_delimiter(tok.end as usize, &mut facts);
                         in_body = false;
                     }
                 } else if ident.eq_ignore_ascii_case("macro") {
                     if let Some(TokenKind::Ident(name)) = kind(j) {
+                        macro_name = Some((name.to_string(), None));
                         open_body(
                             &mut scope,
                             &mut in_body,
@@ -262,13 +294,24 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         i = j + 1;
                         continue;
                     }
-                } else if !is(ident, OPCODES)
+                } else if !is(ident, OPCODES) {
                     // A macro invocation. Lower-case words outside the list
-                    // are x86 or ARM instructions far more often than macros.
-                    && ident.chars().any(|c| c.is_ascii_uppercase() || c == '_')
-                    && calls.allows(ident)
-                {
-                    scope.record_call(ident, &mut facts);
+                    // are x86 or ARM instructions far more often than macros,
+                    // so they make no call; whether an invocation defines its
+                    // argument is decided later, against the macros the tree
+                    // defines, so every candidate is kept.
+                    if ident.chars().any(|c| c.is_ascii_uppercase() || c == '_')
+                        && calls.allows(ident)
+                    {
+                        scope.record_call(ident, &mut facts);
+                    }
+                    if let Some(TokenKind::Ident(arg)) = kind(j) {
+                        facts.macro_calls.push((
+                            ident.to_string(),
+                            arg.to_string(),
+                            line_of(tok.start as usize),
+                        ));
+                    }
                 }
                 scope.on_word(ident);
             }

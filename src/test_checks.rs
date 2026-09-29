@@ -228,6 +228,11 @@ fn references() {
 }
 
 #[test]
+fn defining_macros() {
+    crate::demo_defining_macros();
+}
+
+#[test]
 fn parallel_ingest() {
     crate::demo_parallel_ingest();
 }

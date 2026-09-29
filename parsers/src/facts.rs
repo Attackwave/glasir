@@ -19,6 +19,13 @@ pub struct FileFacts {
     pub call_modules: Vec<Option<String>>,
     /// Error flag for malformed source.
     pub had_errors: bool,
+    /// Macros this file defines whose body defines their first argument —
+    /// `\1 EQU …` or `\1:` — so that every invocation defines a name.
+    pub macro_definers: Vec<String>,
+    /// Macro invocations whose first argument is a name: (macro, argument,
+    /// byte range of the line). Whether one defines that name is known only
+    /// once every file is read, since the macro may live in another.
+    pub macro_calls: Vec<(String, String, (u32, u32))>,
 }
 
 impl FileFacts {
