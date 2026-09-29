@@ -1,0 +1,17 @@
+schema_version = 1
+language = "assembly"
+revision = 1
+
+# Motorola syntax and GNU as, whose `.S` files pass through the C
+# preprocessor and so carry C's comments. The native module reads labels,
+# constants, macros and branch operands; `*` comment lines and `#`
+# preprocessor lines are recognised there, because both count only in
+# column zero and `#` elsewhere is an immediate operand.
+[lexical]
+line_comments = [";", "//"]
+doc_comments = [";"]
+block_comment = ["/*", "*/"]
+parenthesis_is_operand = true
+
+[calls]
+exclude = []

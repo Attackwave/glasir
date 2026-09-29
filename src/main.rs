@@ -10865,6 +10865,18 @@ fn demo_extension_collision() {
         ("a.res", "let charge = (owner) => refuse(owner)", true),
         ("a.res", "RSRC\u{0}\u{0}Resource\u{0}data", false),
         ("a.res", "cases/tag.txt\ncases/use.txt", false),
+        ("a.i", "LIMIT       EQU     5000\n", true),
+        ("a.S", "{module, ledger}.  %% version = 0\n", false),
+        (
+            "a.i",
+            "%module ledger\n%{\n#include \"ledger.h\"\n%}\n",
+            false,
+        ),
+        (
+            "a.i",
+            "# 1 \"ledger.c\"\nint charge(void) { return 0; }\n",
+            false,
+        ),
         // A multi-byte character straddling the 4,096-byte cut: slicing there
         // panics, and a Latin-1 resource file produced exactly that. The
         // padding puts the `¢` across the boundary.

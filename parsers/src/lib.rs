@@ -69,6 +69,7 @@ pub enum Language {
     GoTemplate,
     Liquid,
     Nasm,
+    Assembly,
     Just,
     Hare,
     Move,
@@ -478,6 +479,7 @@ impl Language {
             "tmpl" => Some(Self::GoTemplate),
             "liquid" => Some(Self::Liquid),
             "asm" => Some(Self::Nasm),
+            "s" | "i" => Some(Self::Assembly),
             "just" => Some(Self::Just),
             "ha" => Some(Self::Hare),
             "move" => Some(Self::Move),
@@ -650,6 +652,7 @@ impl Language {
             | Self::GoTemplate
             | Self::Liquid
             | Self::Nasm
+            | Self::Assembly
             | Self::Just
             | Self::Hare
             | Self::Move
@@ -817,6 +820,7 @@ pub fn parse(src: &str, lang: Language) -> FileFacts {
         Language::GoTemplate => rules::active().parse(Language::GoTemplate, src),
         Language::Liquid => rules::active().parse(Language::Liquid, src),
         Language::Nasm => rules::active().parse(Language::Nasm, src),
+        Language::Assembly => rules::active().parse(Language::Assembly, src),
         Language::Just => rules::active().parse(Language::Just, src),
         Language::Hare => rules::active().parse(Language::Hare, src),
         Language::Move => rules::active().parse(Language::Move, src),

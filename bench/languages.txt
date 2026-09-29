@@ -39,6 +39,7 @@
 #         lang         defs  edges  <module>%
 Apex                      130    104      10
 ArkTs                     142    142      10
+Assembly                  150    128      10
 Awk                        86    114      10
 Bash                       96    168      10
 Bicep                     170    163      10
@@ -93,7 +94,7 @@ Luau                      142    142      10
 Makefile                  184    322      10
 Meson                     184    184      10
 Move                      162    130      10
-Nasm                      112    150      10
+Nasm                      150    150      10
 ObjC                       92     92      10
 ObjectScript              134    134      10
 Pascal                     75     75      10
