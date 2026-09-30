@@ -4089,11 +4089,21 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
         // Modern discovery: no handshake, version carried per request.
         "server/discover" => json!({"jsonrpc": "2.0", "id": id, "result": {
             "supportedVersions": [MODERN_VERSION, LEGACY_VERSION],
+            "cacheScope": "public",
+            "ttlMs": 0,
             "capabilities": capabilities(),
             "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
         }}),
         "tools/list" => {
-            json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tool_definitions()}})
+            // `2026-07-28` makes a list cacheable and requires saying for how
+            // long. Nothing in it depends on the caller, hence `public`; `0`
+            // because a restarted server behind the same URL may be a newer
+            // build with other tools.
+            json!({"jsonrpc": "2.0", "id": id, "result": {
+                "tools": tool_definitions(),
+                "cacheScope": "public",
+                "ttlMs": 0,
+            }})
         }
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or_default();
