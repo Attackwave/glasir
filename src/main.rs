@@ -5716,6 +5716,11 @@ fn demo_mcp() {
     let list = tools["result"]["tools"].as_array().unwrap();
     // A modern client rejects any result without it, not only discovery's.
     assert_eq!(tools["result"]["resultType"], "complete");
+    // Both lists are cacheable results, which must state scope and lifetime.
+    for list in [&tools, &disc] {
+        assert_eq!(list["result"]["cacheScope"], "public");
+        assert_eq!(list["result"]["ttlMs"], 0);
+    }
     // The count is asserted so adding a tool is a deliberate act: a client's
     // whole picture of this server is this list.
     assert_eq!(
