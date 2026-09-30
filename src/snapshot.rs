@@ -41,7 +41,7 @@ use std::path::Path;
 /// 30: HTTP routes and requests per file (`http`).
 /// 34: invocations of an argument-defining macro define that argument, and
 /// each file's defining macros are stored (`definers`).
-const FORMAT_VERSION: u32 = 34;
+const FORMAT_VERSION: u32 = 35;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {

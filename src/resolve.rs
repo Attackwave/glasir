@@ -164,11 +164,18 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         if let Some(&definition) = defs.iter().find(|&&d| {
             d != placeholder && want.is_none_or(|w| lang_of(registry, d).is_none_or(|l| l == w))
         }) {
+            // Assembly has no namespaces: a label is global to the unit the
+            // assembler builds, and a unit defining it twice does not
+            // assemble. One definition in the tree (`link_edges` keeps no
+            // other) is therefore the label every call names, as decided as
+            // an import would make it.
+            // ponytail: tree-wide, not per INCLUDE unit; a call to an external
+            // (`XREF`) label sharing a name with a local one is linked too.
             links.push(Link {
                 placeholder,
                 definition,
                 candidates: defs.len(),
-                exact: false,
+                exact: want == Some(crate::parse_ast::Lang::Assembly),
             });
         }
     }

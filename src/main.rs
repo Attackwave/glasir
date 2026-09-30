@@ -4687,6 +4687,28 @@ fn demo_resolve() {
     let again = resolve::resolve(&reg);
     assert_eq!(links, again, "resolution must be stable across runs");
 
+    // An assembly label defined once is the one every call names: the
+    // assembler refuses a unit defining it twice. Defined twice, it is refused
+    // here as any other name is.
+    let mut asm = SymbolRegistry::new(0);
+    let tick = asm.get_or_mint("clock");
+    asm.note_placeholder_lang(tick, parse_ast::Lang::Assembly);
+    let clock = asm.get_or_mint("src/sdk/mod.s#clock");
+    let twin = asm.get_or_mint("release");
+    asm.note_placeholder_lang(twin, parse_ast::Lang::Assembly);
+    asm.get_or_mint("src/a.s#release");
+    asm.get_or_mint("src/b.s#release");
+    let asm_edges = resolve::link_edges(&resolve::resolve(&asm), 42);
+    assert_eq!(asm_edges.len(), 1, "a label defined twice must not link");
+    assert_eq!(
+        (
+            asm_edges[0].0,
+            asm_edges[0].1.target,
+            asm_edges[0].1.confidence
+        ),
+        (tick, clock, csr::Confidence::Inferred)
+    );
+
     // Links are recomputed after every batch, so re-applying them must replace
     // the previous set rather than pile another copy on top.
     let g = std::sync::Arc::new(graph::Graph::new(csr::CsrBuilder::new().build()));
