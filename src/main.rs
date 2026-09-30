@@ -5417,7 +5417,7 @@ fn demo_mcp() {
     use serde_json::json;
 
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..6u32 {
+    for _ in 0..7u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -5433,6 +5433,8 @@ fn demo_mcp() {
     b.add_edge(4, e(2));
     // A call written as the bare name, reaching `log` through the placeholder.
     b.add_edge(5, e(4));
+    // A document naming `log` in backticks.
+    b.add_edge(3, e(2));
     let g = graph::Graph::new(b.build());
     let snap = g.load();
 
@@ -5446,11 +5448,14 @@ fn demo_mcp() {
     // this symbol is called `Fixes for #charge`, not `charge`.
     reg.insert("notes.md#Fixes for #charge".into(), 3);
     // The bare placeholder tier 2 mints for a callee it cannot see a
-    // definition for. It stands for *every* `log` in the tree, so a query for
-    // `log` has two defensible answers and the caller must be told, not handed
-    // whichever the registry found first.
+    // definition for, linked onto the one `log` there is.
     reg.insert("log".into(), 4);
     reg.insert("src/d.rs#audit".into(), 5);
+    // A placeholder tier 3 left unlinked: it stands for code outside the tree
+    // as much as for `src/d.rs#audit`, so a query for `audit` has two
+    // defensible answers and the caller must be told, not handed whichever
+    // the registry found first.
+    reg.insert("audit".into(), 6);
     let defined = std::collections::HashSet::from([0, 1, 2, 3, 5]);
     let comms = community::detect(
         &snap,
@@ -5592,7 +5597,7 @@ fn demo_mcp() {
     // that conforms to the output schema, and an error message does not.
     let refused = call(json!({
         "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-        "params": {"name": "impact", "arguments": {"symbol": "log"}}
+        "params": {"name": "impact", "arguments": {"symbol": "audit"}}
     }))
     .unwrap();
     assert_eq!(
@@ -5658,19 +5663,33 @@ fn demo_mcp() {
         named.contains(&"src/d.rs#audit") && !named.contains(&"log"),
         "a caller through the placeholder, not the placeholder: {named:?}"
     );
+    assert!(
+        !named.iter().any(|n| n.starts_with("notes.md")),
+        "a document naming log does not call it: {named:?}"
+    );
 
-    // Ambiguity is refused here exactly as in `impact` and `explain_node`: a
-    // bare name that also names a definition stands for every one of them, and
+    // Ambiguity is refused here exactly as in `impact` and `explain_node`: an
+    // unlinked bare name that also names a definition stands for both, and
     // answering about whichever sorted first is the plausibly-wrong answer this
     // whole class of tool must not give.
     let ambiguous = call(json!({
         "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-        "params": {"name": "find_callers", "arguments": {"symbol": "log"}}
+        "params": {"name": "find_callers", "arguments": {"symbol": "audit"}}
     }))
     .unwrap();
     assert_eq!(
         ambiguous["result"]["isError"], true,
         "find_callers must refuse a bare name that is also a definition"
+    );
+    // Linked onto its one definition, the bare name means that definition.
+    let linked = call(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "find_callers", "arguments": {"symbol": "log"}}
+    }))
+    .unwrap();
+    assert_eq!(
+        linked["result"]["structuredContent"]["symbol"], "src/c.rs#log",
+        "a placeholder linked onto one definition names it: {linked}"
     );
 
     // `detect_changes` reads the working tree, and this fixture has none. It
@@ -5830,8 +5849,9 @@ fn demo_mcp() {
     // `compact` in the tree (22 dependents) while `impact src/graph.rs#compact`
     // answered about one (10) — and nothing said which question was answered.
     // 37% of this tree's placeholders also name a definition, so the case is
-    // common.
-    let shadowed = tool_call("impact", json!({"symbol": "log"}));
+    // common. `compact` was a placeholder tier 3 had refused to link, like
+    // `audit` here; `log` is linked onto its one definition and names it.
+    let shadowed = tool_call("impact", json!({"symbol": "audit"}));
     assert_eq!(
         shadowed["result"]["isError"], true,
         "a placeholder must not silently answer for the definition: {}",
@@ -5839,7 +5859,7 @@ fn demo_mcp() {
     );
     let text = shadowed["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
-        text.contains("matches 2 symbols") && text.contains("src/c.rs#log"),
+        text.contains("matches 2 symbols") && text.contains("src/d.rs#audit"),
         "{text}"
     );
 
@@ -5852,9 +5872,9 @@ fn demo_mcp() {
     for (tool, args) in [
         (
             "shortest_path",
-            json!({"from": "log", "to": "src/a.rs#alpha"}),
+            json!({"from": "audit", "to": "src/a.rs#alpha"}),
         ),
-        ("explain_node", json!({"symbol": "log"})),
+        ("explain_node", json!({"symbol": "audit"})),
     ] {
         let r = tool_call(tool, args);
         assert_eq!(
