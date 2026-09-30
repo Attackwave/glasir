@@ -279,6 +279,18 @@ impl Served<'_> {
             }
         }
         let mut candidates = if exact.is_empty() { partial } else { exact };
+        // A placeholder tier 3 linked, and only onto other candidates, is a
+        // route to them rather than a meaning of its own: `f` beside its one
+        // definition `a.s#f` names that definition. One with no link at all
+        // still counts — it stands for code outside the tree, or for several
+        // definitions tier 3 refused to choose between.
+        let pool = candidates.clone();
+        candidates.retain(|&n| {
+            self.defined.contains(&n) || {
+                let mut targets = self.snap.neighbors(n).map(|e| e.target).peekable();
+                targets.peek().is_none() || !targets.all(|t| t != n && pool.contains(&t))
+            }
+        });
         candidates.sort_unstable();
         match candidates.len() {
             0 => Err(format!(
@@ -2397,6 +2409,9 @@ fn direct_callers_with(
             out.push((from, Confidence::Ambiguous));
         }
     }
+    // A document naming the symbol is not something that breaks with it; the
+    // file still reaches the answer through `named_elsewhere`.
+    out.retain(|&(n, _)| !is_documentation(&served.name(n)));
     out
 }
 
