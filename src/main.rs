@@ -5714,6 +5714,8 @@ fn demo_mcp() {
     // Tool list: every tool needs a name and an object inputSchema.
     let tools = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let list = tools["result"]["tools"].as_array().unwrap();
+    // A modern client rejects any result without it, not only discovery's.
+    assert_eq!(tools["result"]["resultType"], "complete");
     // The count is asserted so adding a tool is a deliberate act: a client's
     // whole picture of this server is this list.
     assert_eq!(

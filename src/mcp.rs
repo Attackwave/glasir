@@ -4067,7 +4067,7 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
     // A notification has no id and must never be answered, not even on error.
     let id = id?;
 
-    let response = match method {
+    let mut response = match method {
         // Legacy handshake.
         "initialize" => {
             // Echo the client's version when we can speak it, otherwise name
@@ -4088,7 +4088,6 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
         }
         // Modern discovery: no handshake, version carried per request.
         "server/discover" => json!({"jsonrpc": "2.0", "id": id, "result": {
-            "resultType": "complete",
             "supportedVersions": [MODERN_VERSION, LEGACY_VERSION],
             "capabilities": capabilities(),
             "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
@@ -4120,6 +4119,13 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
         // -32601 is JSON-RPC's "method not found".
         _ => error(id, -32601, format!("unknown method: {method}")),
     };
+    // `2026-07-28` requires `resultType` on every result, and a client that
+    // negotiated it rejects a reply without one. Older revisions ignore the
+    // field, so it is added unconditionally, in the one place every reply
+    // passes through.
+    if let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) {
+        result.insert("resultType".into(), json!("complete"));
+    }
     Some(response)
 }
 
