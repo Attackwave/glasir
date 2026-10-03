@@ -26,7 +26,8 @@ where
     R: Send,
 {
     let count = workers(items.len());
-    let chunk = items.len().div_ceil(count);
+    // At least 1: an empty input gives 0, and `chunks(0)` panics.
+    let chunk = items.len().div_ceil(count).max(1);
     std::thread::scope(|scope| {
         let mut jobs = Vec::new();
         for (part, slice) in items.chunks(chunk).enumerate() {
@@ -81,7 +82,7 @@ where
 {
     assert!(unit > 0 && items.len().is_multiple_of(unit));
     let units = items.len() / unit;
-    let chunk_units = units.div_ceil(workers(units));
+    let chunk_units = units.div_ceil(workers(units)).max(1);
     std::thread::scope(|scope| {
         for (part, slice) in items.chunks_mut(chunk_units * unit).enumerate() {
             let f = &f;
