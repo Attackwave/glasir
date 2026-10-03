@@ -4001,6 +4001,10 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
     let (start, end) = fresh
         .or_else(|| served.registry.span(node))
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
+    let (start, end) = match crate::parse_ast::Lang::from_path(path) {
+        Some(lang) => with_comments(&src, lang, (start, end)),
+        None => (start, end),
+    };
     let text = src
         .get(start as usize..end as usize)
         .filter(|t| !t.is_empty())
@@ -4017,6 +4021,44 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         "bytes": [start, end],
         "source": text,
     }))
+}
+
+/// A definition's range widened to the comment block directly above it — in
+/// many trees the contract a reader wants before the body — and trimmed of the
+/// comments after its last code, which head whatever follows. A routine that
+/// runs to the next label otherwise opens without its own header and ends with
+/// the next one's. Unchanged for a language with no rule file, whose comment
+/// syntax only its own scanner knows.
+fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u32)) -> (u32, u32) {
+    let code = native_parsers::rules::active().tokens(lang, src);
+    if code.is_empty() {
+        return (start, end);
+    }
+    let (s, e) = (start as usize, end as usize);
+    // From the start of the definition's line, so a modifier the range leaves
+    // out (`pub` before `fn`) comes with it.
+    // ponytail: a definition sharing its line with earlier code brings that code.
+    let mut head = src[..s].rfind('\n').map_or(0, |i| i + 1);
+    // Code before that line ends here; no line above it may hold any.
+    let floor = code[..code.partition_point(|t| (t.end as usize) <= head)]
+        .last()
+        .map_or(0, |t| t.end as usize);
+    while head > 0 {
+        let above = src[..head - 1].rfind('\n').map_or(0, |i| i + 1);
+        if above < floor || src[above..head].trim().is_empty() {
+            break;
+        }
+        head = above;
+    }
+    let first = code.partition_point(|t| (t.end as usize) <= s);
+    let last = code.partition_point(|t| (t.start as usize) < e);
+    let tail = match code[first..last].last() {
+        Some(t) => src[t.end as usize..e]
+            .find('\n')
+            .map_or(e, |i| t.end as usize + i + 1),
+        None => e,
+    };
+    (head as u32, tail.max(head) as u32)
 }
 
 fn render_get_code_snippet(v: &Value) -> String {

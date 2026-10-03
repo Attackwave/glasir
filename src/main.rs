@@ -7729,6 +7729,15 @@ fn demo_snippet() {
     )
     .unwrap();
 
+    // A routine runs to the next label, past the header of the one after it.
+    std::fs::write(
+        dir.join("src/k.s"),
+        "; head of f\n; its contract\nf:\n    RTS\n\n; head of g\ng:\n    RTS\n",
+    )
+    .unwrap();
+    // A modifier the range leaves out, and the doc comment above it.
+    std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+
     let state = served_state(&dir).unwrap();
     let served = state.as_served();
     let call = |sym: &str| {
@@ -7758,6 +7767,19 @@ fn demo_snippet() {
     assert!(!src.contains("fn beta"), "stops at its own end: {src:?}");
     assert_eq!(sc["line"], 1, "1-based, and alpha opens the file");
     assert_eq!(sc["file"], "src/a.rs", "root-relative, never absolute");
+
+    // Its own header opens it, and the next routine's header is not its tail.
+    let f = call("src/k.s#f");
+    assert_eq!(
+        f["result"]["structuredContent"]["source"], "; head of f\n; its contract\nf:\n    RTS\n",
+        "{f}"
+    );
+
+    let g = call("src/m.rs#gamma");
+    assert_eq!(
+        g["result"]["structuredContent"]["source"], "/// Docs.\npub fn gamma() {}",
+        "{g}"
+    );
 
     // The second definition proves the line number is computed and not assumed.
     let second = call("src/a.rs#beta");
