@@ -3975,28 +3975,41 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
     let (file, _) = name
         .split_once('#')
         .ok_or_else(|| format!("{name} is a placeholder, not a definition with source"))?;
-    let (start, end) = served
-        .registry
-        .span(node)
+    let path = std::path::Path::new(file);
+    let src = crate::read_source(&root.join(path)).ok_or_else(|| format!("cannot read {file}"))?;
+    // The range is taken from the file as it is now, not from the analysis: a
+    // server without `--watch` keeps its graph while the file is edited, and
+    // a stored range cut from newer text returns the end of the routine above
+    // and a truncated body. A name defined through a macro is only in the
+    // stored graph, and keeps its stored range.
+    // Parsed again only when written since this state was built (seconds,
+    // so an edit in the same second counts): that is 29 ms on a 200 KB file
+    // against 0.5 ms for the stored range.
+    use crate::parse_ast::LangExt;
+    let bare = &name[file.len() + 1..];
+    let edited = std::fs::metadata(root.join(path))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_none_or(|t| t.as_secs() >= served.now);
+    let fresh = edited
+        .then(|| crate::parse_ast::Lang::from_path(path))
+        .flatten()
+        .and_then(|lang| crate::parse_ast::parse_file(path, &src, lang))
+        .and_then(|facts| facts.ranges.into_iter().rfind(|(n, _)| n == bare))
+        .map(|(_, range)| range);
+    let (start, end) = fresh
+        .or_else(|| served.registry.span(node))
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
-
-    let bytes = std::fs::read(root.join(file)).map_err(|e| format!("cannot read {file}: {e}"))?;
-    // A range from an older parse can point past a file edited since; clamping
-    // returns less rather than panicking on a slice.
-    let (from, to) = (
-        (start as usize).min(bytes.len()),
-        (end as usize).min(bytes.len()),
-    );
-    if from >= to {
-        return Err(format!("{file} has changed since {name} was indexed"));
-    }
-    // Latin-1 for the same reason the indexer uses it: a copyright header with
-    // one accented byte must not cost the whole definition.
-    let text = match std::str::from_utf8(&bytes[from..to]) {
-        Ok(t) => t.to_string(),
-        Err(_) => bytes[from..to].iter().map(|&b| b as char).collect(),
-    };
-    let line = 1 + bytes[..from].iter().filter(|&&b| b == b'\n').count();
+    let text = src
+        .get(start as usize..end as usize)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| format!("{file} has changed since {name} was indexed"))?
+        .to_string();
+    let line = 1 + src.as_bytes()[..start as usize]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count();
     Ok(json!({
         "symbol": name,
         "file": file,
@@ -4127,11 +4140,26 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
                 // Both halves of one answer: the prose a person or an older
                 // client reads, and the same facts as data. The text is
                 // rendered *from* the value, so they cannot disagree.
-                Ok(value) => json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": render(name, &value)}],
-                    "structuredContent": value,
-                    "isError": false
-                }}),
+                Ok(mut value) => {
+                    let mut text = render(name, &value);
+                    // A name matched only as part of a longer one is a
+                    // different symbol than the one asked for, and the answer
+                    // must say so rather than read as the asked one's.
+                    if let (Some(asked), Some(got)) =
+                        (args["symbol"].as_str(), value["symbol"].as_str())
+                        && got != asked
+                        && got.split_once('#').is_none_or(|(_, tail)| tail != asked)
+                    {
+                        text =
+                            format!("{asked:?} names no symbol exactly; this is {got}\n\n{text}");
+                        value["resolved_from"] = json!(asked);
+                    }
+                    json!({"jsonrpc": "2.0", "id": id, "result": {
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": value,
+                        "isError": false
+                    }})
+                }
                 // A tool that fails on its inputs reports through the result,
                 // not as a protocol error: the model should see and correct it.
                 Err(e) => json!({"jsonrpc": "2.0", "id": id, "result": {

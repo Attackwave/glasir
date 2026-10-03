@@ -266,15 +266,24 @@ impl Format {
         }
     }
 
+    /// `--watch`: an editor's server lives as long as the session, and
+    /// without it answers from the tree as it was at startup while the files
+    /// it reads source from move on.
     fn entry(self, exe: &str, root: &str) -> serde_json::Value {
         match self {
             Format::OpenCode => serde_json::json!({
                 "type": "local",
-                "command": [exe, "serve", root],
+                "command": [exe, "serve", root, "--watch"],
                 "enabled": true,
             }),
-            Format::McpJsonPlain => serde_json::json!({"command": exe, "args": ["serve", root]}),
-            _ => serde_json::json!({"type": "stdio", "command": exe, "args": ["serve", root]}),
+            Format::McpJsonPlain => {
+                serde_json::json!({"command": exe, "args": ["serve", root, "--watch"]})
+            }
+            _ => serde_json::json!({
+                "type": "stdio",
+                "command": exe,
+                "args": ["serve", root, "--watch"],
+            }),
         }
     }
 }
@@ -305,7 +314,7 @@ fn codex_block(exe: &str, root: &str) -> String {
     // A JSON string literal is a valid TOML basic string.
     let q = |v: &str| serde_json::Value::from(v).to_string();
     format!(
-        "{CODEX_HEADER}\ncommand = {}\nargs = [\"serve\", {}]\n",
+        "{CODEX_HEADER}\ncommand = {}\nargs = [\"serve\", {}, \"--watch\"]\n",
         q(exe),
         q(root)
     )
@@ -7039,6 +7048,7 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(&registration).unwrap()).unwrap();
     assert_eq!(mcp["mcpServers"]["glasir"]["type"], "stdio");
     assert_eq!(mcp["mcpServers"]["glasir"]["args"][0], "serve");
+    assert_eq!(mcp["mcpServers"]["glasir"]["args"][2], "--watch");
     // The tree as a person writes it: Windows' `\\?\` prefix from
     // `canonicalize` reached the client's configuration verbatim.
     assert_eq!(home_from(None, Some("C:\\U".into())), Some("C:\\U".into()));
@@ -7752,6 +7762,33 @@ fn demo_snippet() {
     // The second definition proves the line number is computed and not assumed.
     let second = call("src/a.rs#beta");
     assert_eq!(second["result"]["structuredContent"]["line"], 6);
+
+    // A server without `--watch` keeps the graph while the file moves on; the
+    // range must come from the file as it is now, or two lines added above
+    // cut the snippet two lines early.
+    std::fs::write(
+        dir.join("src/a.rs"),
+        "// one\n// two\nfn alpha() {\n    let x = 1;\n    beta(x);\n}\n\nfn beta(n: u32) {}\n",
+    )
+    .unwrap();
+    let moved = call("src/a.rs#beta");
+    let sc = &moved["result"]["structuredContent"];
+    assert!(
+        sc["source"].as_str().unwrap().starts_with("fn beta") && sc["line"] == 8,
+        "the snippet follows the file, not the analysis: {sc}"
+    );
+
+    // A name matched only as part of a longer one says which symbol answered.
+    let partial = call("alph");
+    let text = partial["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("\"alph\" names no symbol exactly; this is src/a.rs#alpha"),
+        "{text}"
+    );
+    assert_eq!(
+        partial["result"]["structuredContent"]["resolved_from"],
+        "alph"
+    );
 
     // A name matching two symbols is refused with its candidates, exactly as
     // `impact` refuses one — a snippet of the wrong `beta` is worse than none.
