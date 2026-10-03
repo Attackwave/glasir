@@ -10143,6 +10143,9 @@ fn demo_parallel_ingest() {
         order.windows(2).all(|w| w[0] < w[1]),
         "parallel map must preserve input order"
     );
+    // An analysis where only documents changed hands the pool no file.
+    assert!(parallel::map_ordered(&[] as &[usize], |i| *i).is_empty());
+    parallel::for_each_unit_mut(&mut [] as &mut [u8], 4, |_, _| {});
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
