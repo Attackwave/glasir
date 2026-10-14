@@ -3480,7 +3480,10 @@ pub(crate) fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     watcher::files(root, |e| eprintln!("glasir: {e}"))
         .unwrap_or_default()
         .into_iter()
-        .filter(|p| parse_ast::Lang::from_path(p).is_some() || docs::is_markdown(p))
+        .filter(|p| {
+            parse_ast::Lang::from_path(p).is_some()
+                || docs::is_markdown(p) && (!docs::is_instructions(p) || watcher::opted_in(root, p))
+        })
         .collect()
 }
 
@@ -9107,14 +9110,14 @@ fn demo_snapshot() {
 fn demo_docs() {
     use parse_ast::{Lang, parse};
 
-    // See `docs::NOT_DOCUMENTATION`.
+    // See `docs::NOT_DOCUMENTATION`; `demo_scope` covers the opt-in.
     for (path, want) in [
-        ("CLAUDE.md", false),
-        ("AGENTS.md", false),
-        ("docs/a.md", true),
+        ("CLAUDE.md", true),
+        ("AGENTS.md", true),
+        ("docs/a.md", false),
     ] {
         assert_eq!(
-            docs::is_markdown(std::path::Path::new(path)),
+            docs::is_instructions(std::path::Path::new(path)),
             want,
             "{path}"
         );
@@ -9446,7 +9449,14 @@ fn demo_scope() {
     put(".gitignore", "/gen/\nplan.md\n/ref/\n");
     put("sub/.gitignore", "local.rs\n");
     // Re-including a directory takes `!dir/` first, as in git.
-    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n");
+    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n");
+    // Instruction files stay out by default; `!` in a .glasirignore opts in,
+    // at the level it is written: the root one opts in CLAUDE.md, only the
+    // nested one opts in AGENTS.md, so the root AGENTS.md stays out.
+    put("CLAUDE.md", "## Rules\n\nText.\n");
+    put("AGENTS.md", "## Rules\n\nText.\n");
+    put("sub/AGENTS.md", "## Rules\n\nText.\n");
+    put("sub/.glasirignore", "!AGENTS.md\n");
     #[cfg(unix)]
     std::os::unix::fs::symlink(dir.join("src/a.rs"), dir.join("src/link.rs")).unwrap();
 
@@ -9464,13 +9474,16 @@ fn demo_scope() {
     assert_eq!(
         rel(walk(&dir)),
         [
+            "CLAUDE.md",
             "docs/plan.md",
             "ref/notes.md",
             "src/a.rs",
             "src/b.rs",
+            "sub/AGENTS.md",
             "sub/keep.rs"
         ],
-        "nested .gitignore, .glasirignore re-including a file and a directory, no symlink"
+        "nested .gitignore, .glasirignore re-including a file and a directory, \
+         an opted-in instruction file, no symlink"
     );
 
     // A stored graph must drop a file that left the scope although its mtime
@@ -9488,7 +9501,10 @@ fn demo_scope() {
     };
     assert!(names(&dir).contains(&"src/b.rs#beta".to_string()));
     let before = watcher::file_stamps(&dir).unwrap();
-    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n/src/b.rs\n");
+    put(
+        ".glasirignore",
+        "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n/src/b.rs\n",
+    );
     assert!(
         !names(&dir).contains(&"src/b.rs#beta".to_string()),
         "a stored file that became ignored must leave the graph"
@@ -9503,7 +9519,7 @@ fn demo_scope() {
     );
 
     // And back: un-ignoring it is an added file.
-    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n");
+    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n");
     assert!(names(&dir).contains(&"src/b.rs#beta".to_string()));
 
     // A compiler index does not bring an ignored file back through tier 1.

@@ -195,25 +195,32 @@ fn backticked(line: &str) -> Vec<String> {
 /// do" is not asking for them.
 ///
 /// The rule is a name, not a pattern under `docs/`: the rest of that tree is
-/// documentation of the system and measured as worth indexing.
+/// documentation of the system and measured as worth indexing. It is a default,
+/// not a verdict: a project that wants one of them indexed names it with `!`
+/// in a `.glasirignore` (`watcher::opted_in`).
 const NOT_DOCUMENTATION: &[&str] = &[
     "CLAUDE.md",
+    "CLAUDE.local.md",
     "AGENTS.md",
+    "AGENTS.local.md",
     "GEMINI.md",
+    "COPILOT.md",
+    "OPENAI.md",
+    "CHATGPT.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
 ];
 
-/// Whether a path is a document this module can read.
-pub fn is_markdown(path: &std::path::Path) -> bool {
-    if path
-        .file_name()
+/// Whether a path is one of the instruction files left out by default.
+pub fn is_instructions(path: &std::path::Path) -> bool {
+    path.file_name()
         .and_then(|f| f.to_str())
         .is_some_and(|f| NOT_DOCUMENTATION.contains(&f))
-    {
-        return false;
-    }
+}
+
+/// Whether a path is a document this module can read.
+pub fn is_markdown(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))

@@ -169,6 +169,36 @@ pub fn files(root: &Path, mut on_error: impl FnMut(String)) -> std::io::Result<V
     Ok(out)
 }
 
+/// Whether a `.glasirignore` names `path` with `!`: the explicit opt-in a
+/// file left out by default (`docs::is_instructions`) needs. The deepest
+/// `.glasirignore` that matches decides, as in git.
+pub fn opted_in(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut dirs = vec![root.to_path_buf()];
+    for c in rel.parent().into_iter().flat_map(Path::components) {
+        let next = dirs[dirs.len() - 1].join(c);
+        dirs.push(next);
+    }
+    let mut verdict = false;
+    for dir in dirs {
+        let file = dir.join(IGNORE_FILE);
+        if !file.is_file() {
+            continue;
+        }
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&dir);
+        builder.add(&file);
+        let Ok(rules) = builder.build() else { continue };
+        match rules.matched(path, false) {
+            ignore::Match::Whitelist(_) => verdict = true,
+            ignore::Match::Ignore(_) => verdict = false,
+            ignore::Match::None => {}
+        }
+    }
+    verdict
+}
+
 /// Follows a tree and reports what changed, one batch per burst of file
 /// saves rather than one per save.
 ///
