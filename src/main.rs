@@ -7493,7 +7493,6 @@ fn demo_tls() {
     ));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
 
     let cfg = http::HttpConfig {
         metrics: Default::default(),
@@ -7511,12 +7510,13 @@ fn demo_tls() {
     };
     {
         let (state, cfg) = (state.clone(), cfg.clone());
+        // The bound listener is handed over, never released and bound again:
+        // that window let a parallel test take the port. A connect is queued
+        // from here on, so nothing waits for the thread.
         std::thread::spawn(move || {
-            let _ = http::serve(&state, &cfg);
+            let _ = http::serve_on(listener, &state, &cfg);
         });
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
     // A plaintext client must not get an HTTP reply out of a TLS listener:
     // whatever comes back is a handshake failure, never a status line.
     let mut plain = std::net::TcpStream::connect(addr).unwrap();
@@ -7886,10 +7886,9 @@ fn demo_http_events() {
     ));
     let reindexed = Arc::new(AtomicU64::new(0));
 
-    // Port 0 lets the OS pick, so parallel test binaries cannot collide.
+    // Port 0 lets the OS pick a free port.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
 
     let cfg = http::HttpConfig {
         metrics: Default::default(),
@@ -7910,13 +7909,13 @@ fn demo_http_events() {
     };
     {
         let (state, cfg) = (state.clone(), cfg.clone());
+        // The bound listener is handed over, never released and bound again:
+        // that window let a parallel test take the port. A connect is queued
+        // from here on, so nothing waits for the thread.
         std::thread::spawn(move || {
-            let _ = http::serve(&state, &cfg);
+            let _ = http::serve_on(listener, &state, &cfg);
         });
     }
-    // The listener is bound inside the thread, so the connect below races it.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
     // `/health` answers a prober that has no credential, while `/mcp` still
     // refuses one — the pair is the property, since either half alone is
     // either useless to an orchestrator or a hole.

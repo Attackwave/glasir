@@ -268,6 +268,17 @@ pub fn mtls_config(
 /// which is the only state a connection has. Nothing is remembered between
 /// requests, so a client may connect to any thread and get the same answer.
 pub fn serve(state: &Arc<Published<ServedState>>, cfg: &HttpConfig) -> std::io::Result<()> {
+    serve_on(TcpListener::bind(&cfg.addr)?, state, cfg)
+}
+
+/// `serve` on a listener the caller has already bound. A test binds port 0
+/// and hands the listener over; releasing it for `serve` to bind again
+/// leaves a window in which a parallel test takes the same port.
+pub fn serve_on(
+    listener: TcpListener,
+    state: &Arc<Published<ServedState>>,
+    cfg: &HttpConfig,
+) -> std::io::Result<()> {
     if refuses_to_start(cfg) {
         // Printed rather than returned: an `io::Error` reaches the user through
         // `Debug`, which wraps the advice in escaped quotes and hides the one
@@ -291,7 +302,6 @@ unless a proxy terminates TLS in front of this process. Pass --tls-cert and \
             cfg.addr
         );
     }
-    let listener = TcpListener::bind(&cfg.addr)?;
     install_shutdown_handlers()?;
     listener.set_nonblocking(true)?;
     eprintln!(
