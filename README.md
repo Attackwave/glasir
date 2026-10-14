@@ -154,7 +154,8 @@ agent:
 - `impact` — what breaks if this changes, grouped by distance
 - `cycles` — dependency cycles, compiler-resolved edges only by default
 - `get_code_snippet` — the source a symbol names, from the range the parser
-  recorded, so nothing has to open the file or guess a line
+  recorded, so nothing has to open the file or guess a line; a Markdown
+  section returns that section, not the whole document
 - `find_callers` — the direct callers of one symbol, as one list, and the
   definitions that use it by name without calling it (a type in a signature,
   a constant read, a base class)

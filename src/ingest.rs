@@ -403,17 +403,10 @@ fn markdown_facts(
     by_tail: &mut MarkdownNames,
 ) -> MarkdownDoc {
     let file = relative_path(path, root);
-    let stem = file
-        .rsplit('/')
-        .next()
-        .and_then(|f| f.rsplit_once('.'))
-        .map_or(file.as_str(), |(s, _)| s)
-        .to_string();
-
     let mut nodes = Vec::new();
     let mut edges: Vec<(NodeId, Edge)> = Vec::new();
     let mut minted = Vec::new();
-    for section in crate::docs::sections(source, &stem) {
+    for section in crate::docs::sections(source, crate::docs::stem(&file)) {
         let key = qualify(&file, &section.title);
         if registry.node_of(&key).is_none() {
             minted.push(key.clone());

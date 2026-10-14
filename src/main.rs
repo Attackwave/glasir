@@ -7737,6 +7737,14 @@ fn demo_snippet() {
     .unwrap();
     // A modifier the range leaves out, and the doc comment above it.
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    // A call across files routes through a placeholder tier 3 links.
+    std::fs::write(dir.join("src/c.rs"), "fn caller() { delta(); }\n").unwrap();
+    std::fs::write(dir.join("src/d.rs"), "fn delta() {}\n").unwrap();
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
 
     let state = served_state(&dir).unwrap();
     let served = state.as_served();
@@ -7798,6 +7806,27 @@ fn demo_snippet() {
     assert!(
         sc["source"].as_str().unwrap().starts_with("fn beta") && sc["line"] == 8,
         "the snippet follows the file, not the analysis: {sc}"
+    );
+
+    // A document section comes back alone, not as the whole document.
+    let section = call("notes.md#First");
+    assert_eq!(
+        section["result"]["structuredContent"]["source"], "## First\n\nOne.\n\n",
+        "{section}"
+    );
+    assert_eq!(
+        call("notes.md#notes")["result"]["structuredContent"]["source"],
+        "Intro text.\n\n"
+    );
+
+    // A bare name tier 3 linked onto one definition seeds that definition.
+    let seeds = mcp::seeds_for_test(&served, "delta");
+    assert_eq!(
+        seeds
+            .iter()
+            .map(|&(n, _)| served.name(n))
+            .collect::<Vec<_>>(),
+        ["src/d.rs#delta"],
     );
 
     // A name matched only as part of a longer one says which symbol answered.

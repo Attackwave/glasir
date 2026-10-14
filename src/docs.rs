@@ -115,6 +115,35 @@ pub fn sections(source: &str, file_stem: &str) -> Vec<Section> {
     out
 }
 
+/// The name the text before a document's first heading is filed under: the
+/// file name without its extension.
+pub fn stem(file: &str) -> &str {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    name.rsplit_once('.').map_or(name, |(s, _)| s)
+}
+
+/// The byte range of the section titled `title` in `source`, cut exactly as
+/// `sections` cuts it, so a caller reads one section instead of the document.
+pub fn section_bytes(source: &str, file: &str, title: &str) -> Option<(u32, u32)> {
+    let (first, last) = sections(source, stem(file))
+        .into_iter()
+        .rfind(|s| s.title == title)?
+        .lines;
+    let mut start = None;
+    let mut offset = 0usize;
+    for (n, line) in source.split_inclusive('\n').enumerate() {
+        let n = n as u32 + 1;
+        if n == first {
+            start = Some(offset);
+        }
+        offset += line.len();
+        if n == last {
+            break;
+        }
+    }
+    Some((start? as u32, offset as u32))
+}
+
 /// The text of an ATX heading (`## Title`), or `None` for an ordinary line.
 fn heading(line: &str) -> Option<String> {
     let rest = line.strip_prefix('#')?;
