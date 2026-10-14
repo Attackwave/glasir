@@ -8,7 +8,10 @@ orchestration belong to the separate Control Plane.
 ## Processing pipeline
 
 1. **Discovery** walks the source tree with explicit size, path, and symlink
-   limits. Generated files and local build output are excluded before parsing.
+   limits. Generated files and local build output are excluded before parsing,
+   and so is whatever the tree's `.gitignore` files exclude; a `.glasirignore`
+   in the same syntax takes precedence. Walk, watcher, compiler-index import
+   and the text scans share one walker, so they cannot disagree on scope.
 2. **Extraction** uses native language scanners, optional SCIP input, and an
    optional language-server tier. Every edge carries provenance so callers can
    distinguish extracted facts from bounded inference.

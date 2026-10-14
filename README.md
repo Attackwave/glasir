@@ -89,6 +89,26 @@ glasir view .               # the graph as a map in the browser, one region per 
 glasir uninstall .          # remove the registration and the hooks
 ```
 
+### What gets indexed
+
+Everything your `.gitignore` files leave in, at every level of the tree, minus
+build output and dependencies (`target`, `node_modules`, dot-directories).
+A `.glasirignore` beside them uses the same syntax and wins over them, so it
+can both exclude more and bring back what git ignores:
+
+```gitignore
+# .glasirignore
+!plan.md              # untracked, but worth asking about
+!/reference/          # git ignores the whole directory ...
+/reference/scans/     # ... of which only this part stays out
+```
+
+As in git, a file inside an ignored directory comes back only once the
+directory does (`!/reference/` above). Only ignore files inside the tree
+count — not your global excludes file and not `.git/info/exclude` — so the
+same commit gives the same graph on every machine. A change to either file
+takes effect on the next analysis, and immediately under `--watch`.
+
 ## Why a graph
 
 Search finds text. A graph preserves the relationships that make a repository

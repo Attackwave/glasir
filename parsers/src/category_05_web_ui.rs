@@ -90,12 +90,21 @@ pub fn parse_html(src: &str) -> FileFacts {
                                     // `src`/`href` reach another file, which
                                     // is the other half of what a page is
                                     // wired to.
+                                    // The file only: a fragment or query
+                                    // names a place in it, and a `#` in a
+                                    // name makes it read as `path#symbol`,
+                                    // i.e. as a definition.
                                     "src=" | "href=" => {
-                                        if !val.starts_with("http") && !val.starts_with('#') {
+                                        let file = val.split(['#', '?']).next().unwrap_or("");
+                                        let external = file.starts_with("//")
+                                            || file
+                                                .split_once(':')
+                                                .is_some_and(|(scheme, _)| !scheme.contains('/'));
+                                        if !file.is_empty() && !external {
                                             let owner = current_element
                                                 .clone()
                                                 .unwrap_or_else(|| format!("<{tag_name}>"));
-                                            facts.add_call(owner, val.to_string(), false);
+                                            facts.add_call(owner, file.to_string(), false);
                                         }
                                     }
                                     _ => {

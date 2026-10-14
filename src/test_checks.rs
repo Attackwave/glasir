@@ -168,6 +168,11 @@ fn ignored_paths() {
 }
 
 #[test]
+fn scope() {
+    crate::demo_scope();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }

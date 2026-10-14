@@ -18,7 +18,7 @@
 
 use crate::csr::{Confidence, Edge, NodeId};
 use crate::ingest::SymbolRegistry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// `SymbolRole.Definition` — bit 0 of `symbol_roles`. Everything else is a
@@ -208,8 +208,19 @@ pub fn import(
     registry: &mut SymbolRegistry,
 ) -> std::io::Result<ScipImport> {
     let bytes = std::fs::read(path)?;
-    let index = crate::scip_wire::decode_index(&bytes)
+    let mut index = crate::scip_wire::decode_index(&bytes)
         .map_err(|e| std::io::Error::other(format!("scip: {e}")))?;
+    // An indexer reads what the build reads, not what this tree indexes: a
+    // file that exists but is ignored stays out of tier 1 as it does of tier
+    // 2. A missing one is kept, since staleness below reports it.
+    let in_scope: HashSet<std::path::PathBuf> = crate::watcher::files(root, |_| {})
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    index.documents.retain(|d| {
+        let path = root.join(&d.relative_path);
+        in_scope.contains(&path) || !path.exists()
+    });
 
     // Pass 1: every definition, keyed by its globally unique SCIP symbol.
     let mut symbol_to_node: HashMap<&str, NodeId> = HashMap::new();

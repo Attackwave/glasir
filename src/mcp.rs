@@ -3298,32 +3298,16 @@ impl Served<'_> {
 }
 
 fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            let Ok(kind) = e.file_type() else { continue };
-            let own = p
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(".glasir"));
-            if own || kind.is_symlink() || crate::watcher::ignored_under(&p, Some(root)) {
-                continue;
-            }
-            if kind.is_dir() {
-                stack.push(p);
-            } else if e.metadata().is_ok_and(|m| m.len() <= 1 << 20)
-                && std::fs::read(&p).is_ok_and(|b| !b[..b.len().min(8192)].contains(&0))
-            {
-                out.push(p);
-            }
-        }
-    }
-    out.sort();
-    out
+    crate::watcher::files(root, |_| {})
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".glasir"))
+                && std::fs::metadata(p).is_ok_and(|m| m.len() <= 1 << 20)
+                && std::fs::read(p).is_ok_and(|b| !b[..b.len().min(8192)].contains(&0))
+        })
+        .collect()
 }
 
 fn render_find_unused(v: &Value) -> String {

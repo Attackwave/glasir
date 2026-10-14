@@ -5,7 +5,6 @@
 //! deduplicated batch. It has the same semantics on Linux, macOS and Windows,
 //! and avoids a platform-specific watcher dependency tree.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -130,59 +129,103 @@ fn is_build_output(path: &Path, root: &Path) -> bool {
     false
 }
 
+/// The per-directory file that narrows or widens what `.gitignore` admits,
+/// in the same syntax. It takes precedence, so `!plan.md` indexes a file the
+/// repository does not track.
+pub const IGNORE_FILE: &str = ".glasirignore";
+
+/// Every file under `root` the indexer may read, sorted.
+///
+/// The fixed rules of `ignored_under` first, then every `.gitignore` and
+/// `.glasirignore` in the tree, the latter winning. Nothing outside the tree
+/// takes part — no global excludes file, no `.git/info/exclude`, no ignore
+/// file above `root` — so the same commit yields the same graph on every
+/// machine. Symbolic links are skipped, as a linked directory would index the
+/// same sources twice. A broken pattern is reported through `on_error` and
+/// the rest of its file still applies.
+pub fn files(root: &Path, mut on_error: impl FnMut(String)) -> std::io::Result<Vec<PathBuf>> {
+    // An unreadable root is an error, never an empty tree: an empty answer
+    // would read as every file deleted.
+    std::fs::read_dir(root)?;
+    let base = root.to_path_buf();
+    let walk = ignore::WalkBuilder::new(root)
+        .standard_filters(false)
+        .git_ignore(true)
+        .require_git(false)
+        .add_custom_ignore_filename(IGNORE_FILE)
+        .follow_links(false)
+        .filter_entry(move |e| e.depth() == 0 || !ignored_under(e.path(), Some(&base)))
+        .build();
+    let mut out = Vec::new();
+    for entry in walk {
+        match entry {
+            Ok(e) if e.file_type().is_some_and(|t| t.is_file()) => out.push(e.into_path()),
+            Ok(_) => {}
+            Err(e) => on_error(e.to_string()),
+        }
+    }
+    // `read_dir` makes no ordering promise, and ids are assigned in this order.
+    out.sort();
+    Ok(out)
+}
+
 /// Follows a tree and reports what changed, one batch per burst of file
 /// saves rather than one per save.
 ///
-/// Watches `root` and calls `on_batch` with the deduplicated set of changed
-/// paths. Blocks until the process ends, like the old native watcher did.
-pub fn watch(root: &Path, mut on_batch: impl FnMut(Vec<PathBuf>)) -> std::io::Result<()> {
+/// Calls `on_batch` with each changed path and whether it is still in scope.
+/// A file that leaves the scope — deleted, or newly ignored — is reported as
+/// gone even though it may still exist, so a caller must not read it. Blocks
+/// until the process ends.
+pub fn watch(root: &Path, mut on_batch: impl FnMut(Vec<(PathBuf, bool)>)) -> std::io::Result<()> {
     let mut previous = file_stamps(root)?;
     loop {
         std::thread::sleep(DEBOUNCE);
-        let current = file_stamps(root)?;
-        let mut changed = HashSet::new();
-        for (path, stamp) in &current {
-            if previous.get(path) != Some(stamp) {
-                changed.insert(path.clone());
-            }
-        }
-        for path in previous.keys() {
-            if !current.contains_key(path) {
-                changed.insert(path.clone());
-            }
-        }
+        // A tree that cannot be read right now is skipped, not reported empty.
+        let Ok(current) = file_stamps(root) else {
+            continue;
+        };
+        let changed = changes(&previous, &current);
         if !changed.is_empty() {
-            let mut batch: Vec<_> = changed.into_iter().collect();
-            batch.sort();
-            on_batch(batch);
+            on_batch(changed);
         }
         previous = current;
     }
 }
 
-fn file_stamps(root: &Path) -> std::io::Result<std::collections::HashMap<PathBuf, (u64, u64)>> {
-    let mut out = std::collections::HashMap::new();
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if ignored_under(&path, Some(root)) {
-                continue;
-            }
-            let ty = entry.file_type()?;
-            if ty.is_dir() {
-                dirs.push(path);
-            } else if ty.is_file() {
-                let metadata = entry.metadata()?;
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |t| t.as_nanos() as u64);
-                out.insert(path, (modified, metadata.len()));
-            }
-        }
+type Stamps = std::collections::HashMap<PathBuf, (u64, u64)>;
+
+/// What moved between two polls: a changed or new path with `true`, one that
+/// left the scope with `false`. Sorted.
+pub(crate) fn changes(previous: &Stamps, current: &Stamps) -> Vec<(PathBuf, bool)> {
+    let mut changed: Vec<(PathBuf, bool)> = current
+        .iter()
+        .filter(|(path, stamp)| previous.get(*path) != Some(*stamp))
+        .map(|(path, _)| (path.clone(), true))
+        .chain(
+            previous
+                .keys()
+                .filter(|path| !current.contains_key(*path))
+                .map(|path| (path.clone(), false)),
+        )
+        .collect();
+    changed.sort();
+    changed
+}
+
+pub(crate) fn file_stamps(root: &Path) -> std::io::Result<Stamps> {
+    let mut out = Stamps::new();
+    for path in files(root, |_| {})? {
+        // Vanished between the walk and this call: left out, so the next
+        // poll reports it.
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |t| t.as_nanos() as u64);
+        out.insert(path, (modified, metadata.len()));
     }
     Ok(out)
 }
