@@ -89,6 +89,34 @@ glasir view .               # the graph as a map in the browser, one region per 
 glasir uninstall .          # remove the registration and the hooks
 ```
 
+### What gets indexed
+
+Everything your `.gitignore` files leave in, at every level of the tree, minus
+build output and dependencies (`target`, `node_modules`, dot-directories).
+A `.glasirignore` beside them uses the same syntax and wins over them, so it
+can both exclude more and bring back what git ignores:
+
+```gitignore
+# .glasirignore
+!plan.md              # untracked, but worth asking about
+!/reference/          # git ignores the whole directory ...
+/reference/scans/     # ... of which only this part stays out
+```
+
+As in git, a file inside an ignored directory comes back only once the
+directory does (`!/reference/` above). Only ignore files inside the tree
+count — not your global excludes file and not `.git/info/exclude` — so the
+same commit gives the same graph on every machine, whatever each developer
+ignores locally.
+
+Instruction files for coding assistants (`AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md` and their `.local.md` variants, `COPILOT.md`, `OPENAI.md`,
+`CHATGPT.md`) and `CONTRIBUTING.md`, `CHANGELOG.md`, `CODE_OF_CONDUCT.md` are
+left out by default: they describe how to work on the code in the words a
+question is asked in, and outrank the code they describe. A project that wants
+one indexed names it in `.glasirignore`, e.g. `!AGENTS.md`. A change to either file
+takes effect on the next analysis, and immediately under `--watch`.
+
 ## Why a graph
 
 Search finds text. A graph preserves the relationships that make a repository
@@ -154,7 +182,8 @@ agent:
 - `impact` — what breaks if this changes, grouped by distance
 - `cycles` — dependency cycles, compiler-resolved edges only by default
 - `get_code_snippet` — the source a symbol names, from the range the parser
-  recorded, so nothing has to open the file or guess a line
+  recorded, so nothing has to open the file or guess a line; a Markdown
+  section returns that section, not the whole document
 - `find_callers` — the direct callers of one symbol, as one list, and the
   definitions that use it by name without calling it (a type in a signature,
   a constant read, a base class)

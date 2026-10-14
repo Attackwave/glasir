@@ -773,7 +773,23 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
         // partition has to be recomputed regardless. A fifth is the same
         // proportion `run_watch` uses to decide an index has drifted too far.
         let churn = stale.len() + added.len();
-        let too_far = churn * 5 > stored.sources.len().max(1);
+        // A stored file that still exists but left the scope — an ignore file
+        // changed — keeps its mtime, so nothing above notices it, and the
+        // incremental path would read it again. Only a full build drops it.
+        let in_scope: std::collections::HashSet<String> = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        let left_scope = stored
+            .sources
+            .iter()
+            .any(|(f, _)| !in_scope.contains(f) && root.join(f).exists());
+        let too_far = left_scope || churn * 5 > stored.sources.len().max(1);
 
         if !too_far {
             let mut registry = ingest::SymbolRegistry::new(stored.csr.node_count());
@@ -3356,10 +3372,14 @@ fn run_watch(root: &str) -> std::io::Result<()> {
     println!("watching {} (ctrl-c to stop)", root.display());
     watcher::watch(root, |batch| {
         let mut touched = 0;
-        for path in batch {
-            // A deleted file has no source to parse; its edges are dropped by
-            // re-parsing it as empty so the graph does not keep stale calls.
-            let src = std::fs::read_to_string(&path).unwrap_or_default();
+        for (path, present) in batch {
+            // A deleted or newly ignored file has no source to parse; its edges
+            // are dropped by re-parsing it as empty so the graph does not keep
+            // stale calls. An ignored file still exists and must not be read.
+            let src = present
+                .then(|| std::fs::read_to_string(&path).ok())
+                .flatten()
+                .unwrap_or_default();
             if ingest::ingest_file(&g, &mut arena, &mut reg, &path, root, &src, now()).is_none() {
                 continue;
             }
@@ -3454,45 +3474,17 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Source files under `root`, skipping the directories that would otherwise
-/// dominate the index with build output and dependencies.
+/// Source files under `root` in the indexed scope (`watcher::files`), in
+/// path order, which is what decides the ids a fresh build assigns.
 pub(crate) fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if watcher::ignored_under(&p, Some(root)) {
-                continue;
-            }
-            // `file_type()` reports the entry itself; `is_dir()` follows the
-            // link. A `ln -s . loop` anywhere in the tree then descends until
-            // the path hits the system limit — measured on a one-file tree, it
-            // produced 41 symbols from one function. A symlinked directory is
-            // skipped rather than resolved: following it also indexes the same
-            // sources twice under two names, which is the same problem without
-            // the loop.
-            let Ok(kind) = e.file_type() else { continue };
-            if kind.is_symlink() {
-                continue;
-            }
-            if kind.is_dir() {
-                stack.push(p);
-            } else if parse_ast::Lang::from_path(&p).is_some() || docs::is_markdown(&p) {
-                out.push(p);
-            }
-        }
-    }
-    // `read_dir` deliberately makes no ordering promise. The registry assigns
-    // monotonic node IDs while files are folded, so accepting that order would
-    // make an otherwise identical checkout produce a different graph and move
-    // retrieval tie-breaks. Sort once at the boundary rather than asking every
-    // graph consumer to remember this invariant.
-    out.sort();
-    out
+    watcher::files(root, |e| eprintln!("glasir: {e}"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            parse_ast::Lang::from_path(p).is_some()
+                || docs::is_markdown(p) && (!docs::is_instructions(p) || watcher::opted_in(root, p))
+        })
+        .collect()
 }
 
 /// Loads a graph the way the real entry point does — from the CSR cache when it
@@ -3567,6 +3559,7 @@ fn demo() -> std::io::Result<()> {
     // an over-broad ignore rule makes eleven of them fail for a reason that
     // has nothing to do with what they test.
     demo_ignored_paths();
+    demo_scope();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -7737,6 +7730,14 @@ fn demo_snippet() {
     .unwrap();
     // A modifier the range leaves out, and the doc comment above it.
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    // A call across files routes through a placeholder tier 3 links.
+    std::fs::write(dir.join("src/c.rs"), "fn caller() { delta(); }\n").unwrap();
+    std::fs::write(dir.join("src/d.rs"), "fn delta() {}\n").unwrap();
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
 
     let state = served_state(&dir).unwrap();
     let served = state.as_served();
@@ -7798,6 +7799,27 @@ fn demo_snippet() {
     assert!(
         sc["source"].as_str().unwrap().starts_with("fn beta") && sc["line"] == 8,
         "the snippet follows the file, not the analysis: {sc}"
+    );
+
+    // A document section comes back alone, not as the whole document.
+    let section = call("notes.md#First");
+    assert_eq!(
+        section["result"]["structuredContent"]["source"], "## First\n\nOne.\n\n",
+        "{section}"
+    );
+    assert_eq!(
+        call("notes.md#notes")["result"]["structuredContent"]["source"],
+        "Intro text.\n\n"
+    );
+
+    // A bare name tier 3 linked onto one definition seeds that definition.
+    let seeds = mcp::seeds_for_test(&served, "delta");
+    assert_eq!(
+        seeds
+            .iter()
+            .map(|&(n, _)| served.name(n))
+            .collect::<Vec<_>>(),
+        ["src/d.rs#delta"],
     );
 
     // A name matched only as part of a longer one says which symbol answered.
@@ -9088,14 +9110,14 @@ fn demo_snapshot() {
 fn demo_docs() {
     use parse_ast::{Lang, parse};
 
-    // See `docs::NOT_DOCUMENTATION`.
+    // See `docs::NOT_DOCUMENTATION`; `demo_scope` covers the opt-in.
     for (path, want) in [
-        ("CLAUDE.md", false),
-        ("AGENTS.md", false),
-        ("docs/a.md", true),
+        ("CLAUDE.md", true),
+        ("AGENTS.md", true),
+        ("docs/a.md", false),
     ] {
         assert_eq!(
-            docs::is_markdown(std::path::Path::new(path)),
+            docs::is_instructions(std::path::Path::new(path)),
             want,
             "{path}"
         );
@@ -9400,6 +9422,123 @@ fn demo_doc_ranking() {
             .is_empty(),
         "the docs are what make this findable, not the names"
     );
+}
+
+/// The indexed scope: `.gitignore` at every level, `.glasirignore` above it,
+/// and the same answer from every path that reads the tree.
+///
+/// A scope that only the walk applies is half a scope: a stored graph keeps a
+/// newly ignored file (its mtime did not move), the watcher reads it again as
+/// an edit, and a compiler index brings it back through tier 1. Each of those
+/// is asserted here, and each fails with its guard removed.
+fn demo_scope() {
+    let dir = std::env::temp_dir().join(format!("glasir-scope-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for d in ["src", "gen", "docs", "ref/big", "sub"] {
+        std::fs::create_dir_all(dir.join(d)).unwrap();
+    }
+    let put = |f: &str, text: &str| std::fs::write(dir.join(f), text).unwrap();
+    put("src/a.rs", "fn alpha() { beta(); }\n");
+    put("src/b.rs", "fn beta() {}\n");
+    put("gen/g.rs", "fn generated() {}\n");
+    put("docs/plan.md", "## Plan\n\nText.\n");
+    put("ref/notes.md", "## Notes\n\nText.\n");
+    put("ref/big/x.rs", "fn manual() {}\n");
+    put("sub/local.rs", "fn local() {}\n");
+    put("sub/keep.rs", "fn keep() {}\n");
+    put(".gitignore", "/gen/\nplan.md\n/ref/\n");
+    put("sub/.gitignore", "local.rs\n");
+    // Re-including a directory takes `!dir/` first, as in git.
+    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n");
+    // Instruction files stay out by default; `!` in a .glasirignore opts in,
+    // at the level it is written: the root one opts in CLAUDE.md, only the
+    // nested one opts in AGENTS.md, so the root AGENTS.md stays out.
+    put("CLAUDE.md", "## Rules\n\nText.\n");
+    put("AGENTS.md", "## Rules\n\nText.\n");
+    put("sub/AGENTS.md", "## Rules\n\nText.\n");
+    put("sub/.glasirignore", "!AGENTS.md\n");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("src/a.rs"), dir.join("src/link.rs")).unwrap();
+
+    let rel = |files: Vec<std::path::PathBuf>| -> Vec<String> {
+        files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    };
+    assert_eq!(
+        rel(walk(&dir)),
+        [
+            "CLAUDE.md",
+            "docs/plan.md",
+            "ref/notes.md",
+            "src/a.rs",
+            "src/b.rs",
+            "sub/AGENTS.md",
+            "sub/keep.rs"
+        ],
+        "nested .gitignore, .glasirignore re-including a file and a directory, \
+         an opted-in instruction file, no symlink"
+    );
+
+    // A stored graph must drop a file that left the scope although its mtime
+    // did not move.
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        let a = analyse(dir).unwrap();
+        let mut n: Vec<String> = a
+            .registry
+            .entries()
+            .filter(|(k, _)| k.contains('#'))
+            .map(|(k, _)| k.clone())
+            .collect();
+        n.sort();
+        n
+    };
+    assert!(names(&dir).contains(&"src/b.rs#beta".to_string()));
+    let before = watcher::file_stamps(&dir).unwrap();
+    put(
+        ".glasirignore",
+        "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n/src/b.rs\n",
+    );
+    assert!(
+        !names(&dir).contains(&"src/b.rs#beta".to_string()),
+        "a stored file that became ignored must leave the graph"
+    );
+
+    // The watcher reports it gone, so nothing reads it as an edit.
+    let after = watcher::file_stamps(&dir).unwrap();
+    assert_eq!(
+        watcher::changes(&before, &after),
+        [(dir.join("src/b.rs"), false)],
+        "an ignored file is reported as gone while it still exists"
+    );
+
+    // And back: un-ignoring it is an added file.
+    put(".glasirignore", "!plan.md\n!/ref/\n/ref/big/\n!CLAUDE.md\n");
+    assert!(names(&dir).contains(&"src/b.rs#beta".to_string()));
+
+    // A compiler index does not bring an ignored file back through tier 1.
+    let index = import_scip::encode_index_for_test(&[
+        ("src/a.rs", &[("cargo t 0.1 a/alpha().", true, 0)]),
+        ("gen/g.rs", &[("cargo t 0.1 g/generated().", true, 0)]),
+    ]);
+    let path = dir.join("index.scip");
+    std::fs::write(&path, &index).unwrap();
+    let mut reg = ingest::SymbolRegistry::new(0);
+    import_scip::import(&path, &dir, &mut reg).unwrap();
+    assert!(reg.node_of("src/a.rs#alpha").is_some());
+    assert!(
+        reg.node_of("gen/g.rs#generated").is_none(),
+        "an ignored file must not enter through the index"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("scope ok: .gitignore and .glasirignore hold for walk, snapshot, watcher and index");
 }
 
 /// Scratch space inside a repository must not reach the graph.

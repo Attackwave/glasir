@@ -309,6 +309,18 @@ name, which is not the same as nothing depending on it"
         }
     }
 
+    /// The one definition tier 3 linked a placeholder onto, if it linked
+    /// exactly one: the bare name then means that definition, and answering
+    /// with the placeholder hides where it lives.
+    fn linked_definition(&self, node: NodeId) -> Option<NodeId> {
+        if self.defined.contains(&node) {
+            return None;
+        }
+        let mut targets = self.snap.neighbors(node).map(|e| e.target);
+        let first = targets.next()?;
+        (self.defined.contains(&first) && targets.all(|t| t == first)).then_some(first)
+    }
+
     /// Resolves a query string to seed nodes.
     ///
     /// Precision first: an exact symbol name wins outright, then a bare name,
@@ -317,7 +329,7 @@ name, which is not the same as nothing depending on it"
     /// ranking it against every other name would bury it.
     pub fn seeds(&self, query: &str) -> Vec<(NodeId, f32)> {
         if let Some(node) = self.registry.node_of(query) {
-            return vec![(node, 1.0)];
+            return vec![(self.linked_definition(node).unwrap_or(node), 1.0)];
         }
         let mut exact = Vec::new();
         let mut partial = Vec::new();
@@ -390,7 +402,8 @@ fn tool_list() -> Value {
             "description": "Return the definition's own text for a symbol, from the \
     range the parser recorded when the graph was built. Use it after `query_graph` \
     or `impact` names something worth reading: the answer is the definition itself, \
-    so no file has to be opened and no line number has to be guessed. A name that \
+    so no file has to be opened and no line number has to be guessed. A Markdown \
+    section returns that section alone. A name that \
     does not resolve uniquely is refused with its candidates, exactly as `impact` \
     refuses one.",
             "inputSchema": {
@@ -1220,11 +1233,17 @@ using one of these.",
 }
 
 fn render_query_graph(v: &Value) -> String {
+    let returned = v["returned"].as_u64().unwrap_or(0);
+    let filtered = v["filtered_out_percent"].as_f64().unwrap_or(0.0);
+    // One node of 200,000 rounds to 100.0%, which reads as an empty answer.
+    let filtered = if returned > 0 && filtered >= 99.95 {
+        ">99.9".to_string()
+    } else {
+        format!("{filtered:.1}")
+    };
     let mut out = format!(
-        "{} of {} nodes ({:.1}% filtered out)\n\n",
-        v["returned"].as_u64().unwrap_or(0),
+        "{returned} of {} nodes ({filtered}% filtered out)\n\n",
         v["total"].as_u64().unwrap_or(0),
-        v["filtered_out_percent"].as_f64().unwrap_or(0.0)
     );
     for n in v["nodes"].as_array().into_iter().flatten() {
         out.push_str(&format!(
@@ -3279,32 +3298,16 @@ impl Served<'_> {
 }
 
 fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            let Ok(kind) = e.file_type() else { continue };
-            let own = p
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(".glasir"));
-            if own || kind.is_symlink() || crate::watcher::ignored_under(&p, Some(root)) {
-                continue;
-            }
-            if kind.is_dir() {
-                stack.push(p);
-            } else if e.metadata().is_ok_and(|m| m.len() <= 1 << 20)
-                && std::fs::read(&p).is_ok_and(|b| !b[..b.len().min(8192)].contains(&0))
-            {
-                out.push(p);
-            }
-        }
-    }
-    out.sort();
-    out
+    crate::watcher::files(root, |_| {})
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".glasir"))
+                && std::fs::metadata(p).is_ok_and(|m| m.len() <= 1 << 20)
+                && std::fs::read(p).is_ok_and(|b| !b[..b.len().min(8192)].contains(&0))
+        })
+        .collect()
 }
 
 fn render_find_unused(v: &Value) -> String {
@@ -3998,7 +4001,13 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .and_then(|lang| crate::parse_ast::parse_file(path, &src, lang))
         .and_then(|facts| facts.ranges.into_iter().rfind(|(n, _)| n == bare))
         .map(|(_, range)| range);
+    // A document section is cut from the current text too, so a caller reads
+    // the section rather than the whole document.
+    let section = is_documentation(&name)
+        .then(|| crate::docs::section_bytes(&src, file, bare))
+        .flatten();
     let (start, end) = fresh
+        .or(section)
         .or_else(|| served.registry.span(node))
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
     let (start, end) = match crate::parse_ast::Lang::from_path(path) {

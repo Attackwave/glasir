@@ -254,3 +254,21 @@ fn an_erlang_quoted_atom_names_a_function() {
         f.calls
     );
 }
+
+#[test]
+fn html_links_name_the_file_not_a_place_in_it() {
+    let src = r##"<a href="../guide/node00D4.html#line1046">x</a>
+<img src="pics/a.png?v=2">
+<a href="#top">up</a>
+<a href="mailto:a@b.c">m</a>
+<script src="//cdn.example/x.js"></script>
+<a href="https://example.org/">e</a>
+"##;
+    let calls: Vec<String> = native_parsers::rules::active()
+        .parse(native_parsers::Language::Html, src)
+        .calls
+        .into_iter()
+        .map(|(_, to, _)| to)
+        .collect();
+    assert_eq!(calls, ["../guide/node00D4.html", "pics/a.png"]);
+}
