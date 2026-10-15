@@ -64,6 +64,9 @@ pub struct FileFacts {
     pub param_calls: Vec<(String, String, Vec<String>, u32)>,
     /// (routine, register, field): a value the routine was handed, stored.
     pub param_stores: Vec<(String, String, String)>,
+    /// (routine, vector, line): a call into a library through its base in
+    /// A6, `JSR _LVOOpen(A6)`; the vector as written.
+    pub library_calls: Vec<(String, String, u32)>,
 }
 
 impl FileFacts {

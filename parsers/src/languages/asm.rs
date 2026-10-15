@@ -656,6 +656,19 @@ impl Track {
                     pc: false,
                 }) = ops.first().map(|o| operand(o))
                 {
+                    // A library call: a vector offset from a library base in
+                    // A6, `JSR _LVOOpen(A6)` or `JSR -30(A6)`. Its target is
+                    // the library's, unless A6 holds one of this tree's own
+                    // labels.
+                    let vector = off.starts_with("_LVO")
+                        || off.starts_with('-') && number(&off[1..]).is_some();
+                    let own = matches!(self.regs.get(&b), Some(Origin { label: Some(_), .. }));
+                    if b == "a6" && vector && !own {
+                        facts
+                            .library_calls
+                            .push((routine.to_string(), off.to_string(), line));
+                        return;
+                    }
                     match self.regs.get(&b).map(|o| o.read(ident(off))) {
                         // A table local to this routine lists its targets
                         // as this routine's own entries already.

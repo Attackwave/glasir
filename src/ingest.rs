@@ -61,6 +61,8 @@ pub struct FileDispatch {
     pub param_calls: Vec<(NodeId, String, Vec<String>, u32)>,
     /// (routine, register, field): a parameter stored into a field.
     pub param_stores: Vec<(NodeId, String, String)>,
+    /// (routine, vector, line): a call into a library through A6.
+    pub library: Vec<(NodeId, String, u32)>,
 }
 
 impl FileDispatch {
@@ -848,6 +850,11 @@ fn prepare_facts(
             .param_stores
             .iter()
             .filter_map(|(r, reg, field)| Some((in_file(registry, r)?, reg.clone(), field.clone())))
+            .collect(),
+        library: facts
+            .library_calls
+            .iter()
+            .filter_map(|(r, vector, line)| Some((in_file(registry, r)?, vector.clone(), *line)))
             .collect(),
     };
     registry.set_dispatch(&file, dispatch);

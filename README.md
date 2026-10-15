@@ -301,7 +301,8 @@ was stored into elsewhere, `MOVE.L MN_OPS(A1),A2` / `MOVE.L OP_READ(A2),A2` /
 `JSR (A2)` reaching the entry at offset `OP_READ` of every such table. Values
 are followed through registers, branches, calls and the routines they are
 handed to, across files. Where an indirect call cannot be traced, `impact` and
-`find_callers` name it instead of ending silently). The
+`find_callers` name the nearest ones instead of ending silently; library calls
+through a base in A6 (`JSR _LVOOpen(A6)`) are counted apart from them). The
 checked-in language fixtures exercise extraction floors for every
 supported language variant, so an empty or materially degraded scanner fails
 the build rather than quietly yielding nothing. Markdown is indexed as a source

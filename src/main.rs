@@ -9762,6 +9762,11 @@ fn demo_dispatch() {
         .map(|k| format!("far{k}:\n    MOVE.L  4(SP),A0\n    JSR     (A0)\n    RTS\n"))
         .collect();
     put("lib/far.s", &far);
+    // Library calls through A6 are counted apart, never as untraced.
+    put(
+        "lib/os.s",
+        "os:\n    MOVE.L  4.W,A6\n    JSR     _LVOOpen(A6)\n    JSR     _LVOClose(A6)\n    JSR     -30(A6)\n    RTS\n",
+    );
     let many = served_state(&dir).unwrap();
     let wide = mcp::handle_for_test(
         &many.as_served(),
@@ -9771,6 +9776,7 @@ fn demo_dispatch() {
     .unwrap()["result"]["structuredContent"]
         .clone();
     assert_eq!(wide["untraced_total"], json!(13), "{wide}");
+    assert_eq!(wide["library_calls"], json!(3), "{wide}");
     let named = wide["untraced"].as_array().unwrap();
     assert_eq!(named.len(), 10, "{wide}");
     assert_eq!(

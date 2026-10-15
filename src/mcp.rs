@@ -1627,7 +1627,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let (offset, limit) = page(args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
-    let (untraced, untraced_total) = served.untraced(node, &reached);
+    let (untraced, untraced_total, library) = served.untraced(node, &reached);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
@@ -1650,6 +1650,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
         "named_elsewhere": elsewhere,
         "untraced": untraced,
         "untraced_total": untraced_total,
+        "library_calls": library,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
@@ -1720,12 +1721,13 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|&(n, _)| n)
         .collect();
 
-    let (untraced, untraced_total) = served.untraced(node, &reached);
+    let (untraced, untraced_total, library) = served.untraced(node, &reached);
     let mut value = json!({
         "symbol": served.name(node),
         "named_elsewhere": served.unconnected_mentions(node, &reached),
         "untraced": untraced,
         "untraced_total": untraced_total,
+        "library_calls": library,
         "callers": callers
             .iter()
             .skip(offset)
@@ -2285,6 +2287,9 @@ pub struct References {
     tables: std::collections::HashSet<NodeId>,
     /// The tables some resolved indirect call goes through.
     dispatched: std::collections::HashSet<NodeId>,
+    /// Calls into a library through its base in A6, which the graph does
+    /// not follow and does not count as untraced.
+    library: usize,
 }
 
 impl Served<'_> {
@@ -2621,6 +2626,7 @@ impl Served<'_> {
                 unresolved,
                 tables,
                 dispatched,
+                library: dispatch.values().map(|d| d.library.len()).sum(),
             }
         })
     }
@@ -3561,11 +3567,11 @@ impl Served<'_> {
     /// Only the nearest `UNTRACED_LIMIT` are named, with the total beside
     /// them: every unresolved call in a tree (each program's library calls
     /// among them) buried the few that sit next to the symbol.
-    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> (Vec<Value>, usize) {
+    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> (Vec<Value>, usize, usize) {
         let local = std::sync::OnceLock::new();
         let refs = self.references(&local);
-        if refs.unresolved.is_empty() {
-            return (Vec::new(), 0);
+        if refs.unresolved.is_empty() && refs.library == 0 {
+            return (Vec::new(), 0, 0);
         }
         // A table no resolved indirect call goes through is reached only in
         // a way the graph could not follow, whatever else lists it.
@@ -3580,7 +3586,7 @@ impl Served<'_> {
                     == Some(crate::parse_ast::Lang::Assembly)
             });
         if !stuck && !alone {
-            return (Vec::new(), 0);
+            return (Vec::new(), 0, 0);
         }
         // Nearest first: the same file, then the same directory.
         let file = |n: &str| n.split_once('#').map_or("", |(f, _)| f).to_string();
@@ -3606,7 +3612,7 @@ impl Served<'_> {
             .take(UNTRACED_LIMIT)
             .map(|(_, symbol, line)| json!({"symbol": symbol, "line": line}))
             .collect();
-        (named, total)
+        (named, total, refs.library)
     }
 
     fn unconnected_mentions(&self, node: NodeId, reached: &[NodeId]) -> Vec<String> {
@@ -3808,14 +3814,23 @@ fn asm_number(s: &str) -> Option<i64> {
 /// The indirect calls an answer could not follow, after it.
 fn render_untraced(v: &Value) -> String {
     let sites = v["untraced"].as_array().map_or(&[][..], Vec::as_slice);
+    let library = v["library_calls"].as_u64().unwrap_or(0);
+    let lead = if library > 0 {
+        format!(
+            "\n{library} library call(s) through A6 (`_LVO…`) are not followed; where \
+the tree implements that library itself, they may reach this too.\n"
+        )
+    } else {
+        String::new()
+    };
     if sites.is_empty() {
-        return String::new();
+        return lead;
     }
     let total = v["untraced_total"]
         .as_u64()
         .map_or(sites.len(), |t| t as usize);
     let mut out = format!(
-        "\n{total} indirect call(s) could not be traced, and any of them may reach this; nearest first:\n"
+        "{lead}\n{total} indirect call(s) could not be traced, and any of them may reach this; nearest first:\n"
     );
     for s in sites {
         let sym = s["symbol"].as_str().unwrap_or("");

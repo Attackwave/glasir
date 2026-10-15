@@ -44,7 +44,8 @@ use std::path::Path;
 /// 36: a re-parse forgets the definitions a file no longer has.
 /// 37: assembly indirect calls, stores and tables per file (`dispatch`).
 /// 38: `dispatch` carries slots, constants and parameters.
-const FORMAT_VERSION: u32 = 38;
+/// 39: library calls through A6 apart from untraced ones (`dispatch.library`).
+const FORMAT_VERSION: u32 = 39;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {

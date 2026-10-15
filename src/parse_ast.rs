@@ -86,6 +86,7 @@ pub struct FileFacts {
     pub forwards: Vec<(String, String, u16)>,
     pub param_calls: Vec<(String, String, Vec<String>, u32)>,
     pub param_stores: Vec<(String, String, String)>,
+    pub library_calls: Vec<(String, String, u32)>,
 }
 
 /// A language we can extract from.
@@ -359,6 +360,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         forwards: f.forwards,
         param_calls: f.param_calls,
         param_stores: f.param_stores,
+        library_calls: f.library_calls,
     })
 }
 

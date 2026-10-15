@@ -320,3 +320,40 @@ fallen:
     };
     assert_eq!(at("calls"), [(0, "mount"), (4, "call"), (14, "syscall")]);
 }
+
+#[test]
+fn a_library_vector_through_a6_is_a_library_call() {
+    let src = "\
+open:
+    MOVE.L  4.W,A6
+    JSR     _LVOOpenLibrary(A6)
+    JSR     -30(A6)
+    RTS
+own:
+    LEA     kx_table,A6
+    JSR     KX_GUARD(A6)
+    JSR     -6(A6)
+    RTS
+";
+    let facts = parse(src);
+    assert_eq!(
+        facts.library_calls,
+        [
+            ("open".to_string(), "_LVOOpenLibrary".to_string(), 3),
+            ("open".to_string(), "-30".to_string(), 4),
+        ]
+    );
+    // Not untraced, and A6 holding this tree's own table stays a dispatch.
+    assert!(
+        facts.indirect.is_empty() && facts.param_calls.is_empty(),
+        "{facts:?}"
+    );
+    assert!(facts
+        .dispatch
+        .iter()
+        .any(|(r, l, ..)| r == "own" && l.as_deref() == Some("kx_table")));
+    assert_eq!(
+        facts.dispatch.iter().filter(|(r, ..)| r == "own").count(),
+        2
+    );
+}
