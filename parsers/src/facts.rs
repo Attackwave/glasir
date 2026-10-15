@@ -30,6 +30,22 @@ pub struct FileFacts {
     /// unconditional branch, or falls into the label after it, continues
     /// there. Entry points sharing one body are written that way.
     pub continues_into: Vec<(String, String)>,
+    /// (field, label): a label's address stored into a field or a variable,
+    /// `LEA ops,A0` / `MOVE.L A0,MN_OPS(A1)`. Paired with `dispatch` across
+    /// files, since the table and the call through it rarely share one.
+    pub stores: Vec<(String, String)>,
+    /// (routine, label, fields): an indirect call through a value loaded
+    /// along these fields, outermost first, from a label's address when the
+    /// chain starts at one. `MOVE.L MN_OPS(A1),A2` / `MOVE.L OP_READ(A2),A2`
+    /// / `JSR (A2)` is `(None, [MN_OPS, OP_READ])`; `LEA cmds,A3` / `MOVE.L
+    /// CMD_RUN(A3),A1` / `JSR (A1)` is `(Some(cmds), [CMD_RUN])`. Whether the
+    /// label is a table of routines is known only across files.
+    pub dispatch: Vec<(String, Option<String>, Vec<String>)>,
+    /// (routine, line): an indirect call whose target could not be traced.
+    pub indirect: Vec<(String, u32)>,
+    /// Labels holding pointer entries (`DC.L routine`): dispatch tables, and
+    /// headers that list a module's entry points.
+    pub tables: Vec<String>,
 }
 
 impl FileFacts {

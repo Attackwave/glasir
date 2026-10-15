@@ -1625,6 +1625,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let (offset, limit) = page(args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
+    let untraced = served.untraced(node, &reached);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
@@ -1645,6 +1646,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
         "dependents": total,
         "within": within,
         "named_elsewhere": elsewhere,
+        "untraced": untraced,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
@@ -1718,6 +1720,7 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     let mut value = json!({
         "symbol": served.name(node),
         "named_elsewhere": served.unconnected_mentions(node, &reached),
+        "untraced": served.untraced(node, &reached),
         "callers": callers
             .iter()
             .skip(offset)
@@ -1741,13 +1744,15 @@ fn render_find_callers(v: &Value) -> String {
     if v["count"].as_u64().unwrap_or(0) == 0 {
         if has_elsewhere(v) {
             return format!(
-                "{sym}\n\nnothing in the graph calls this{}",
-                render_elsewhere(v, ", but")
+                "{sym}\n\nnothing in the graph calls this{}{}",
+                render_elsewhere(v, ", but"),
+                render_untraced(v)
             );
         }
         return format!(
             "{sym}\n\nnothing in the graph calls this. Callers in code the graph \
-does not cover are not ruled out.\n"
+does not cover are not ruled out.\n{}",
+            render_untraced(v)
         );
     }
     let count = v["count"].as_u64().unwrap_or(callers.len() as u64);
@@ -1763,6 +1768,7 @@ does not cover are not ruled out.\n"
     if has_elsewhere(v) {
         out.push_str(&render_elsewhere(v, "\nbeyond these,"));
     }
+    out.push_str(&render_untraced(v));
     out
 }
 
@@ -2265,6 +2271,13 @@ pub struct References {
     /// Every route with its resolved handler, as matched: what
     /// `http_surface` hands a control plane joining several trees.
     routes: Vec<(NodeId, crate::routes::Verb, Vec<String>)>,
+    /// Targets of indirect calls, by the routines calling through a table or
+    /// a field. See `FileDispatch`.
+    by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// Indirect calls nothing could resolve: (routine, line where known).
+    unresolved: Vec<(NodeId, Option<u32>)>,
+    /// Tables of routines, which an indirect call reaches as a whole.
+    tables: std::collections::HashSet<NodeId>,
 }
 
 impl Served<'_> {
@@ -2377,10 +2390,66 @@ impl Served<'_> {
                 sources.sort_unstable();
                 sources.dedup();
             }
+
+            // An indirect call reaches what was stored where it loads from:
+            // a table the chain starts at reaches the table, which lists its
+            // routines; otherwise the deepest field anything is stored into
+            // decides, so a record's handler field wins over the record.
+            let dispatch = self.registry.dispatch();
+            let tables: std::collections::HashSet<NodeId> = dispatch
+                .values()
+                .flat_map(|d| d.tables.iter().copied())
+                .collect();
+            let mut stored: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+            for d in dispatch.values() {
+                for (field, label) in &d.stores {
+                    stored
+                        .entry(field.as_str())
+                        .or_default()
+                        .push(label.as_str());
+                }
+            }
+            let mut by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>> =
+                Default::default();
+            let mut unresolved: Vec<(NodeId, Option<u32>)> = Vec::new();
+            for d in dispatch.values() {
+                for (routine, label, fields) in &d.calls {
+                    let anchor = label.as_deref().and_then(resolve);
+                    let targets: Vec<NodeId> = match anchor {
+                        Some(t) if fields.is_empty() || tables.contains(&t) => vec![t],
+                        _ => fields
+                            .iter()
+                            .rev()
+                            .find_map(|f| stored.get(f.as_str()))
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|l| resolve(l))
+                            .collect(),
+                    };
+                    if targets.is_empty() {
+                        unresolved.push((*routine, None));
+                    }
+                    for t in targets {
+                        if t != *routine {
+                            by_dispatch.entry(t).or_default().push(*routine);
+                        }
+                    }
+                }
+                unresolved.extend(d.unresolved.iter().map(|&(r, line)| (r, Some(line))));
+            }
+            for sources in by_dispatch.values_mut() {
+                sources.sort_unstable();
+                sources.dedup();
+            }
+            unresolved.sort_unstable();
+            unresolved.dedup();
             References {
                 by_target,
                 by_route,
                 routes,
+                by_dispatch,
+                unresolved,
+                tables,
             }
         })
     }
@@ -2430,6 +2499,20 @@ fn direct_callers_with(
         for &from in served
             .references(&local)
             .by_route
+            .get(&node)
+            .into_iter()
+            .flatten()
+        {
+            out.push((from, Confidence::Ambiguous));
+        }
+    }
+    // An indirect call through a table or a field is a call at every hop,
+    // resolved through what was stored, so at the weakest tier.
+    if Confidence::Ambiguous >= floor {
+        let local = std::sync::OnceLock::new();
+        for &from in served
+            .references(&local)
+            .by_dispatch
             .get(&node)
             .into_iter()
             .flatten()
@@ -3299,6 +3382,58 @@ impl Served<'_> {
     }
 
     /// Files naming `node` that no edge in `reached` connects, sorted.
+    /// The indirect calls nothing could trace, when they may matter to this
+    /// answer: it runs into a table no resolved call goes through, or an
+    /// assembly symbol has no caller at all. Ending there silently reads as
+    /// "nothing reaches it", which an untraced `JSR (A0)` can contradict.
+    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> Vec<Value> {
+        let local = std::sync::OnceLock::new();
+        let refs = self.references(&local);
+        if refs.unresolved.is_empty() {
+            return Vec::new();
+        }
+        // A table nothing calls, not even through a resolved indirect call,
+        // is reached only in a way the graph could not follow.
+        let reverse = self.snap.reverse();
+        let stuck = std::iter::once(&node).chain(reached).any(|&n| {
+            refs.tables.contains(&n)
+                && !refs.by_dispatch.contains_key(&n)
+                && reverse.callers(n).next().is_none()
+        });
+        use crate::parse_ast::LangExt;
+        let name = self.name(node);
+        let alone = reached.is_empty()
+            && name.split_once('#').is_some_and(|(f, _)| {
+                crate::parse_ast::Lang::from_path(std::path::Path::new(f))
+                    == Some(crate::parse_ast::Lang::Assembly)
+            });
+        if !stuck && !alone {
+            return Vec::new();
+        }
+        // Nearest first: the same file, then the same directory.
+        let file = |n: &str| n.split_once('#').map_or("", |(f, _)| f).to_string();
+        let home = file(&name);
+        let shared = |other: &str| {
+            home.split('/')
+                .zip(other.split('/'))
+                .take_while(|(a, b)| a == b)
+                .count()
+        };
+        let mut sites: Vec<(usize, String, Option<u32>)> = refs
+            .unresolved
+            .iter()
+            .map(|&(n, line)| {
+                let symbol = self.name(n);
+                (shared(&file(&symbol)), symbol, line)
+            })
+            .collect();
+        sites.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| (&a.1, a.2).cmp(&(&b.1, b.2))));
+        sites
+            .into_iter()
+            .map(|(_, symbol, line)| json!({"symbol": symbol, "line": line}))
+            .collect()
+    }
+
     fn unconnected_mentions(&self, node: NodeId, reached: &[NodeId]) -> Vec<String> {
         let own = self.name(node);
         let Some((home, name)) = own.split_once('#') else {
@@ -3440,11 +3575,13 @@ fn render_impact(v: &Value) -> String {
         if has_elsewhere(v) {
             out.push_str("nothing in the graph reaches this symbol");
             out.push_str(&render_elsewhere(v, ", but"));
+            out.push_str(&render_untraced(v));
         } else {
             out.push_str(
                 "nothing in the graph reaches this symbol: changing it \
 breaks no caller here. Callers in code the graph does not cover are not ruled out.\n",
             );
+            out.push_str(&render_untraced(v));
         }
         return out;
     }
@@ -3471,6 +3608,33 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
     out.push_str(&more_line(v, v["dependents"].as_u64().unwrap_or(0)));
     if has_elsewhere(v) {
         out.push_str(&render_elsewhere(v, "\nbeyond these,"));
+    }
+    out.push_str(&render_untraced(v));
+    out
+}
+
+/// The indirect calls an answer could not follow, after it.
+fn render_untraced(v: &Value) -> String {
+    let sites = v["untraced"].as_array().map_or(&[][..], Vec::as_slice);
+    if sites.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "\n{} indirect call(s) could not be traced, and any of them may reach this:\n",
+        sites.len()
+    );
+    for s in sites.iter().take(CHANGE_LIST_LIMIT) {
+        let sym = s["symbol"].as_str().unwrap_or("");
+        match s["line"].as_u64() {
+            Some(line) => out.push_str(&format!("  {sym} (line {line})\n")),
+            None => out.push_str(&format!("  {sym}\n")),
+        }
+    }
+    if sites.len() > CHANGE_LIST_LIMIT {
+        out.push_str(&format!(
+            "  … and {} more (all of them in structuredContent)\n",
+            sites.len() - CHANGE_LIST_LIMIT
+        ));
     }
     out
 }

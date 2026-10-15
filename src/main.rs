@@ -804,6 +804,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (node, span) in &stored.spans {
                 registry.set_span(*node, *span);
             }
+            for (file, dispatch) in stored.dispatch {
+                registry.set_dispatch(&file, dispatch);
+            }
             for (file, http) in stored.http {
                 registry.set_http(&file, http);
             }
@@ -941,6 +944,13 @@ fn store_snapshot(
         .collect();
     http.sort_by(|a, b| a.0.cmp(&b.0));
     stored.http = http;
+    let mut dispatch: Vec<(String, ingest::FileDispatch)> = reg
+        .dispatch()
+        .iter()
+        .map(|(f, d)| (f.clone(), d.clone()))
+        .collect();
+    dispatch.sort_by(|a, b| a.0.cmp(&b.0));
+    stored.dispatch = dispatch;
     let mut definers: Vec<(String, Vec<String>)> = reg
         .definers()
         .iter()
@@ -3560,6 +3570,7 @@ fn demo() -> std::io::Result<()> {
     // has nothing to do with what they test.
     demo_ignored_paths();
     demo_scope();
+    demo_dispatch();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -9592,6 +9603,119 @@ fn demo_doc_ranking() {
             .is_empty(),
         "the docs are what make this findable, not the names"
     );
+}
+
+/// Indirect calls in assembly, resolved across files: a table stored into a
+/// field in one file and called through that field in another, so that
+/// "who can reach this handler" is answerable, and an untraced call named
+/// where nothing resolved reaches.
+fn demo_dispatch() {
+    use serde_json::json;
+
+    let dir = std::env::temp_dir().join(format!("glasir-dispatch-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let put = |f: &str, text: &str| std::fs::write(dir.join(f), text).unwrap();
+    put(
+        "src/ops.s",
+        "ffs_ops:\n    DC.L    ffs_read,  ffs_rename\nffs_read:\n    RTS\nffs_rename:\n    RTS\n",
+    );
+    put(
+        "src/mount.s",
+        "mount:\n    LEA     ffs_ops,A0\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\n",
+    );
+    put(
+        "src/vfs.s",
+        "vfs_rename:\n    MOVE.L  MN_OPS(A1),A2\n    MOVE.L  OP_RENAME(A2),A2\n    BSR     vfs_do\n    RTS\nvfs_do:\n    JSR     (A2)\n    RTS\nsys_rename:\n    BSR     vfs_rename\n    RTS\n",
+    );
+    // A record whose field holds the device, whose own field holds the
+    // handler: the deepest field stored into decides.
+    put(
+        "src/dev.s",
+        "dev_add:\n    MOVE.L  #td_read,DV_READ(A0)\n    MOVE.L  #floppy,PART_PHYS_DEV(A1)\n    RTS\ntd_read:\n    RTS\nfloppy:\n    DS.L    4\npart_read:\n    LEA     part_table,A1\n    MOVE.L  PART_PHYS_DEV(A1),A1\n    MOVE.L  DV_READ(A1),A2\n    JSR     (A2)\n    RTS\npart_table:\n    DS.L    8\n",
+    );
+    put(
+        "src/shell.s",
+        "run_cmd:\n    LEA     cmds,A3\n    MOVE.L  CMD_RUN(A3),A1\n    JSR     (A1)\n    RTS\ncmds:\n    DC.L    do_ls\ndo_ls:\n    RTS\n",
+    );
+    put(
+        "src/module.s",
+        "header:\n    MOVEQ   #-1,D0\n    RTS\n    DC.L    entry\nentry:\n    RTS\nloader:\n    MOVE.L  4(SP),A0\n    JSR     (A0)\n    RTS\n",
+    );
+
+    let state = served_state(&dir).unwrap();
+    let served = state.as_served();
+    let call = |tool: &str, symbol: &str| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"symbol": symbol, "depth": 4}}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+
+    // The handler, its table, the routine dispatching through the field the
+    // table was stored into, and that routine's caller.
+    let reached: Vec<String> = call("impact", "ffs_rename")["hops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|h| h["symbols"].as_array().unwrap().clone())
+        .map(|s| s["symbol"].as_str().unwrap().to_string())
+        .collect();
+    for want in [
+        "src/ops.s#ffs_ops",
+        "src/vfs.s#vfs_rename",
+        "src/vfs.s#sys_rename",
+    ] {
+        assert!(reached.iter().any(|r| r == want), "{want} in {reached:?}");
+    }
+    assert!(
+        call("impact", "ffs_rename")["untraced"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let callers = |served: &mcp::Served, symbol: &str| -> Vec<String> {
+        mcp::handle_for_test(
+            served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap()["result"]["structuredContent"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        callers(&served, "td_read").contains(&"src/dev.s#part_read".to_string()),
+        "the handler field, not the record: {:?}",
+        callers(&served, "td_read")
+    );
+    assert!(!callers(&served, "floppy").contains(&"src/dev.s#part_read".to_string()));
+
+    // A table the chain starts at is reached whole, whatever field of an
+    // entry the call then loads.
+    assert!(callers(&served, "cmds").contains(&"src/shell.s#run_cmd".to_string()));
+
+    // A start from the stored graph knows the same.
+    let warm = served_state(&dir).unwrap();
+    assert!(callers(&warm.as_served(), "ffs_ops").contains(&"src/vfs.s#vfs_rename".to_string()));
+
+    // A module header nothing dispatches through: the answer names the call
+    // it could not trace instead of ending there.
+    let untraced = call("impact", "entry")["untraced"].clone();
+    assert_eq!(
+        untraced,
+        json!([{"symbol": "src/module.s#loader", "line": 9}]),
+        "{untraced}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("dispatch ok: tables, fields and parameters resolve across files");
 }
 
 /// The indexed scope: `.gitignore` at every level, `.glasirignore` above it,

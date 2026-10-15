@@ -97,6 +97,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     // `Other` (a directive, data, a macro, nothing yet) says neither.
     let mut routine: Option<String> = None;
     let mut last = Exit::Other;
+    let mut track = Track::default();
     let line_of = |at: usize| {
         let start = src[..at].rfind('\n').map_or(0, |n| n + 1);
         let end = src[at..].find('\n').map_or(src.len(), |n| at + n);
@@ -266,6 +267,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         routine = Some(ident.to_string());
+                        track.regs.clear();
+                        track.written.clear();
                         i += 2;
                         continue;
                     }
@@ -282,6 +285,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         routine = Some(ident.to_string());
+                        track.regs.clear();
+                        track.written.clear();
                         i += 1;
                         continue;
                     }
@@ -303,10 +308,34 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 };
                 // A size suffix is not an operand: `BEQ.S .missing`.
                 let mut j = i + 1;
+                let mut size = None;
                 if kind(j) == Some(&TokenKind::Symbol('.'))
                     && matches!(kind(j + 1), Some(TokenKind::Ident(s)) if s.len() == 1)
                 {
+                    if let Some(TokenKind::Ident(s)) = kind(j + 1) {
+                        size = Some(s.to_ascii_lowercase());
+                    }
                     j += 2;
+                }
+                if let Some(from) = &routine {
+                    let field = tokens[j - 1].end as usize;
+                    let (_, line_end) = line_of(tok.start as usize);
+                    let ops = operands(src.get(field..line_end as usize).unwrap_or(""));
+                    let line = 1 + src.as_bytes()[..tok.start as usize]
+                        .iter()
+                        .filter(|&&b| b == b'\n')
+                        .count() as u32;
+                    track.step(
+                        from,
+                        &ident.to_ascii_lowercase(),
+                        size.as_deref(),
+                        &ops,
+                        line,
+                        matches!(last, Exit::Flow | Exit::Ends),
+                        calls,
+                        &mut scope,
+                        &mut facts,
+                    );
                 }
                 if is(ident, COUNTED_BRANCHES) {
                     while !matches!(
@@ -385,7 +414,408 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
     scope.finish(src.len(), &mut facts);
+    track.finish(&mut facts);
     facts
+}
+
+/// Where a register's value came from, as far as one routine can tell: a
+/// label's address (`LEA table,A0`), then the fields read along the way
+/// (`MOVE.L MN_OPS(A1),A2`, `MOVE.L OP_READ(A2),A2`). An indexed read keeps
+/// the chain, as an entry of what it pointed at.
+#[derive(Clone)]
+struct Origin {
+    label: Option<String>,
+    fields: Vec<String>,
+}
+
+impl Origin {
+    fn label(name: &str) -> Self {
+        Origin {
+            label: Some(name.to_string()),
+            fields: Vec::new(),
+        }
+    }
+
+    fn field(name: &str) -> Self {
+        Origin {
+            label: None,
+            fields: vec![name.to_string()],
+        }
+    }
+
+    /// The value read at `off` from where this points.
+    fn read(&self, off: Option<&str>) -> Self {
+        let mut next = self.clone();
+        next.fields.extend(off.map(str::to_string));
+        next
+    }
+}
+
+/// Register contents through one routine, read straight down: enough to
+/// see which table or field an indirect call goes through, without
+/// following branches.
+#[derive(Default)]
+struct Track {
+    regs: std::collections::HashMap<String, Origin>,
+    /// Per label: (has an instruction, has data).
+    kinds: std::collections::HashMap<String, (bool, bool)>,
+    /// Calls made for `DC.L name` entries, by index into `facts.calls`, and
+    /// the labels holding at least one.
+    entries: Vec<usize>,
+    with_entries: std::collections::HashSet<String>,
+    /// Registers the open routine has written; one it calls through without
+    /// writing it is a parameter.
+    written: std::collections::HashSet<String>,
+    /// (routine, register, line): an indirect call through a parameter.
+    through_parameter: Vec<(String, String, u32)>,
+    /// (caller, callee, register, origin) at a direct call in this file.
+    passes: Vec<(String, String, String, Origin)>,
+}
+
+impl Track {
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &mut self,
+        routine: &str,
+        op: &str,
+        size: Option<&str>,
+        ops: &[&str],
+        line: u32,
+        code: bool,
+        calls: &crate::rules::Calls,
+        scope: &mut ScopeStack,
+        facts: &mut FileFacts,
+    ) {
+        let kind = self.kinds.entry(routine.to_string()).or_default();
+        if code {
+            kind.0 = true;
+        }
+        if is(op, &["dc", "dcb", "ds", "db", "dw", "dd", "dq"]) {
+            kind.1 = true;
+            // A pointer entry: the table, or the routine owning a local
+            // table, reaches what it lists.
+            if op == "dc" && size == Some("l") {
+                for name in ops.iter().filter(|o| ident(o) == Some(o)) {
+                    if calls.allows(name) {
+                        scope.record_call(name, facts);
+                        self.entries.push(facts.calls.len() - 1);
+                        self.with_entries.insert(routine.to_string());
+                    }
+                }
+            }
+            return;
+        }
+        let dest = ops.last().map(|o| operand(o));
+        match op {
+            "lea" if ops.len() == 2 => {
+                if let Some(Operand::Reg(d)) = dest {
+                    let origin = match operand(ops[0]) {
+                        Operand::Mem {
+                            off, base: None, ..
+                        }
+                        | Operand::Mem { off, pc: true, .. } => ident(off).map(Origin::label),
+                        Operand::Mem { base: Some(b), .. } => self.regs.get(&b).cloned(),
+                        _ => None,
+                    };
+                    self.set(d, origin);
+                }
+            }
+            "move" | "movea" if ops.len() == 2 => {
+                let src = operand(ops[0]);
+                match dest {
+                    Some(Operand::Reg(d)) => {
+                        let origin = match src {
+                            Operand::Imm(x) => ident(x).map(Origin::label),
+                            Operand::Reg(m) => self.regs.get(&m).cloned(),
+                            // A field read through a known value extends its
+                            // chain; a field of an unknown record starts one.
+                            Operand::Mem {
+                                off,
+                                base: Some(b),
+                                pc: false,
+                            } => match self.regs.get(&b) {
+                                Some(o) => Some(o.read(ident(off))),
+                                None => ident(off).map(Origin::field),
+                            },
+                            Operand::Mem { off, .. } => ident(off).map(Origin::field),
+                        };
+                        self.set(d, origin);
+                    }
+                    Some(Operand::Mem { off, pc: false, .. }) => {
+                        let label = match src {
+                            Operand::Imm(x) => ident(x).map(str::to_string),
+                            Operand::Reg(m) => match self.regs.get(&m) {
+                                Some(Origin {
+                                    label: Some(t),
+                                    fields,
+                                }) if fields.is_empty() => Some(t.clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let (Some(field), Some(label)) = (ident(off), label) {
+                            facts.stores.push((field.to_string(), label));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "bsr" | "jsr" | "bra" | "jmp"
+                if matches!(
+                    ops.first().map(|o| operand(o)),
+                    Some(Operand::Mem { base: None, .. } | Operand::Mem { pc: true, .. })
+                ) =>
+            {
+                // A direct call hands the callee what this routine knows of
+                // its registers, for a callee that calls through one.
+                let callee = match ops.first().map(|o| operand(o)) {
+                    Some(Operand::Mem { off, .. }) => ident(off),
+                    _ => None,
+                };
+                if let Some(callee) = callee {
+                    for (reg, origin) in &self.regs {
+                        self.passes.push((
+                            routine.to_string(),
+                            callee.to_string(),
+                            reg.clone(),
+                            origin.clone(),
+                        ));
+                    }
+                }
+            }
+            "jsr" | "jmp" => {
+                if let Some(Operand::Mem {
+                    off,
+                    base: Some(b),
+                    pc: false,
+                }) = ops.first().map(|o| operand(o))
+                {
+                    match self.regs.get(&b).map(|o| o.read(ident(off))) {
+                        // A table local to this routine lists its targets
+                        // as this routine's own entries already.
+                        Some(Origin { label: Some(t), .. }) if t.starts_with('.') => {}
+                        Some(o) => facts
+                            .dispatch
+                            .push((routine.to_string(), o.label, o.fields)),
+                        None => match ident(off) {
+                            Some(f) => facts.dispatch.push((
+                                routine.to_string(),
+                                None,
+                                vec![f.to_string()],
+                            )),
+                            None if !self.written.contains(&b) => {
+                                self.through_parameter.push((routine.to_string(), b, line));
+                            }
+                            None => facts.indirect.push((routine.to_string(), line)),
+                        },
+                    }
+                }
+            }
+            // A comparison or a test writes no register.
+            "cmp" | "cmpa" | "cmpi" | "cmpm" | "cmp2" | "tst" | "btst" | "chk" | "chk2" => {}
+            // Pointer arithmetic keeps an address register's origin.
+            "adda" | "suba" | "addq" | "subq" | "add" | "sub" if matches!(&dest, Some(Operand::Reg(d)) if d.starts_with('a')) =>
+                {}
+            // A register list restored, or two registers swapped: forget.
+            "movem" if !ops.last().is_some_and(|o| o.contains('(')) => {
+                for r in [
+                    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4",
+                    "a5", "a6",
+                ] {
+                    self.set(r.to_string(), None);
+                }
+            }
+            "exg" => {
+                for o in ops {
+                    if let Operand::Reg(r) = operand(o) {
+                        self.set(r, None);
+                    }
+                }
+            }
+            _ => {
+                if let Some(Operand::Reg(d)) = dest {
+                    self.set(d, None);
+                }
+            }
+        }
+    }
+
+    fn set(&mut self, reg: String, origin: Option<Origin>) {
+        self.written.insert(reg.clone());
+        match origin {
+            Some(o) => self.regs.insert(reg, o),
+            None => self.regs.remove(&reg),
+        };
+    }
+
+    /// Drops the entries naming this file's own data (a string, a buffer),
+    /// and names the labels holding pointer entries: a table, or a module
+    /// header after a routine's code.
+    fn finish(self, facts: &mut FileFacts) {
+        // A call through a parameter resolves at the callers that pass a
+        // known value in that register: the caller dispatches.
+        for (callee, reg, line) in &self.through_parameter {
+            let mut resolved = false;
+            for (caller, _, _, origin) in self
+                .passes
+                .iter()
+                .filter(|(_, c, r, _)| c == callee && r == reg)
+            {
+                resolved = true;
+                match origin {
+                    Origin { label: Some(t), .. } if t.starts_with('.') => {}
+                    o => facts
+                        .dispatch
+                        .push((caller.clone(), o.label.clone(), o.fields.clone())),
+                }
+            }
+            if !resolved {
+                facts.indirect.push((callee.clone(), *line));
+            }
+        }
+        facts.dispatch.sort();
+        facts.dispatch.dedup();
+        let data: std::collections::HashSet<&str> = self
+            .kinds
+            .iter()
+            .filter(|(_, &(code, data))| data && !code)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let drop: std::collections::HashSet<usize> = self
+            .entries
+            .iter()
+            .copied()
+            .filter(|&k| data.contains(facts.calls[k].1.as_str()))
+            .collect();
+        if !drop.is_empty() {
+            let mut k = 0;
+            facts.calls.retain(|_| {
+                k += 1;
+                !drop.contains(&(k - 1))
+            });
+            let mut k = 0;
+            facts.call_modules.retain(|_| {
+                k += 1;
+                !drop.contains(&(k - 1))
+            });
+        }
+        let kept: std::collections::HashSet<&str> = facts
+            .calls
+            .iter()
+            .map(|(from, _, _)| from.as_str())
+            .collect();
+        let mut tables: Vec<String> = self
+            .with_entries
+            .into_iter()
+            .filter(|t| kept.contains(t.as_str()))
+            .collect();
+        tables.sort();
+        facts.tables = tables;
+    }
+}
+
+/// One operand, as far as the tracking needs it.
+enum Operand<'a> {
+    Reg(String),
+    Imm(&'a str),
+    /// `off(base)`, `(base,Dn)`, `-(base)`, `off(PC)`, or an absolute `off`.
+    Mem {
+        off: &'a str,
+        base: Option<String>,
+        pc: bool,
+    },
+}
+
+fn register(s: &str) -> Option<String> {
+    let r = s.trim().to_ascii_lowercase();
+    if r == "sp" {
+        return Some("a7".into());
+    }
+    let b = r.as_bytes();
+    (b.len() == 2 && (b[0] == b'a' || b[0] == b'd') && (b'0'..=b'7').contains(&b[1])).then_some(r)
+}
+
+fn operand(s: &str) -> Operand<'_> {
+    let s = s.trim();
+    if let Some(r) = register(s) {
+        return Operand::Reg(r);
+    }
+    if let Some(imm) = s.strip_prefix('#') {
+        return Operand::Imm(imm);
+    }
+    match (s.find('('), s.rfind(')')) {
+        (Some(open), Some(close)) if close > open => {
+            let first = s[open + 1..close].split(',').next().unwrap_or("");
+            Operand::Mem {
+                off: s[..open].trim_end_matches('-'),
+                base: register(first),
+                pc: first.trim().eq_ignore_ascii_case("pc"),
+            }
+        }
+        _ => Operand::Mem {
+            off: s,
+            base: None,
+            pc: false,
+        },
+    }
+}
+
+/// The name an operand starts with: `table`, `.local`, `kx_hooks` out of
+/// `kx_hooks+KX_HOOK*4`; none for a number.
+fn ident(s: &str) -> Option<&str> {
+    let end = s
+        .char_indices()
+        .find(|&(k, c)| !(c.is_ascii_alphanumeric() || c == '_' || (c == '.' && k == 0)))
+        .map_or(s.len(), |(k, _)| k);
+    let name = &s[..end];
+    let first = name.trim_start_matches('.').chars().next()?;
+    (first.is_ascii_alphabetic() || first == '_').then_some(name)
+}
+
+/// The operand field of a statement: up to the first blank or `;` outside
+/// parentheses and quotes, split at its top-level commas. A blank beside a
+/// comma (`DC.L name,  handler`) is inside the field, not after it.
+fn operands(rest: &str) -> Vec<&str> {
+    let rest = rest.trim_start();
+    let beside_comma =
+        |k: usize| rest[..k].trim_end().ends_with(',') || rest[k..].trim_start().starts_with(',');
+    let (mut depth, mut quote, mut end) = (0i32, None, rest.len());
+    for (k, c) in rest.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, ';') => {
+                end = k;
+                break;
+            }
+            (None, c) if c.is_whitespace() && depth <= 0 && !beside_comma(k) => {
+                end = k;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let field = &rest[..end];
+    let mut out = Vec::new();
+    let (mut depth, mut from) = (0i32, 0);
+    for (k, c) in field.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(field[from..k].trim());
+                from = k + 1;
+            }
+            _ => {}
+        }
+    }
+    if from < field.len() {
+        out.push(field[from..].trim());
+    }
+    out
 }
 
 /// How a routine's last statement leaves it.

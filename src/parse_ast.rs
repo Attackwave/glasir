@@ -74,6 +74,12 @@ pub struct FileFacts {
     pub macro_calls: Vec<(String, String, (u32, u32))>,
     /// (routine, where it goes on), for assembly. Read by `get_code_snippet`.
     pub continues_into: Vec<(String, String)>,
+    /// Indirect calls in assembly and what they go through; see the scanner's
+    /// `FileFacts` for each.
+    pub stores: Vec<(String, String)>,
+    pub dispatch: Vec<(String, Option<String>, Vec<String>)>,
+    pub indirect: Vec<(String, u32)>,
+    pub tables: Vec<String>,
 }
 
 /// A language we can extract from.
@@ -337,6 +343,10 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         macro_definers: f.macro_definers,
         macro_calls: f.macro_calls,
         continues_into: f.continues_into,
+        stores: f.stores,
+        dispatch: f.dispatch,
+        indirect: f.indirect,
+        tables: f.tables,
     })
 }
 

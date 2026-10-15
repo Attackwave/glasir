@@ -33,6 +33,29 @@ pub struct FileHttp {
     pub requests: Vec<(NodeId, crate::routes::Verb, String)>,
 }
 
+/// What one file stores into fields and calls through them, for resolving
+/// indirect calls across files. See `mcp::References`.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FileDispatch {
+    /// (field, label): a label's address stored into a field.
+    pub stores: Vec<(String, String)>,
+    /// (routine, label, fields): an indirect call and what it goes through.
+    pub calls: Vec<(NodeId, Option<String>, Vec<String>)>,
+    /// (routine, line): an indirect call nothing here could trace.
+    pub unresolved: Vec<(NodeId, u32)>,
+    /// Labels of this file that are tables of routines.
+    pub tables: Vec<NodeId>,
+}
+
+impl FileDispatch {
+    fn is_empty(&self) -> bool {
+        self.stores.is_empty()
+            && self.calls.is_empty()
+            && self.unresolved.is_empty()
+            && self.tables.is_empty()
+    }
+}
+
 /// Maps a qualified symbol name to a node id, minting ids for symbols the base
 /// graph has never seen.
 pub struct SymbolRegistry {
@@ -68,6 +91,7 @@ pub struct SymbolRegistry {
     /// and the requests it sends — sending node, verb, path. Matched against
     /// each other when served. See `routes`.
     http: HashMap<String, FileHttp>,
+    dispatch: HashMap<String, FileDispatch>,
     /// Per file, the macros it defines whose invocations define their first
     /// argument. Kept so a partial re-parse knows the whole tree's set.
     definers: HashMap<String, Vec<String>>,
@@ -85,6 +109,7 @@ impl SymbolRegistry {
             placeholder_lang: HashMap::new(),
             refs: HashMap::new(),
             http: HashMap::new(),
+            dispatch: HashMap::new(),
             definers: HashMap::new(),
             next: base_node_count as NodeId,
         }
@@ -148,6 +173,18 @@ impl SymbolRegistry {
 
     pub fn http(&self) -> &HashMap<String, FileHttp> {
         &self.http
+    }
+
+    pub fn set_dispatch(&mut self, file: &str, dispatch: FileDispatch) {
+        if dispatch.is_empty() {
+            self.dispatch.remove(file);
+        } else {
+            self.dispatch.insert(file.to_owned(), dispatch);
+        }
+    }
+
+    pub fn dispatch(&self) -> &HashMap<String, FileDispatch> {
+        &self.dispatch
     }
 
     pub fn set_definers(&mut self, file: &str, definers: Vec<String>) {
@@ -276,6 +313,7 @@ impl SymbolRegistry {
         self.by_name.retain(|k, _| !k.starts_with(&prefix));
         self.refs.remove(file);
         self.http.remove(file);
+        self.dispatch.remove(file);
         self.definers.remove(file);
         for n in gone {
             self.docs.remove(&n);
@@ -742,6 +780,28 @@ fn prepare_facts(
             .collect(),
     };
     registry.set_http(&file, http);
+    let in_file = |registry: &SymbolRegistry, name: &str| registry.node_of(&qualify(&file, name));
+    let dispatch = FileDispatch {
+        stores: facts.stores.clone(),
+        calls: facts
+            .dispatch
+            .iter()
+            .filter_map(|(r, label, fields)| {
+                Some((in_file(registry, r)?, label.clone(), fields.clone()))
+            })
+            .collect(),
+        unresolved: facts
+            .indirect
+            .iter()
+            .filter_map(|(r, line)| Some((in_file(registry, r)?, *line)))
+            .collect(),
+        tables: facts
+            .tables
+            .iter()
+            .filter_map(|t| in_file(registry, t))
+            .collect(),
+    };
+    registry.set_dispatch(&file, dispatch);
 
     let file_key = arena.intern(&file);
     (file_key, edges, nodes)

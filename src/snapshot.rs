@@ -41,7 +41,9 @@ use std::path::Path;
 /// 30: HTTP routes and requests per file (`http`).
 /// 34: invocations of an argument-defining macro define that argument, and
 /// each file's defining macros are stored (`definers`).
-const FORMAT_VERSION: u32 = 36;
+/// 36: a re-parse forgets the definitions a file no longer has.
+/// 37: assembly indirect calls, stores and tables per file (`dispatch`).
+const FORMAT_VERSION: u32 = 37;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -83,6 +85,8 @@ pub struct Snapshot {
     pub http: Vec<(String, crate::ingest::FileHttp)>,
     /// Per file, the macros whose invocations define their first argument.
     pub definers: Vec<(String, Vec<String>)>,
+    /// Per file, indirect calls and the fields they go through.
+    pub dispatch: Vec<(String, crate::ingest::FileDispatch)>,
 }
 
 impl Snapshot {
@@ -112,6 +116,7 @@ impl Snapshot {
             refs: Vec::new(),
             http: Vec::new(),
             definers: Vec::new(),
+            dispatch: Vec::new(),
         }
     }
 }

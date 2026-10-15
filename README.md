@@ -295,7 +295,12 @@ TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity,
 Erlang and assembly (Motorola 68000, GNU as and NASM: labels, `EQU`
 constants, macros — including ones that define the name they are given —
-and calls through `JSR`/`BSR`/`BRA`/`call`). The
+and calls through `JSR`/`BSR`/`BRA`/`call`, a routine falling into the next
+label, and indirect calls: through a `DC.L` table, or through a field a table
+was stored into elsewhere, `MOVE.L MN_OPS(A1),A2` / `JSR (A2)`, followed
+through registers within a routine and into the routine it calls. Where an
+indirect call cannot be traced, `impact` and `find_callers` name it instead of
+ending silently). The
 checked-in language fixtures exercise extraction floors for every
 supported language variant, so an empty or materially degraded scanner fails
 the build rather than quietly yielding nothing. Markdown is indexed as a source

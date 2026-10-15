@@ -186,10 +186,10 @@ after_table:
         "{calls:?}"
     );
     assert!(calls.contains(&pair("release", "release_go")), "{calls:?}");
-    assert!(
-        !calls.iter().any(|(f, _)| f == "release_go" || f == "table"),
-        "{calls:?}"
-    );
+    assert!(!calls.iter().any(|(f, _)| f == "release_go"), "{calls:?}");
+    // A table falls into nothing; it reaches what it lists.
+    assert!(!calls.contains(&pair("table", "after_table")), "{calls:?}");
+    assert!(calls.contains(&pair("table", "release")), "{calls:?}");
     assert_eq!(
         facts.continues_into,
         [
@@ -197,4 +197,77 @@ after_table:
             ("release_exit".to_string(), "release_go".to_string()),
         ]
     );
+}
+
+#[test]
+fn indirect_calls_name_the_table_or_field_they_go_through() {
+    let src = "\
+mount:
+    LEA     ffs_ops,A0
+    MOVE.L  A0,MN_OPS(A1)
+    RTS
+call:
+    MOVE.L  MN_OPS(A1),A2
+    MOVE.L  OP_READ(A2),A2
+    BSR     do
+    RTS
+do:
+    CMPA.W  #0,A2
+    JSR     (A2)
+    RTS
+syscall:
+    LEA     calls,A0
+    MOVE.L  (A0,D0.W),A1
+    JSR     (A1)
+    RTS
+local:
+    LEA     .jump(PC),A0
+    MOVE.L  (A0,D0.W),A0
+    JSR     (A0)
+    RTS
+.jump:
+    DC.L    mount
+lost:
+    MOVE.L  4(SP),A0
+    JSR     (A0)
+    RTS
+calls:
+    DC.L    mount,  call
+    DC.W    2
+name:
+    DC.B    'x',0
+names:
+    DC.L    name
+";
+    let facts = parse(src);
+    let calls = calls(src);
+    assert_eq!(
+        facts.stores,
+        [("MN_OPS".to_string(), "ffs_ops".to_string())]
+    );
+    // `do` is called through a parameter; its caller dispatches.
+    let read = vec!["MN_OPS".to_string(), "OP_READ".to_string()];
+    assert!(
+        facts.dispatch.contains(&("call".to_string(), None, read)),
+        "{:?}",
+        facts.dispatch
+    );
+    assert!(facts
+        .dispatch
+        .contains(&("syscall".to_string(), Some("calls".to_string()), vec![])));
+    assert!(!facts
+        .dispatch
+        .iter()
+        .any(|(r, _, _)| r == "local" || r == "do"));
+    // A local table's entries are its routine's own calls.
+    assert!(calls.contains(&pair("local", "mount")), "{calls:?}");
+    assert_eq!(facts.indirect, [("lost".to_string(), 28)]);
+    // A table, and a routine holding a local one; not a list of data only.
+    assert_eq!(facts.tables, ["calls".to_string(), "local".to_string()]);
+    assert!(
+        calls.contains(&pair("calls", "call")),
+        "an entry after `,  `: {calls:?}"
+    );
+    // An entry naming this file's own data is not a call.
+    assert!(!calls.contains(&pair("names", "name")), "{calls:?}");
 }
