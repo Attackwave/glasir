@@ -246,6 +246,8 @@ enum Format {
     McpJson,
     /// The same without `type`, as Gemini CLI and Qwen Code write it.
     McpJsonPlain,
+    /// Without `type` and with `disabled: false`, as Antigravity writes it.
+    Antigravity,
     /// VS Code's `{"servers": {...}}`.
     VsCode,
     /// OpenCode's `{"mcp": {"glasir": {"type": "local", "command": [...]}}}`.
@@ -259,7 +261,7 @@ impl Format {
     /// The JSON object holding the servers; `None` for the TOML format.
     fn container(self) -> Option<&'static str> {
         match self {
-            Format::McpJson | Format::McpJsonPlain => Some("mcpServers"),
+            Format::McpJson | Format::McpJsonPlain | Format::Antigravity => Some("mcpServers"),
             Format::VsCode => Some("servers"),
             Format::OpenCode => Some("mcp"),
             Format::CodexToml => None,
@@ -279,6 +281,11 @@ impl Format {
             Format::McpJsonPlain => {
                 serde_json::json!({"command": exe, "args": ["serve", root, "--watch"]})
             }
+            Format::Antigravity => serde_json::json!({
+                "command": exe,
+                "args": ["serve", root, "--watch"],
+                "disabled": false,
+            }),
             _ => serde_json::json!({
                 "type": "stdio",
                 "command": exe,
@@ -389,6 +396,20 @@ const TARGETS: &[Target] = &[
         markers: &[".qwen"],
         home_markers: &[".qwen"],
         next: "Qwen Code: restart it here",
+    },
+    // `agy mcp add` writes only the global file; a workspace's own servers
+    // live in `.agents/mcp_config.json`, found from the working directory up
+    // to the repository root. A bare `.agents/` is no marker: other agents
+    // use that directory too.
+    Target {
+        name: "antigravity",
+        project: Some(".agents/mcp_config.json"),
+        user: Some(".gemini/config/mcp_config.json"),
+        format: Format::Antigravity,
+        binaries: &["agy"],
+        markers: &[".agents/mcp_config.json"],
+        home_markers: &[".gemini/antigravity-cli", ".gemini/antigravity"],
+        next: "Antigravity: start agy here and allow the glasir tools when asked",
     },
     Target {
         name: "vscode",
@@ -7115,6 +7136,11 @@ fn demo_install() {
             "/mcpServers/glasir/command",
         ),
         ("qwen", ".qwen/settings.json", "/mcpServers/glasir/command"),
+        (
+            "antigravity",
+            ".agents/mcp_config.json",
+            "/mcpServers/glasir/command",
+        ),
         ("vscode", ".vscode/mcp.json", "/servers/glasir/command"),
         ("opencode", "opencode.json", "/mcp/glasir/command/0"),
     ] {
@@ -7134,6 +7160,13 @@ fn demo_install() {
             .is_null(),
         "gemini writes no type"
     );
+    // As `agy mcp add` writes it: no type, explicitly enabled.
+    let agy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(".agents/mcp_config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(agy["mcpServers"]["glasir"]["type"].is_null());
+    assert_eq!(agy["mcpServers"]["glasir"]["disabled"], false);
 
     // Codex is TOML edited as text: the rest of the file survives verbatim,
     // a second install does not duplicate the table, and uninstall removes
@@ -7175,6 +7208,11 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(dir.join(".vscode/mcp.json")).unwrap())
             .unwrap();
     assert!(vscode["servers"]["glasir"].is_null());
+    let agy: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join(".agents/mcp_config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(agy["mcpServers"]["glasir"].is_null());
 
     std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
     std::fs::write(dir.join(".glasir-layout-free"), b"x").unwrap();
