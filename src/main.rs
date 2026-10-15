@@ -4536,6 +4536,33 @@ def pay(self):
     // The re-parse carries the newer timestamp, which temporal decay needs.
     assert!(snap.neighbors(pay).all(|e| e.timestamp == 2));
 
+    // A definition renamed in a save leaves the registry with its old name.
+    ingest_file(
+        &g,
+        &mut arena,
+        &mut reg,
+        Path::new("src/rename.py"),
+        Path::new(""),
+        "def before():\n    pass\n",
+        2,
+    )
+    .unwrap();
+    ingest_file(
+        &g,
+        &mut arena,
+        &mut reg,
+        Path::new("src/rename.py"),
+        Path::new(""),
+        "def after():\n    pass\n",
+        2,
+    )
+    .unwrap();
+    assert!(
+        reg.node_of("src/rename.py#before").is_none(),
+        "a save forgets a renamed definition"
+    );
+    assert!(reg.node_of("src/rename.py#after").is_some());
+
     // A second file defining `charge` resolves onto the placeholder the first
     // file minted, so the call actually connects.
     let before = reg.get_or_mint("charge");
@@ -7730,6 +7757,15 @@ fn demo_snippet() {
     .unwrap();
     // A modifier the range leaves out, and the doc comment above it.
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    // Enough files that two edits stay under the fifth of the tree above
+    // which `analyse` rebuilds instead of taking the incremental path.
+    for i in 0..12 {
+        std::fs::write(
+            dir.join(format!("src/fill{i}.rs")),
+            format!("fn fill{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
     // A call across files routes through a placeholder tier 3 links.
     std::fs::write(dir.join("src/c.rs"), "fn caller() { delta(); }\n").unwrap();
     std::fs::write(dir.join("src/d.rs"), "fn delta() {}\n").unwrap();
@@ -7801,6 +7837,43 @@ fn demo_snippet() {
         "the snippet follows the file, not the analysis: {sc}"
     );
 
+    // Renamed after the graph was built: the stored range of the old name
+    // now cuts through the new code, and must be refused rather than served.
+    std::fs::write(
+        dir.join("src/m.rs"),
+        "// a longer header than before\n/// Docs.\npub fn gamma_renamed() {}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        call("src/m.rs#gamma")["result"]["isError"],
+        true,
+        "a renamed definition's stale range is not its source"
+    );
+
+    // And the next analysis forgets the old names, of code and of sections.
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First renamed\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
+    let renamed = served_state(&dir).unwrap();
+    for (gone, there) in [
+        ("src/m.rs#gamma", "src/m.rs#gamma_renamed"),
+        ("notes.md#First", "notes.md#First renamed"),
+    ] {
+        assert!(
+            renamed.registry.node_of(gone).is_none(),
+            "{gone} outlives its rename"
+        );
+        assert!(renamed.registry.node_of(there).is_some(), "{there}");
+    }
+    std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
+
     // A document section comes back alone, not as the whole document.
     let section = call("notes.md#First");
     assert_eq!(
@@ -7820,6 +7893,25 @@ fn demo_snippet() {
             .map(|&(n, _)| served.name(n))
             .collect::<Vec<_>>(),
         ["src/d.rs#delta"],
+    );
+
+    // One node of many is not "100% filtered out" in the structured half.
+    let one = mcp::handle_for_test(
+        &served,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "query_graph",
+                           "arguments": {"query": "delta", "max_hops": 0, "max_nodes": 1}}}),
+    )
+    .unwrap();
+    let sc = &one["result"]["structuredContent"];
+    let (returned, total) = (
+        sc["returned"].as_f64().unwrap(),
+        sc["total"].as_f64().unwrap(),
+    );
+    let pct = sc["filtered_out_percent"].as_f64().unwrap();
+    assert!(
+        returned > 0.0 && (pct - 100.0 * (1.0 - returned / total)).abs() < 1e-9,
+        "the percentage is exact, not rounded: {pct}"
     );
 
     // A name matched only as part of a longer one says which symbol answered.
@@ -10668,6 +10760,45 @@ fn demo_overview() {
     // 4. Deterministic, like every other ranking here.
     let again = ask(json!({}));
     assert_eq!(out, again, "the same tree must produce the same overview");
+
+    // 5. The structured half is one page: two pages of one add up to the
+    // whole list, the total is stated, and `next_offset` marks what remains.
+    let page = |args: serde_json::Value| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "overview", "arguments": args}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+    let whole = page(json!({}));
+    let names = |v: &serde_json::Value| -> Vec<String> {
+        v["subsystems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(names(&whole).len() >= 2, "{whole}");
+    let first = page(json!({"limit": 1}));
+    assert_eq!(names(&first).len(), 1, "a page holds `limit` subsystems");
+    assert_eq!(first["total_subsystems"], whole["total_subsystems"]);
+    let rest = page(json!({"limit": 60, "offset": first["next_offset"]}));
+    assert_eq!(
+        [names(&first), names(&rest)].concat(),
+        names(&whole),
+        "two pages add up to the whole list"
+    );
+    assert!(
+        rest.get("next_offset").is_none(),
+        "nothing remains after the last page"
+    );
+    assert!(
+        !ask(json!({"offset": 99})).contains("no partition"),
+        "past the end is not an empty tree"
+    );
 
     println!("phase E.2 ok: overview names the subsystems and the way into each");
 }

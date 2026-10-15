@@ -285,6 +285,24 @@ impl SymbolRegistry {
         }
     }
 
+    /// Drops the names of definitions a re-parsed file no longer has. A file
+    /// still on disk goes through `get_or_mint` only, which never removes a
+    /// key, so a renamed definition kept its old name, and a lookup of that
+    /// name cut its stale byte range out of the current text. Called with the
+    /// file's previous definitions that the parse did not produce again, which
+    /// is empty unless something was renamed or removed, so the scan over the
+    /// registry runs only then. The ids that remain are untouched.
+    pub fn forget_nodes(&mut self, gone: &HashSet<NodeId>) {
+        if gone.is_empty() {
+            return;
+        }
+        self.by_name.retain(|_, n| !gone.contains(n));
+        for n in gone {
+            self.docs.remove(n);
+            self.spans.remove(n);
+        }
+    }
+
     /// Drops bare placeholders nothing references any more.
     ///
     /// `forget_file` drops a vanished file's `file#name` keys, but the *bare*
@@ -382,6 +400,7 @@ pub fn ingest_markdown_into(
     let mut names = markdown_names(registry);
     for (path, src) in documents {
         let doc = markdown_facts(arena, registry, path, root, src, now, &mut names);
+        registry.forget_nodes(&dropped(d.file_nodes(doc.file_key), &doc.nodes));
         apply_markdown(snap, d, doc);
     }
 }
@@ -728,6 +747,16 @@ fn prepare_facts(
     (file_key, edges, nodes)
 }
 
+/// The file's previous definitions that this parse did not produce again.
+fn dropped(previous: &[NodeId], now: &[NodeId]) -> HashSet<NodeId> {
+    let now: HashSet<NodeId> = now.iter().copied().collect();
+    previous
+        .iter()
+        .copied()
+        .filter(|n| !now.contains(n))
+        .collect()
+}
+
 /// The delta mutation one parsed file makes: drop what the file owned, then
 /// add what it now defines and calls.
 ///
@@ -770,6 +799,7 @@ pub fn apply_facts_into(
     now: u64,
 ) {
     let (file_key, edges, nodes) = prepare_facts(arena, registry, path, root, facts, now);
+    registry.forget_nodes(&dropped(d.file_nodes(file_key), &nodes));
     scope_file(snap, d, file_key, &edges, &nodes);
 }
 
@@ -783,6 +813,7 @@ pub fn apply_facts(
     now: u64,
 ) -> usize {
     let (file_key, edges, nodes) = prepare_facts(arena, registry, path, root, facts, now);
+    registry.forget_nodes(&dropped(graph.load().delta.file_nodes(file_key), &nodes));
     let count = edges.len();
     graph.update(|snap, d| scope_file(snap, d, file_key, &edges, &nodes));
     count

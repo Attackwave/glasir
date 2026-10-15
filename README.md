@@ -232,10 +232,10 @@ One is for joining trees:
 
 Every tool declares itself read-only, idempotent and closed-world
 (`readOnlyHint`, `openWorldHint: false`), so a client in a planning or
-read-only mode may call all of them. The three that list without bound —
-`impact`, `find_callers`, `find_unused` — take `limit` and `offset` and return
-`next_offset` while more remain; the order is stable, so pages add up to the
-whole answer.
+read-only mode may call all of them. The four that list without bound —
+`impact`, `find_callers`, `find_unused` and `overview` — take `limit` and
+`offset` and return `next_offset` while more remain; the order is stable, so
+pages add up to the whole answer.
 
 **"Nothing calls this" is checked against the source.** The graph records
 calls; a type in a signature, a constant read or a handler wired up in a

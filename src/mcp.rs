@@ -480,6 +480,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "description": "How many subsystems (default 12)"},
+                    "offset": {"type": "integer", "description": "Skip this many, largest first: the `next_offset` of a previous answer"},
                     "entry_points": {"type": "integer", "description": "Entry points per subsystem (default 3)"}
                 },
                 "required": []
@@ -489,7 +490,9 @@ fn tool_list() -> Value {
         "properties": {
             "symbols": {"type": "integer"},
             "files": {"type": "integer"},
-            "shown": {"type": "integer", "description": "How many the text renders; the array is complete"},
+            "shown": {"type": "integer", "description": "How many subsystems this page holds"},
+            "total_subsystems": {"type": "integer"},
+            "next_offset": {"type": "integer", "description": "Present when more remain"},
             "subsystems": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
@@ -1219,10 +1222,13 @@ using one of these.",
     // edge disappeared from the graph, taking a `shortest_path` answer with it
     // (`structural` 100% -> 97%). The tools describe this repository too.
     let vocab = vocabulary(served, query, &kept);
-    let filtered = round_to(
-        physics::reduction(kept.len(), served.snap.width()) as f64,
-        10.0,
-    );
+    // Unrounded and in f64: one node of thousands would otherwise read as 100.
+    let width = served.snap.width();
+    let filtered = if width == 0 {
+        0.0
+    } else {
+        100.0 * (1.0 - kept.len() as f64 / width as f64)
+    };
     Ok(json!({
         "returned": kept.len(),
         "total": served.snap.width(),
@@ -3520,6 +3526,7 @@ type Group = (usize, String, Vec<(usize, String)>);
 
 fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(12).clamp(1, 60) as usize;
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let per = args["entry_points"].as_u64().unwrap_or(3).clamp(0, 10) as usize;
 
     // One pass to group, as `subsystem_names` does and for the same measured
@@ -3620,7 +3627,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let groups = merged;
 
     if groups.is_empty() {
-        return Ok(json!({"symbols": 0, "files": 0, "subsystems": []}));
+        return Ok(json!({"symbols": 0, "files": 0, "subsystems": [], "total_subsystems": 0}));
     }
 
     let symbols = served.defined.len();
@@ -3630,13 +3637,14 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         .filter(|(_, n)| served.defined.contains(n))
         .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f))
         .collect();
-    Ok(json!({
+    // One page, largest first, with the total and where the next one starts:
+    // the whole list ran to hundreds of entries on a tree with many files,
+    // whatever `limit` the caller asked for.
+    let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
+    let mut answer = json!({
         "symbols": symbols,
         "files": files.len(),
-        // Every subsystem, not only the `limit` shown: a caller reading the
-        // JSON has no "... and N more" line to act on, and truncating the data
-        // to match a display cap loses what the cap exists to keep readable.
-        "subsystems": groups
+        "subsystems": page
             .iter()
             .map(|(size, label, entries)| json!({
                 "name": label,
@@ -3647,25 +3655,31 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
                     .collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
-        "shown": limit.min(groups.len()),
-    }))
+        "shown": page.len(),
+        "total_subsystems": groups.len(),
+    });
+    if offset + page.len() < groups.len() {
+        answer["next_offset"] = json!(offset + page.len());
+    }
+    Ok(answer)
 }
 
 fn render_overview(v: &Value) -> String {
     let groups = v["subsystems"].as_array().map_or(&[][..], Vec::as_slice);
-    if groups.is_empty() {
+    let total = v["total_subsystems"]
+        .as_u64()
+        .unwrap_or(groups.len() as u64);
+    if total == 0 {
         return "no subsystems: the tree has no partition yet, which means \
 either no analysis has run or nothing in it is connected.\n"
             .to_string();
     }
-    let limit = v["shown"].as_u64().unwrap_or(0) as usize;
     let mut out = format!(
-        "{} symbols in {} files, {} subsystems\n\n",
+        "{} symbols in {} files, {total} subsystems\n\n",
         v["symbols"].as_u64().unwrap_or(0),
         v["files"].as_u64().unwrap_or(0),
-        groups.len()
     );
-    for g in groups.iter().take(limit) {
+    for g in groups {
         out.push_str(&format!(
             "{}  ({} symbols)\n",
             g["name"].as_str().unwrap_or(""),
@@ -3679,8 +3693,11 @@ either no analysis has run or nothing in it is connected.\n"
             ));
         }
     }
-    if groups.len() > limit {
-        out.push_str(&format!("\n... and {} more\n", groups.len() - limit));
+    if let Some(next) = v["next_offset"].as_u64() {
+        out.push_str(&format!(
+            "\n... and {} more (offset: {next})\n",
+            total.saturating_sub(next)
+        ));
     }
     out.push_str(
         "\nSubsystems are named after the file most of their symbols live in, \
@@ -4014,9 +4031,13 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         Some(lang) => with_comments(&src, lang, (start, end)),
         None => (start, end),
     };
+    // A stored range applied to a file written since is trusted only while
+    // it still holds the name: a definition renamed or removed since leaves a
+    // range that now cuts through whatever moved into those bytes.
+    let stored = fresh.is_none() && section.is_none();
     let text = src
         .get(start as usize..end as usize)
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && !(stored && edited && !t.contains(bare)))
         .ok_or_else(|| format!("{file} has changed since {name} was indexed"))?
         .to_string();
     let line = 1 + src.as_bytes()[..start as usize]
