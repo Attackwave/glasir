@@ -176,14 +176,17 @@ Fifteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
-- `query_graph` — the subgraph relevant to a question
+- `query_graph` — the subgraph relevant to a question; given a file's path,
+  every definition in that file
 - `shortest_path` — how one symbol reaches another
 - `explain_node` — callers, callees and subsystem of one symbol
 - `impact` — what breaks if this changes, grouped by distance
 - `cycles` — dependency cycles, compiler-resolved edges only by default
 - `get_code_snippet` — the source a symbol names, from the range the parser
   recorded, so nothing has to open the file or guess a line; a Markdown
-  section returns that section, not the whole document
+  section returns that section, not the whole document, and `following: N`
+  reads on through the next N definitions. An assembly routine that branches
+  or falls into another says where it continues
 - `find_callers` — the direct callers of one symbol, as one list, and the
   definitions that use it by name without calling it (a type in a signature,
   a constant read, a base class)
