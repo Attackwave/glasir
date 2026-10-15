@@ -72,6 +72,8 @@ pub struct FileFacts {
     pub macro_definers: Vec<String>,
     /// Macro invocations naming an argument: (macro, argument, line range).
     pub macro_calls: Vec<(String, String, (u32, u32))>,
+    /// (routine, where it goes on), for assembly. Read by `get_code_snippet`.
+    pub continues_into: Vec<(String, String)>,
 }
 
 /// A language we can extract from.
@@ -334,6 +336,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         had_errors: f.had_errors,
         macro_definers: f.macro_definers,
         macro_calls: f.macro_calls,
+        continues_into: f.continues_into,
     })
 }
 

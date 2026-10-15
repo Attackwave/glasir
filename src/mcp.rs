@@ -343,7 +343,13 @@ name, which is not the same as nothing depending on it"
         // One letter did the same: `a` returned `build.rs#main` and
         // `make_tree.py#FUNCS_PER_FILE`.
         const MIN_SUBSTRING: usize = 3;
+        // A file's own path: every definition in it, which is what a caller
+        // asking with a path wants and what eight substring hits are not.
+        let mut in_file = Vec::new();
         for (symbol, &node) in self.registry.entries() {
+            if symbol.split_once('#').is_some_and(|(f, _)| f == query) {
+                in_file.push(node);
+            }
             // The first `#` is the separator — see `resolve_one`.
             let tail = symbol.split_once('#').map_or(symbol.as_str(), |(_, t)| t);
             if tail == query {
@@ -351,6 +357,11 @@ name, which is not the same as nothing depending on it"
             } else if query.len() >= MIN_SUBSTRING && symbol.contains(query) {
                 partial.push(node);
             }
+        }
+        if !in_file.is_empty() {
+            // In the order they appear in the file.
+            in_file.sort_by_key(|&n| (self.registry.span(n).map_or(u32::MAX, |s| s.0), n));
+            return in_file.into_iter().map(|n| (n, 1.0)).collect();
         }
         // Deterministic: the registry is a HashMap, so iteration order is not.
         exact.sort_unstable();
@@ -403,13 +414,15 @@ fn tool_list() -> Value {
     range the parser recorded when the graph was built. Use it after `query_graph` \
     or `impact` names something worth reading: the answer is the definition itself, \
     so no file has to be opened and no line number has to be guessed. A Markdown \
-    section returns that section alone. A name that \
+    section returns that section alone. `following` reads on through that many \
+    definitions after it in one answer, for a run of short routines. A name that \
     does not resolve uniquely is refused with its candidates, exactly as `impact` \
     refuses one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"}
+                    "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
+                    "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"}
                 },
                 "required": ["symbol"]
             },
@@ -421,7 +434,9 @@ fn tool_list() -> Value {
                     "line": {"type": "integer", "description": "1-based, where the definition starts"},
                     "bytes": {"type": "array", "items": {"type": "integer"},
                         "description": "Start and end offset in the file"},
-                    "source": {"type": "string"}
+                    "source": {"type": "string"},
+                    "continues_into": {"type": "string", "description": "An assembly routine that branches or falls into another: where it goes on"},
+                    "through": {"type": "string", "description": "With `following`: the last definition the source reaches"}
                 },
                 "required": ["symbol", "file", "line", "bytes", "source"]
             }
@@ -432,7 +447,9 @@ fn tool_list() -> Value {
             "description": "Find the subgraph relevant to a symbol or a question. \
     Expands from matching nodes and filters by recency, provenance and distance, \
     returning only what is worth reading. Takes a symbol name (`pay`, \
-    `src/checkout.rs#pay`), a substring, or a plain-language question — a name is \
+    `src/checkout.rs#pay`), a file path (`src/checkout.rs`: every definition in \
+    it, in order; raise `max_nodes` for a long file), a substring, or a \
+    plain-language question — a name is \
     matched exactly first, a question is scored against identifiers and the prose \
     documenting them.\n\nSearch here is lexical, so it finds what a codebase calls \
     things, not what you called them. Every result ends with the words that code is \
@@ -4001,10 +4018,8 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
     // server without `--watch` keeps its graph while the file is edited, and
     // a stored range cut from newer text returns the end of the routine above
     // and a truncated body. A name defined through a macro is only in the
-    // stored graph, and keeps its stored range.
-    // Parsed again only when written since this state was built (seconds,
-    // so an edit in the same second counts): that is 29 ms on a 200 KB file
-    // against 0.5 ms for the stored range.
+    // stored graph, and keeps its stored range. Parsing is tens of
+    // milliseconds on a large file, once per call.
     use crate::parse_ast::LangExt;
     let bare = &name[file.len() + 1..];
     let edited = std::fs::metadata(root.join(path))
@@ -4012,23 +4027,60 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .is_none_or(|t| t.as_secs() >= served.now);
-    let fresh = edited
-        .then(|| crate::parse_ast::Lang::from_path(path))
-        .flatten()
-        .and_then(|lang| crate::parse_ast::parse_file(path, &src, lang))
-        .and_then(|facts| facts.ranges.into_iter().rfind(|(n, _)| n == bare))
-        .map(|(_, range)| range);
+    let lang = crate::parse_ast::Lang::from_path(path);
+    let facts = lang.and_then(|lang| crate::parse_ast::parse_file(path, &src, lang));
+    let fresh = facts
+        .as_ref()
+        .and_then(|f| f.ranges.iter().rfind(|(n, _)| n == bare))
+        .map(|&(_, range)| range);
     // A document section is cut from the current text too, so a caller reads
     // the section rather than the whole document.
     let section = is_documentation(&name)
         .then(|| crate::docs::section_bytes(&src, file, bare))
         .flatten();
-    let (start, end) = fresh
+    let (start, mut end) = fresh
         .or(section)
         .or_else(|| served.registry.span(node))
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
-    let (start, end) = match crate::parse_ast::Lang::from_path(path) {
-        Some(lang) => with_comments(&src, lang, (start, end)),
+    // `following`: on through the next definitions, each the first to start
+    // at or after the end of the one before, so nested ones are not counted.
+    let following = args["following"].as_u64().unwrap_or(0).min(50) as usize;
+    let mut through: Option<(String, u32)> = None;
+    if following > 0 {
+        let f = facts
+            .as_ref()
+            .ok_or_else(|| format!("{file} is not a parsed source; `following` needs one"))?;
+        for _ in 0..following {
+            let Some((next, range)) = f
+                .ranges
+                .iter()
+                .filter(|(_, r)| r.0 >= end)
+                .min_by_key(|(_, r)| r.0)
+            else {
+                break;
+            };
+            end = range.1;
+            through = Some((next.clone(), range.0));
+        }
+    }
+    // An assembly label runs to the next one, over the constants and the
+    // header comment that belong to it; those definitions are not this
+    // routine's code. Labels do not nest, which is what makes this safe here
+    // and wrong for a language whose definitions do.
+    let others: Vec<(u32, u32)> = match (lang, &facts) {
+        (Some(crate::parse_ast::Lang::Assembly), Some(f)) => f
+            .ranges
+            .iter()
+            .filter(|(n, r)| {
+                let from = through.as_ref().map_or(start, |&(_, s)| s);
+                n != bare && r.0 > from && r.0 < end
+            })
+            .map(|&(_, r)| r)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let (start, end) = match lang {
+        Some(lang) => with_comments(&src, lang, (start, end), &others),
         None => (start, end),
     };
     // A stored range applied to a file written since is trusted only while
@@ -4044,13 +4096,26 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .iter()
         .filter(|&&b| b == b'\n')
         .count();
-    Ok(json!({
+    let mut answer = json!({
         "symbol": name,
         "file": file,
         "line": line,
         "bytes": [start, end],
         "source": text,
-    }))
+    });
+    // An entry point that branches or falls into a shared body is only a
+    // stub on its own; say where it goes on.
+    let last = through.as_ref().map_or(bare, |(n, _)| n.as_str());
+    if let Some((_, to)) = facts
+        .as_ref()
+        .and_then(|f| f.continues_into.iter().find(|(from, _)| from == last))
+    {
+        answer["continues_into"] = json!(to);
+    }
+    if let Some((n, _)) = &through {
+        answer["through"] = json!(format!("{file}#{n}"));
+    }
+    Ok(answer)
 }
 
 /// A definition's range widened to the comment block directly above it — in
@@ -4059,7 +4124,12 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
 /// runs to the next label otherwise opens without its own header and ends with
 /// the next one's. Unchanged for a language with no rule file, whose comment
 /// syntax only its own scanner knows.
-fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u32)) -> (u32, u32) {
+fn with_comments(
+    src: &str,
+    lang: crate::parse_ast::Lang,
+    (start, end): (u32, u32),
+    others: &[(u32, u32)],
+) -> (u32, u32) {
     let code = native_parsers::rules::active().tokens(lang, src);
     if code.is_empty() {
         return (start, end);
@@ -4082,7 +4152,10 @@ fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u3
     }
     let first = code.partition_point(|t| (t.end as usize) <= s);
     let last = code.partition_point(|t| (t.start as usize) < e);
-    let tail = match code[first..last].last() {
+    let own = |t: &&native_parsers::lexer::Token<'_>| {
+        !others.iter().any(|&(a, b)| t.start >= a && t.start < b)
+    };
+    let tail = match code[first..last].iter().rfind(own) {
         Some(t) => src[t.end as usize..e]
             .find('\n')
             .map_or(e, |i| t.end as usize + i + 1),
@@ -4092,13 +4165,22 @@ fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u3
 }
 
 fn render_get_code_snippet(v: &Value) -> String {
-    format!(
+    let mut out = format!(
         "{}\n{}:{}\n\n{}\n",
         v["symbol"].as_str().unwrap_or(""),
         v["file"].as_str().unwrap_or(""),
         v["line"].as_u64().unwrap_or(0),
         v["source"].as_str().unwrap_or("")
-    )
+    );
+    if let Some(last) = v["through"].as_str() {
+        out.push_str(&format!("\nthrough {last}\n"));
+    }
+    if let Some(to) = v["continues_into"].as_str() {
+        out.push_str(&format!(
+            "\ncontinues into {to}: ask for its snippet to read on\n"
+        ));
+    }
+    out
 }
 
 fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, String> {

@@ -50,6 +50,25 @@ const OPCODES: &[&str] = &[
     "dw", "dd", "dq", "resb", "resw", "resd", "resq", "times", "bits",
 ];
 
+/// What ends a routine's own flow: a return, or a branch that always leaves.
+const ENDS: &[&str] = &[
+    "rts", "rte", "rtr", "rtd", "rtm", "ret", "bra", "jmp", "jmpq", "illegal",
+];
+
+/// Words in `OPCODES` that assemble no instruction: data, layout and
+/// conditional assembly. A routine whose last statement is one of these is
+/// not known to fall into the next label.
+const DIRECTIVES: &[&str] = &[
+    "dc", "ds", "dcb", "blk", "equ", "equr", "set", "reg", "macro", "endm", "mexit", "section",
+    "xdef", "xref", "public", "global", "globl", "extern", "include", "incbin", "incdir", "even",
+    "odd", "cnop", "align", "org", "rsreset", "rsset", "rs", "so", "fo", "if", "ifd", "ifnd",
+    "ifeq", "ifne", "ifc", "ifnc", "ifgt", "ifge", "iflt", "ifle", "else", "elseif", "endc",
+    "endif", "end", "rept", "endr", "opt", "output", "machine", "mc68000", "mc68010", "mc68020",
+    "mc68030", "mc68040", "mc68060", "near", "far", "text", "data", "bss", "code", "idnt", "ttl",
+    "printt", "printv", "fail", "echo", "list", "nolist", "offset", "db", "dw", "dd", "dq", "resb",
+    "resw", "resd", "resq", "times", "bits",
+];
+
 fn is(word: &str, list: &[&str]) -> bool {
     list.iter().any(|w| word.eq_ignore_ascii_case(w))
 }
@@ -73,6 +92,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     // The macro whose body is being read, and the name of its first
     // parameter where the dialect names it (`.macro var name`).
     let mut macro_name: Option<(String, Option<String>)> = None;
+    // The label whose body is open, and how its last statement leaves it:
+    // `Flow` runs on into the next label, `Jump` always branches to a name,
+    // `Other` (a directive, data, a macro, nothing yet) says neither.
+    let mut routine: Option<String> = None;
+    let mut last = Exit::Other;
     let line_of = |at: usize| {
         let start = src[..at].rfind('\n').map_or(0, |n| n + 1);
         let end = src[at..].find('\n').map_or(src.len(), |n| at + n);
@@ -149,8 +173,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             // other dot is a local label, a directive or a size suffix, and
             // what follows it is not a statement's opcode.
             TokenKind::Symbol('.') => {
+                if !seen_opcode {
+                    last = Exit::Other;
+                }
                 match kind(i + 1) {
                     Some(TokenKind::Ident(d)) if d.eq_ignore_ascii_case("macro") => {
+                        settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
                         if let Some(TokenKind::Ident(name)) = kind(i + 2) {
                             let param = match kind(i + 3) {
                                 Some(TokenKind::Ident(p)) => Some(p.to_string()),
@@ -218,6 +246,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     }
                     // `name MACRO`: a body up to `ENDM`.
                     Some(TokenKind::Ident(w)) if w.eq_ignore_ascii_case("macro") => {
+                        settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
                         macro_name = Some((ident.to_string(), None));
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         i += 2;
@@ -227,14 +256,32 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     // `name:` is a label in every dialect; Motorola also takes
                     // a bare name in column zero, which an opcode never is.
                     Some(TokenKind::Symbol(':')) => {
+                        settle(
+                            &mut routine,
+                            &mut last,
+                            Some(ident),
+                            calls,
+                            &mut scope,
+                            &mut facts,
+                        );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
+                        routine = Some(ident.to_string());
                         i += 2;
                         continue;
                     }
                     Some(TokenKind::Newline | TokenKind::Ident(_)) | None
                         if !is(ident, OPCODES) && !is(ident, BRANCHES) =>
                     {
+                        settle(
+                            &mut routine,
+                            &mut last,
+                            Some(ident),
+                            calls,
+                            &mut scope,
+                            &mut facts,
+                        );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
+                        routine = Some(ident.to_string());
                         i += 1;
                         continue;
                     }
@@ -244,6 +291,16 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             }
             TokenKind::Ident(ident) if !seen_opcode => {
                 seen_opcode = true;
+                last = if is(ident, ENDS) {
+                    Exit::Ends
+                } else if is(ident, BRANCHES)
+                    || is(ident, COUNTED_BRANCHES)
+                    || (is(ident, OPCODES) && !is(ident, DIRECTIVES))
+                {
+                    Exit::Flow
+                } else {
+                    Exit::Other
+                };
                 // A size suffix is not an operand: `BEQ.S .missing`.
                 let mut j = i + 1;
                 if kind(j) == Some(&TokenKind::Symbol('.'))
@@ -271,6 +328,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if !indexed && calls.allows(target) {
                             scope.record_call(target, &mut facts);
                         }
+                        if !indexed && is(ident, ENDS) {
+                            last = Exit::Jump(target.to_string());
+                        }
                         scope.on_word(target);
                         i = j + 1;
                         continue;
@@ -282,6 +342,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         in_body = false;
                     }
                 } else if ident.eq_ignore_ascii_case("macro") {
+                    settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
                     if let Some(TokenKind::Ident(name)) = kind(j) {
                         macro_name = Some((name.to_string(), None));
                         open_body(
@@ -322,6 +383,39 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
         i += 1;
     }
 
+    settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+/// How a routine's last statement leaves it.
+enum Exit {
+    Flow,
+    Ends,
+    Jump(String),
+    Other,
+}
+
+/// Closes the open routine's flow as the next label (`next`) or the end of
+/// the routines begins: a routine whose last instruction runs on falls into
+/// that label, which is a call into it like a branch would be.
+fn settle(
+    routine: &mut Option<String>,
+    last: &mut Exit,
+    next: Option<&str>,
+    calls: &crate::rules::Calls,
+    scope: &mut ScopeStack,
+    facts: &mut FileFacts,
+) {
+    if let Some(from) = routine.take() {
+        match (std::mem::replace(last, Exit::Other), next) {
+            (Exit::Flow, Some(to)) if calls.allows(to) => {
+                scope.record_call(to, facts);
+                facts.continues_into.push((from, to.to_string()));
+            }
+            (Exit::Jump(to), _) => facts.continues_into.push((from, to)),
+            _ => {}
+        }
+    }
+    *last = Exit::Other;
 }

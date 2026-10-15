@@ -7757,9 +7757,16 @@ fn demo_snippet() {
     .unwrap();
     // A modifier the range leaves out, and the doc comment above it.
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    // A routine followed by the next one's constants and header, and an entry
+    // point that is only a stub branching into a shared body.
+    std::fs::write(
+        dir.join("src/r.s"),
+        "read:\n    MOVE.B  D0,D1\n    RTS\n\nACK_US  EQU     85\n\n; head of handle\nhandle:\n    MOVEQ   #ACK_US,D0\n    RTS\nstub:\n    MOVEQ   #0,D0\n    BRA.S   handle\n",
+    )
+    .unwrap();
     // Enough files that two edits stay under the fifth of the tree above
     // which `analyse` rebuilds instead of taking the incremental path.
-    for i in 0..12 {
+    for i in 0..30 {
         std::fs::write(
             dir.join(format!("src/fill{i}.rs")),
             format!("fn fill{i}() {{}}\n"),
@@ -7856,7 +7863,19 @@ fn demo_snippet() {
         "Intro text.\n\n## First renamed\n\nOne.\n\n## Second\n\nTwo.\n",
     )
     .unwrap();
+    let r_s = std::fs::read_to_string(dir.join("src/r.s")).unwrap();
+    std::fs::write(dir.join("src/r.s"), format!("first:\n    RTS\n{r_s}")).unwrap();
     let renamed = served_state(&dir).unwrap();
+    // Minted last, written first: the file's order, not the ids'.
+    let order: Vec<String> = mcp::seeds_for_test(&renamed.as_served(), "src/r.s")
+        .iter()
+        .map(|&(n, _)| renamed.as_served().name(n))
+        .collect();
+    assert_eq!(
+        order.first().map(String::as_str),
+        Some("src/r.s#first"),
+        "{order:?}"
+    );
     for (gone, there) in [
         ("src/m.rs#gamma", "src/m.rs#gamma_renamed"),
         ("notes.md#First", "notes.md#First renamed"),
@@ -7868,6 +7887,7 @@ fn demo_snippet() {
         assert!(renamed.registry.node_of(there).is_some(), "{there}");
     }
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    std::fs::write(dir.join("src/r.s"), r_s).unwrap();
     std::fs::write(
         dir.join("notes.md"),
         "Intro text.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
@@ -7893,6 +7913,65 @@ fn demo_snippet() {
             .map(|&(n, _)| served.name(n))
             .collect::<Vec<_>>(),
         ["src/d.rs#delta"],
+    );
+
+    // An assembly routine ends at its last instruction, not over the next
+    // routine's constants and header.
+    assert_eq!(
+        call("src/r.s#read")["result"]["structuredContent"]["source"],
+        "read:\n    MOVE.B  D0,D1\n    RTS\n"
+    );
+    // A run of routines in one answer: the constant between two of them is
+    // not counted as one, and the hint is the last routine's.
+    let run = |n: u64| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "get_code_snippet",
+                               "arguments": {"symbol": "src/r.s#read", "following": n}}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+    let one = run(1);
+    assert_eq!(
+        one["source"],
+        "read:\n    MOVE.B  D0,D1\n    RTS\n\nACK_US  EQU     85\n\n; head of handle\nhandle:\n    MOVEQ   #ACK_US,D0\n    RTS\n",
+        "{one}"
+    );
+    assert_eq!(one["through"], "src/r.s#handle");
+    assert_eq!(run(2)["continues_into"], "handle");
+    let stub = call("src/r.s#stub");
+    assert_eq!(
+        stub["result"]["structuredContent"]["continues_into"], "handle",
+        "{stub}"
+    );
+    assert!(
+        stub["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("continues into handle")
+    );
+
+    // A file's path seeds every definition in it, in the order written.
+    let in_file: Vec<String> = mcp::seeds_for_test(&served, "src/r.s")
+        .iter()
+        .map(|&(n, _)| served.name(n))
+        .collect();
+    assert_eq!(
+        in_file,
+        [
+            "src/r.s#read",
+            "src/r.s#ACK_US",
+            "src/r.s#handle",
+            "src/r.s#stub"
+        ]
+    );
+    assert!(
+        mcp::seeds_for_test(&served, "src/r.s")
+            .iter()
+            .all(|&(_, s)| s == 1.0),
+        "a file's definitions are named outright, not matched as a substring"
     );
 
     // One node of many is not "100% filtered out" in the structured half.

@@ -26,6 +26,10 @@ pub struct FileFacts {
     /// byte range of the line). Whether one defines that name is known only
     /// once every file is read, since the macro may live in another.
     pub macro_calls: Vec<(String, String, (u32, u32))>,
+    /// (routine, where it goes on): an assembly routine that ends in an
+    /// unconditional branch, or falls into the label after it, continues
+    /// there. Entry points sharing one body are written that way.
+    pub continues_into: Vec<(String, String)>,
 }
 
 impl FileFacts {

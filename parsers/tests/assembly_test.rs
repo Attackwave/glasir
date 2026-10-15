@@ -159,3 +159,42 @@ SAVE        MACRO
     let src_line = "            VAR     balance,4";
     assert_eq!((end - start) as usize, src_line.len());
 }
+
+#[test]
+fn a_routine_continues_into_the_label_it_falls_or_branches_to() {
+    let src = "\
+release:
+    MOVEQ   #0,D0
+    BRA.S   release_go
+release_exit:
+    MOVEQ   #1,D0
+release_go:
+    MOVE.L  D0,D1
+    RTS
+table:
+    DC.L    release
+after_table:
+    NOP
+    BEQ.S   .out
+.out:
+    RTS
+";
+    let facts = parse(src);
+    let calls = calls(src);
+    assert!(
+        calls.contains(&pair("release_exit", "release_go")),
+        "{calls:?}"
+    );
+    assert!(calls.contains(&pair("release", "release_go")), "{calls:?}");
+    assert!(
+        !calls.iter().any(|(f, _)| f == "release_go" || f == "table"),
+        "{calls:?}"
+    );
+    assert_eq!(
+        facts.continues_into,
+        [
+            ("release".to_string(), "release_go".to_string()),
+            ("release_exit".to_string(), "release_go".to_string()),
+        ]
+    );
+}
