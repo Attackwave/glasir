@@ -176,14 +176,17 @@ Fifteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
 - `overview` — the subsystems of an unfamiliar tree and the way into each
-- `query_graph` — the subgraph relevant to a question
+- `query_graph` — the subgraph relevant to a question; given a file's path,
+  every definition in that file
 - `shortest_path` — how one symbol reaches another
 - `explain_node` — callers, callees and subsystem of one symbol
 - `impact` — what breaks if this changes, grouped by distance
 - `cycles` — dependency cycles, compiler-resolved edges only by default
 - `get_code_snippet` — the source a symbol names, from the range the parser
   recorded, so nothing has to open the file or guess a line; a Markdown
-  section returns that section, not the whole document
+  section returns that section, not the whole document, and `following: N`
+  reads on through the next N definitions. An assembly routine that branches
+  or falls into another says where it continues
 - `find_callers` — the direct callers of one symbol, as one list, and the
   definitions that use it by name without calling it (a type in a signature,
   a constant read, a base class)
@@ -232,10 +235,10 @@ One is for joining trees:
 
 Every tool declares itself read-only, idempotent and closed-world
 (`readOnlyHint`, `openWorldHint: false`), so a client in a planning or
-read-only mode may call all of them. The three that list without bound —
-`impact`, `find_callers`, `find_unused` — take `limit` and `offset` and return
-`next_offset` while more remain; the order is stable, so pages add up to the
-whole answer.
+read-only mode may call all of them. The four that list without bound —
+`impact`, `find_callers`, `find_unused` and `overview` — take `limit` and
+`offset` and return `next_offset` while more remain; the order is stable, so
+pages add up to the whole answer.
 
 **"Nothing calls this" is checked against the source.** The graph records
 calls; a type in a signature, a constant read or a handler wired up in a
@@ -292,7 +295,14 @@ TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Swift, Scala, Kotlin, Bash, Lua,
 Elixir, Dart, Haskell, Zig, Perl, SQL, HCL, R, Julia, OCaml, Solidity,
 Erlang and assembly (Motorola 68000, GNU as and NASM: labels, `EQU`
 constants, macros — including ones that define the name they are given —
-and calls through `JSR`/`BSR`/`BRA`/`call`). The
+and calls through `JSR`/`BSR`/`BRA`/`call`, a routine falling into the next
+label, and indirect calls: through a `DC.L` table, or through a field a table
+was stored into elsewhere, `MOVE.L MN_OPS(A1),A2` / `MOVE.L OP_READ(A2),A2` /
+`JSR (A2)` reaching the entry at offset `OP_READ` of every such table. Values
+are followed through registers, branches, calls and the routines they are
+handed to, across files. Where an indirect call cannot be traced, `impact` and
+`find_callers` name the nearest ones instead of ending silently; library calls
+through a base in A6 (`JSR _LVOOpen(A6)`) are counted apart from them). The
 checked-in language fixtures exercise extraction floors for every
 supported language variant, so an empty or materially degraded scanner fails
 the build rather than quietly yielding nothing. Markdown is indexed as a source

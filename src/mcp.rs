@@ -343,7 +343,13 @@ name, which is not the same as nothing depending on it"
         // One letter did the same: `a` returned `build.rs#main` and
         // `make_tree.py#FUNCS_PER_FILE`.
         const MIN_SUBSTRING: usize = 3;
+        // A file's own path: every definition in it, which is what a caller
+        // asking with a path wants and what eight substring hits are not.
+        let mut in_file = Vec::new();
         for (symbol, &node) in self.registry.entries() {
+            if symbol.split_once('#').is_some_and(|(f, _)| f == query) {
+                in_file.push(node);
+            }
             // The first `#` is the separator — see `resolve_one`.
             let tail = symbol.split_once('#').map_or(symbol.as_str(), |(_, t)| t);
             if tail == query {
@@ -351,6 +357,11 @@ name, which is not the same as nothing depending on it"
             } else if query.len() >= MIN_SUBSTRING && symbol.contains(query) {
                 partial.push(node);
             }
+        }
+        if !in_file.is_empty() {
+            // In the order they appear in the file.
+            in_file.sort_by_key(|&n| (self.registry.span(n).map_or(u32::MAX, |s| s.0), n));
+            return in_file.into_iter().map(|n| (n, 1.0)).collect();
         }
         // Deterministic: the registry is a HashMap, so iteration order is not.
         exact.sort_unstable();
@@ -403,13 +414,15 @@ fn tool_list() -> Value {
     range the parser recorded when the graph was built. Use it after `query_graph` \
     or `impact` names something worth reading: the answer is the definition itself, \
     so no file has to be opened and no line number has to be guessed. A Markdown \
-    section returns that section alone. A name that \
+    section returns that section alone. `following` reads on through that many \
+    definitions after it in one answer, for a run of short routines. A name that \
     does not resolve uniquely is refused with its candidates, exactly as `impact` \
     refuses one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"}
+                    "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
+                    "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"}
                 },
                 "required": ["symbol"]
             },
@@ -421,7 +434,9 @@ fn tool_list() -> Value {
                     "line": {"type": "integer", "description": "1-based, where the definition starts"},
                     "bytes": {"type": "array", "items": {"type": "integer"},
                         "description": "Start and end offset in the file"},
-                    "source": {"type": "string"}
+                    "source": {"type": "string"},
+                    "continues_into": {"type": "string", "description": "An assembly routine that branches or falls into another: where it goes on"},
+                    "through": {"type": "string", "description": "With `following`: the last definition the source reaches"}
                 },
                 "required": ["symbol", "file", "line", "bytes", "source"]
             }
@@ -432,7 +447,9 @@ fn tool_list() -> Value {
             "description": "Find the subgraph relevant to a symbol or a question. \
     Expands from matching nodes and filters by recency, provenance and distance, \
     returning only what is worth reading. Takes a symbol name (`pay`, \
-    `src/checkout.rs#pay`), a substring, or a plain-language question — a name is \
+    `src/checkout.rs#pay`), a file path (`src/checkout.rs`: every definition in \
+    it, in order; raise `max_nodes` for a long file), a substring, or a \
+    plain-language question — a name is \
     matched exactly first, a question is scored against identifiers and the prose \
     documenting them.\n\nSearch here is lexical, so it finds what a codebase calls \
     things, not what you called them. Every result ends with the words that code is \
@@ -480,6 +497,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "description": "How many subsystems (default 12)"},
+                    "offset": {"type": "integer", "description": "Skip this many, largest first: the `next_offset` of a previous answer"},
                     "entry_points": {"type": "integer", "description": "Entry points per subsystem (default 3)"}
                 },
                 "required": []
@@ -489,7 +507,9 @@ fn tool_list() -> Value {
         "properties": {
             "symbols": {"type": "integer"},
             "files": {"type": "integer"},
-            "shown": {"type": "integer", "description": "How many the text renders; the array is complete"},
+            "shown": {"type": "integer", "description": "How many subsystems this page holds"},
+            "total_subsystems": {"type": "integer"},
+            "next_offset": {"type": "integer", "description": "Present when more remain"},
             "subsystems": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
@@ -1023,6 +1043,8 @@ const VOCAB_FROM: usize = 10;
 /// One changed file here defines 54, which cost 972 tokens to print in full.
 /// Counts stay exact; only the naming is capped.
 const CHANGE_LIST_LIMIT: usize = 20;
+/// Untraced indirect calls named per answer, nearest first.
+const UNTRACED_LIMIT: usize = 10;
 
 /// Words the result is written in that the question did not use.
 ///
@@ -1219,10 +1241,13 @@ using one of these.",
     // edge disappeared from the graph, taking a `shortest_path` answer with it
     // (`structural` 100% -> 97%). The tools describe this repository too.
     let vocab = vocabulary(served, query, &kept);
-    let filtered = round_to(
-        physics::reduction(kept.len(), served.snap.width()) as f64,
-        10.0,
-    );
+    // Unrounded and in f64: one node of thousands would otherwise read as 100.
+    let width = served.snap.width();
+    let filtered = if width == 0 {
+        0.0
+    } else {
+        100.0 * (1.0 - kept.len() as f64 / width as f64)
+    };
     Ok(json!({
         "returned": kept.len(),
         "total": served.snap.width(),
@@ -1602,6 +1627,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let (offset, limit) = page(args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
+    let (untraced, untraced_total, library) = served.untraced(node, &reached);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
@@ -1622,6 +1648,9 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
         "dependents": total,
         "within": within,
         "named_elsewhere": elsewhere,
+        "untraced": untraced,
+        "untraced_total": untraced_total,
+        "library_calls": library,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
@@ -1692,9 +1721,13 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|&(n, _)| n)
         .collect();
 
+    let (untraced, untraced_total, library) = served.untraced(node, &reached);
     let mut value = json!({
         "symbol": served.name(node),
         "named_elsewhere": served.unconnected_mentions(node, &reached),
+        "untraced": untraced,
+        "untraced_total": untraced_total,
+        "library_calls": library,
         "callers": callers
             .iter()
             .skip(offset)
@@ -1718,13 +1751,15 @@ fn render_find_callers(v: &Value) -> String {
     if v["count"].as_u64().unwrap_or(0) == 0 {
         if has_elsewhere(v) {
             return format!(
-                "{sym}\n\nnothing in the graph calls this{}",
-                render_elsewhere(v, ", but")
+                "{sym}\n\nnothing in the graph calls this{}{}",
+                render_elsewhere(v, ", but"),
+                render_untraced(v)
             );
         }
         return format!(
             "{sym}\n\nnothing in the graph calls this. Callers in code the graph \
-does not cover are not ruled out.\n"
+does not cover are not ruled out.\n{}",
+            render_untraced(v)
         );
     }
     let count = v["count"].as_u64().unwrap_or(callers.len() as u64);
@@ -1740,6 +1775,7 @@ does not cover are not ruled out.\n"
     if has_elsewhere(v) {
         out.push_str(&render_elsewhere(v, "\nbeyond these,"));
     }
+    out.push_str(&render_untraced(v));
     out
 }
 
@@ -2242,6 +2278,18 @@ pub struct References {
     /// Every route with its resolved handler, as matched: what
     /// `http_surface` hands a control plane joining several trees.
     routes: Vec<(NodeId, crate::routes::Verb, Vec<String>)>,
+    /// Targets of indirect calls, by the routines calling through a table or
+    /// a field. See `FileDispatch`.
+    by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// Indirect calls nothing could resolve: (routine, line where known).
+    unresolved: Vec<(NodeId, Option<u32>)>,
+    /// Tables of routines, which an indirect call reaches as a whole.
+    tables: std::collections::HashSet<NodeId>,
+    /// The tables some resolved indirect call goes through.
+    dispatched: std::collections::HashSet<NodeId>,
+    /// Calls into a library through its base in A6, which the graph does
+    /// not follow and does not count as untraced.
+    library: usize,
 }
 
 impl Served<'_> {
@@ -2354,10 +2402,231 @@ impl Served<'_> {
                 sources.sort_unstable();
                 sources.dedup();
             }
+
+            // An indirect call reaches what was stored where it loads from.
+            // A chain starting at a table reaches the table; otherwise the
+            // deepest field anything is stored into decides, so a record's
+            // handler field wins over the record, and the field read after
+            // it is the slot: `[MN_OPS, OP_RENAME]` is the entry at offset
+            // OP_RENAME of every table stored into MN_OPS.
+            let dispatch = self.registry.dispatch();
+            let file_of = |n: NodeId| self.name(n).split_once('#').map(|(f, _)| f.to_string());
+            // A label by name: the one the tree defines, or else the one in
+            // the file naming it.
+            let near = |name: &str, file: &str| -> Option<NodeId> {
+                resolve(name).or_else(|| {
+                    let mut here = defs.get(name)?.iter().filter(|(f, _)| *f == file);
+                    match (here.next(), here.next()) {
+                        (Some(&(_, n)), None) => Some(n),
+                        _ => None,
+                    }
+                })
+            };
+            let tables: std::collections::HashSet<NodeId> = dispatch
+                .values()
+                .flat_map(|d| d.tables.iter().copied())
+                .collect();
+
+            let mut written: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+            for d in dispatch.values() {
+                for (name, value) in &d.constants {
+                    written
+                        .entry(name.as_str())
+                        .or_default()
+                        .push(value.as_str());
+                }
+            }
+            let value = |name: &str| -> Option<u32> {
+                let mut name = name.to_string();
+                let mut add: i64 = 0;
+                for _ in 0..8 {
+                    let values = written.get(name.as_str())?;
+                    if values.iter().any(|v| *v != values[0]) {
+                        return None;
+                    }
+                    let v = values[0].trim();
+                    if let Some(n) = asm_number(v) {
+                        return u32::try_from(n + add).ok();
+                    }
+                    // `OTHER+4`: one step along, at most a few deep.
+                    let (base, rest) = v.split_at(v.find(['+', '-']).unwrap_or(v.len()));
+                    add += match rest.chars().next() {
+                        Some('+') => asm_number(&rest[1..])?,
+                        Some('-') => -asm_number(&rest[1..])?,
+                        _ => 0,
+                    };
+                    name = base.trim().to_string();
+                }
+                None
+            };
+            let mut slots: std::collections::HashMap<NodeId, Vec<(u32, NodeId)>> =
+                Default::default();
+            for (file, d) in dispatch {
+                for (table, at, to) in &d.slots {
+                    if let Some(to) = near(to, file) {
+                        slots.entry(*table).or_default().push((*at, to));
+                    }
+                }
+            }
+
+            // What a routine was handed in a register: the values its callers
+            // pass, and through any routine that hands its own on unchanged.
+            type Origin = (NodeId, Option<String>, Vec<String>);
+            let mut passed: std::collections::HashMap<(NodeId, &str), Vec<Origin>> =
+                Default::default();
+            let mut forwarded: std::collections::HashMap<NodeId, Vec<(NodeId, u16)>> =
+                Default::default();
+            for (file, d) in dispatch {
+                for (from, to, reg, label, fields) in &d.passes {
+                    if let Some(to) = near(to, file) {
+                        passed.entry((to, reg.as_str())).or_default().push((
+                            *from,
+                            label.clone(),
+                            fields.clone(),
+                        ));
+                    }
+                }
+                for (from, to, mask) in &d.forwards {
+                    if let Some(to) = near(to, file) {
+                        forwarded.entry(to).or_default().push((*from, *mask));
+                    }
+                }
+            }
+            const REGISTERS: [&str; 15] = [
+                "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5",
+                "a6",
+            ];
+            let handed = |routine: NodeId, reg: &str| -> Vec<Origin> {
+                let bit = REGISTERS.iter().position(|r| *r == reg).map(|k| 1u16 << k);
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut todo = vec![routine];
+                while let Some(r) = todo.pop() {
+                    if !seen.insert(r) {
+                        continue;
+                    }
+                    out.extend(passed.get(&(r, reg)).into_iter().flatten().cloned());
+                    for &(from, mask) in forwarded.get(&r).into_iter().flatten() {
+                        if bit.is_some_and(|b| mask & b != 0) {
+                            todo.push(from);
+                        }
+                    }
+                }
+                out
+            };
+
+            let mut stored: std::collections::HashMap<&str, Vec<(String, String)>> =
+                Default::default();
+            for (file, d) in dispatch {
+                for (field, label) in &d.stores {
+                    stored
+                        .entry(field.as_str())
+                        .or_default()
+                        .push((label.clone(), file.clone()));
+                }
+                for (routine, reg, field) in &d.param_stores {
+                    for (from, label, fields) in handed(*routine, reg) {
+                        if let (Some(label), true) = (label, fields.is_empty()) {
+                            let file = file_of(from).unwrap_or_default();
+                            stored
+                                .entry(field.as_str())
+                                .or_default()
+                                .push((label, file));
+                        }
+                    }
+                }
+            }
+
+            // Every indirect call as (loader, label, fields, site, line): the
+            // loader is the routine that loaded the value, which is the one
+            // reaching the target, wherever the call itself is made.
+            type Indirect = (NodeId, Option<String>, Vec<String>, NodeId, Option<u32>);
+            let mut calls: Vec<Indirect> = Vec::new();
+            let mut unresolved: Vec<(NodeId, Option<u32>)> = Vec::new();
+            for d in dispatch.values() {
+                for (routine, label, fields, line) in &d.calls {
+                    calls.push((
+                        *routine,
+                        label.clone(),
+                        fields.clone(),
+                        *routine,
+                        Some(*line),
+                    ));
+                }
+                for (routine, reg, fields, line) in &d.param_calls {
+                    let origins = handed(*routine, reg);
+                    if origins.is_empty() && !fields.is_empty() {
+                        calls.push((*routine, None, fields.clone(), *routine, Some(*line)));
+                    } else if origins.is_empty() {
+                        unresolved.push((*routine, Some(*line)));
+                    }
+                    for (from, label, mut path) in origins {
+                        path.extend(fields.iter().cloned());
+                        calls.push((from, label, path, *routine, Some(*line)));
+                    }
+                }
+                unresolved.extend(d.unresolved.iter().map(|&(r, line)| (r, Some(line))));
+            }
+
+            let mut by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>> =
+                Default::default();
+            let mut dispatched: std::collections::HashSet<NodeId> = Default::default();
+            for (loader, label, fields, site, line) in calls {
+                let home = file_of(loader).unwrap_or_default();
+                let anchor = label.as_deref().and_then(|l| near(l, &home));
+                let mut targets: Vec<NodeId> = Vec::new();
+                match anchor {
+                    Some(t) if fields.is_empty() || tables.contains(&t) => {
+                        targets.push(t);
+                        dispatched.insert(t);
+                    }
+                    _ => {
+                        let deepest = fields
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find_map(|(k, f)| stored.get(f.as_str()).map(|s| (k, s)));
+                        if let Some((k, labels)) = deepest {
+                            let slot = fields.get(k + 1).map(|f| value(f));
+                            for (l, file) in labels {
+                                let Some(t) = near(l, file) else { continue };
+                                dispatched.insert(t);
+                                match (slot, slots.get(&t)) {
+                                    // The entry at that offset, or none: an
+                                    // empty slot reaches nothing.
+                                    (Some(Some(at)), Some(entries)) => targets.extend(
+                                        entries.iter().filter(|(o, _)| *o == at).map(|&(_, to)| to),
+                                    ),
+                                    _ => targets.push(t),
+                                }
+                            }
+                        }
+                    }
+                }
+                if targets.is_empty() {
+                    unresolved.push((site, line));
+                }
+                for t in targets {
+                    if t != loader {
+                        by_dispatch.entry(t).or_default().push(loader);
+                    }
+                }
+            }
+            for sources in by_dispatch.values_mut() {
+                sources.sort_unstable();
+                sources.dedup();
+            }
+            unresolved.sort_unstable();
+            unresolved.dedup();
             References {
                 by_target,
                 by_route,
                 routes,
+                by_dispatch,
+                unresolved,
+                tables,
+                dispatched,
+                library: dispatch.values().map(|d| d.library.len()).sum(),
             }
         })
     }
@@ -2407,6 +2676,20 @@ fn direct_callers_with(
         for &from in served
             .references(&local)
             .by_route
+            .get(&node)
+            .into_iter()
+            .flatten()
+        {
+            out.push((from, Confidence::Ambiguous));
+        }
+    }
+    // An indirect call through a table or a field is a call at every hop,
+    // resolved through what was stored, so at the weakest tier.
+    if Confidence::Ambiguous >= floor {
+        let local = std::sync::OnceLock::new();
+        for &from in served
+            .references(&local)
+            .by_dispatch
             .get(&node)
             .into_iter()
             .flatten()
@@ -3276,6 +3559,62 @@ impl Served<'_> {
     }
 
     /// Files naming `node` that no edge in `reached` connects, sorted.
+    /// The indirect calls nothing could trace, when they may matter to this
+    /// answer: it runs into a table no resolved call goes through, or an
+    /// assembly symbol has no caller at all. Ending there silently reads as
+    /// "nothing reaches it", which an untraced `JSR (A0)` can contradict.
+    ///
+    /// Only the nearest `UNTRACED_LIMIT` are named, with the total beside
+    /// them: every unresolved call in a tree (each program's library calls
+    /// among them) buried the few that sit next to the symbol.
+    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> (Vec<Value>, usize, usize) {
+        let local = std::sync::OnceLock::new();
+        let refs = self.references(&local);
+        if refs.unresolved.is_empty() && refs.library == 0 {
+            return (Vec::new(), 0, 0);
+        }
+        // A table no resolved indirect call goes through is reached only in
+        // a way the graph could not follow, whatever else lists it.
+        let stuck = std::iter::once(&node)
+            .chain(reached)
+            .any(|n| refs.tables.contains(n) && !refs.dispatched.contains(n));
+        use crate::parse_ast::LangExt;
+        let name = self.name(node);
+        let alone = reached.is_empty()
+            && name.split_once('#').is_some_and(|(f, _)| {
+                crate::parse_ast::Lang::from_path(std::path::Path::new(f))
+                    == Some(crate::parse_ast::Lang::Assembly)
+            });
+        if !stuck && !alone {
+            return (Vec::new(), 0, 0);
+        }
+        // Nearest first: the same file, then the same directory.
+        let file = |n: &str| n.split_once('#').map_or("", |(f, _)| f).to_string();
+        let home = file(&name);
+        let shared = |other: &str| {
+            home.split('/')
+                .zip(other.split('/'))
+                .take_while(|(a, b)| a == b)
+                .count()
+        };
+        let mut sites: Vec<(usize, String, Option<u32>)> = refs
+            .unresolved
+            .iter()
+            .map(|&(n, line)| {
+                let symbol = self.name(n);
+                (shared(&file(&symbol)), symbol, line)
+            })
+            .collect();
+        sites.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| (&a.1, a.2).cmp(&(&b.1, b.2))));
+        let total = sites.len();
+        let named = sites
+            .into_iter()
+            .take(UNTRACED_LIMIT)
+            .map(|(_, symbol, line)| json!({"symbol": symbol, "line": line}))
+            .collect();
+        (named, total, refs.library)
+    }
+
     fn unconnected_mentions(&self, node: NodeId, reached: &[NodeId]) -> Vec<String> {
         let own = self.name(node);
         let Some((home, name)) = own.split_once('#') else {
@@ -3417,11 +3756,13 @@ fn render_impact(v: &Value) -> String {
         if has_elsewhere(v) {
             out.push_str("nothing in the graph reaches this symbol");
             out.push_str(&render_elsewhere(v, ", but"));
+            out.push_str(&render_untraced(v));
         } else {
             out.push_str(
                 "nothing in the graph reaches this symbol: changing it \
 breaks no caller here. Callers in code the graph does not cover are not ruled out.\n",
             );
+            out.push_str(&render_untraced(v));
         }
         return out;
     }
@@ -3448,6 +3789,58 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
     out.push_str(&more_line(v, v["dependents"].as_u64().unwrap_or(0)));
     if has_elsewhere(v) {
         out.push_str(&render_elsewhere(v, "\nbeyond these,"));
+    }
+    out.push_str(&render_untraced(v));
+    out
+}
+
+/// An assembler number: decimal, `$` hex or `%` binary, optionally negative.
+fn asm_number(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (neg, s) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let n = if let Some(h) = s.strip_prefix('$') {
+        i64::from_str_radix(h, 16).ok()?
+    } else if let Some(b) = s.strip_prefix('%') {
+        i64::from_str_radix(b, 2).ok()?
+    } else {
+        s.parse().ok()?
+    };
+    Some(if neg { -n } else { n })
+}
+
+/// The indirect calls an answer could not follow, after it.
+fn render_untraced(v: &Value) -> String {
+    let sites = v["untraced"].as_array().map_or(&[][..], Vec::as_slice);
+    let library = v["library_calls"].as_u64().unwrap_or(0);
+    let lead = if library > 0 {
+        format!(
+            "\n{library} library call(s) through A6 (`_LVO…`) are not followed; where \
+the tree implements that library itself, they may reach this too.\n"
+        )
+    } else {
+        String::new()
+    };
+    if sites.is_empty() {
+        return lead;
+    }
+    let total = v["untraced_total"]
+        .as_u64()
+        .map_or(sites.len(), |t| t as usize);
+    let mut out = format!(
+        "{lead}\n{total} indirect call(s) could not be traced, and any of them may reach this; nearest first:\n"
+    );
+    for s in sites {
+        let sym = s["symbol"].as_str().unwrap_or("");
+        match s["line"].as_u64() {
+            Some(line) => out.push_str(&format!("  {sym} (line {line})\n")),
+            None => out.push_str(&format!("  {sym}\n")),
+        }
+    }
+    if total > sites.len() {
+        out.push_str(&format!("  … and {} further away\n", total - sites.len()));
     }
     out
 }
@@ -3520,6 +3913,7 @@ type Group = (usize, String, Vec<(usize, String)>);
 
 fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(12).clamp(1, 60) as usize;
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let per = args["entry_points"].as_u64().unwrap_or(3).clamp(0, 10) as usize;
 
     // One pass to group, as `subsystem_names` does and for the same measured
@@ -3620,7 +4014,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let groups = merged;
 
     if groups.is_empty() {
-        return Ok(json!({"symbols": 0, "files": 0, "subsystems": []}));
+        return Ok(json!({"symbols": 0, "files": 0, "subsystems": [], "total_subsystems": 0}));
     }
 
     let symbols = served.defined.len();
@@ -3630,13 +4024,14 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         .filter(|(_, n)| served.defined.contains(n))
         .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f))
         .collect();
-    Ok(json!({
+    // One page, largest first, with the total and where the next one starts:
+    // the whole list ran to hundreds of entries on a tree with many files,
+    // whatever `limit` the caller asked for.
+    let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
+    let mut answer = json!({
         "symbols": symbols,
         "files": files.len(),
-        // Every subsystem, not only the `limit` shown: a caller reading the
-        // JSON has no "... and N more" line to act on, and truncating the data
-        // to match a display cap loses what the cap exists to keep readable.
-        "subsystems": groups
+        "subsystems": page
             .iter()
             .map(|(size, label, entries)| json!({
                 "name": label,
@@ -3647,25 +4042,31 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
                     .collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
-        "shown": limit.min(groups.len()),
-    }))
+        "shown": page.len(),
+        "total_subsystems": groups.len(),
+    });
+    if offset + page.len() < groups.len() {
+        answer["next_offset"] = json!(offset + page.len());
+    }
+    Ok(answer)
 }
 
 fn render_overview(v: &Value) -> String {
     let groups = v["subsystems"].as_array().map_or(&[][..], Vec::as_slice);
-    if groups.is_empty() {
+    let total = v["total_subsystems"]
+        .as_u64()
+        .unwrap_or(groups.len() as u64);
+    if total == 0 {
         return "no subsystems: the tree has no partition yet, which means \
 either no analysis has run or nothing in it is connected.\n"
             .to_string();
     }
-    let limit = v["shown"].as_u64().unwrap_or(0) as usize;
     let mut out = format!(
-        "{} symbols in {} files, {} subsystems\n\n",
+        "{} symbols in {} files, {total} subsystems\n\n",
         v["symbols"].as_u64().unwrap_or(0),
         v["files"].as_u64().unwrap_or(0),
-        groups.len()
     );
-    for g in groups.iter().take(limit) {
+    for g in groups {
         out.push_str(&format!(
             "{}  ({} symbols)\n",
             g["name"].as_str().unwrap_or(""),
@@ -3679,8 +4080,11 @@ either no analysis has run or nothing in it is connected.\n"
             ));
         }
     }
-    if groups.len() > limit {
-        out.push_str(&format!("\n... and {} more\n", groups.len() - limit));
+    if let Some(next) = v["next_offset"].as_u64() {
+        out.push_str(&format!(
+            "\n... and {} more (offset: {next})\n",
+            total.saturating_sub(next)
+        ));
     }
     out.push_str(
         "\nSubsystems are named after the file most of their symbols live in, \
@@ -3984,10 +4388,8 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
     // server without `--watch` keeps its graph while the file is edited, and
     // a stored range cut from newer text returns the end of the routine above
     // and a truncated body. A name defined through a macro is only in the
-    // stored graph, and keeps its stored range.
-    // Parsed again only when written since this state was built (seconds,
-    // so an edit in the same second counts): that is 29 ms on a 200 KB file
-    // against 0.5 ms for the stored range.
+    // stored graph, and keeps its stored range. Parsing is tens of
+    // milliseconds on a large file, once per call.
     use crate::parse_ast::LangExt;
     let bare = &name[file.len() + 1..];
     let edited = std::fs::metadata(root.join(path))
@@ -3995,41 +4397,95 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .is_none_or(|t| t.as_secs() >= served.now);
-    let fresh = edited
-        .then(|| crate::parse_ast::Lang::from_path(path))
-        .flatten()
-        .and_then(|lang| crate::parse_ast::parse_file(path, &src, lang))
-        .and_then(|facts| facts.ranges.into_iter().rfind(|(n, _)| n == bare))
-        .map(|(_, range)| range);
+    let lang = crate::parse_ast::Lang::from_path(path);
+    let facts = lang.and_then(|lang| crate::parse_ast::parse_file(path, &src, lang));
+    let fresh = facts
+        .as_ref()
+        .and_then(|f| f.ranges.iter().rfind(|(n, _)| n == bare))
+        .map(|&(_, range)| range);
     // A document section is cut from the current text too, so a caller reads
     // the section rather than the whole document.
     let section = is_documentation(&name)
         .then(|| crate::docs::section_bytes(&src, file, bare))
         .flatten();
-    let (start, end) = fresh
+    let (start, mut end) = fresh
         .or(section)
         .or_else(|| served.registry.span(node))
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
-    let (start, end) = match crate::parse_ast::Lang::from_path(path) {
-        Some(lang) => with_comments(&src, lang, (start, end)),
+    // `following`: on through the next definitions, each the first to start
+    // at or after the end of the one before, so nested ones are not counted.
+    let following = args["following"].as_u64().unwrap_or(0).min(50) as usize;
+    let mut through: Option<(String, u32)> = None;
+    if following > 0 {
+        let f = facts
+            .as_ref()
+            .ok_or_else(|| format!("{file} is not a parsed source; `following` needs one"))?;
+        for _ in 0..following {
+            let Some((next, range)) = f
+                .ranges
+                .iter()
+                .filter(|(_, r)| r.0 >= end)
+                .min_by_key(|(_, r)| r.0)
+            else {
+                break;
+            };
+            end = range.1;
+            through = Some((next.clone(), range.0));
+        }
+    }
+    // An assembly label runs to the next one, over the constants and the
+    // header comment that belong to it; those definitions are not this
+    // routine's code. Labels do not nest, which is what makes this safe here
+    // and wrong for a language whose definitions do.
+    let others: Vec<(u32, u32)> = match (lang, &facts) {
+        (Some(crate::parse_ast::Lang::Assembly), Some(f)) => f
+            .ranges
+            .iter()
+            .filter(|(n, r)| {
+                let from = through.as_ref().map_or(start, |&(_, s)| s);
+                n != bare && r.0 > from && r.0 < end
+            })
+            .map(|&(_, r)| r)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let (start, end) = match lang {
+        Some(lang) => with_comments(&src, lang, (start, end), &others),
         None => (start, end),
     };
+    // A stored range applied to a file written since is trusted only while
+    // it still holds the name: a definition renamed or removed since leaves a
+    // range that now cuts through whatever moved into those bytes.
+    let stored = fresh.is_none() && section.is_none();
     let text = src
         .get(start as usize..end as usize)
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && !(stored && edited && !t.contains(bare)))
         .ok_or_else(|| format!("{file} has changed since {name} was indexed"))?
         .to_string();
     let line = 1 + src.as_bytes()[..start as usize]
         .iter()
         .filter(|&&b| b == b'\n')
         .count();
-    Ok(json!({
+    let mut answer = json!({
         "symbol": name,
         "file": file,
         "line": line,
         "bytes": [start, end],
         "source": text,
-    }))
+    });
+    // An entry point that branches or falls into a shared body is only a
+    // stub on its own; say where it goes on.
+    let last = through.as_ref().map_or(bare, |(n, _)| n.as_str());
+    if let Some((_, to)) = facts
+        .as_ref()
+        .and_then(|f| f.continues_into.iter().find(|(from, _)| from == last))
+    {
+        answer["continues_into"] = json!(to);
+    }
+    if let Some((n, _)) = &through {
+        answer["through"] = json!(format!("{file}#{n}"));
+    }
+    Ok(answer)
 }
 
 /// A definition's range widened to the comment block directly above it — in
@@ -4038,7 +4494,12 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
 /// runs to the next label otherwise opens without its own header and ends with
 /// the next one's. Unchanged for a language with no rule file, whose comment
 /// syntax only its own scanner knows.
-fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u32)) -> (u32, u32) {
+fn with_comments(
+    src: &str,
+    lang: crate::parse_ast::Lang,
+    (start, end): (u32, u32),
+    others: &[(u32, u32)],
+) -> (u32, u32) {
     let code = native_parsers::rules::active().tokens(lang, src);
     if code.is_empty() {
         return (start, end);
@@ -4061,7 +4522,10 @@ fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u3
     }
     let first = code.partition_point(|t| (t.end as usize) <= s);
     let last = code.partition_point(|t| (t.start as usize) < e);
-    let tail = match code[first..last].last() {
+    let own = |t: &&native_parsers::lexer::Token<'_>| {
+        !others.iter().any(|&(a, b)| t.start >= a && t.start < b)
+    };
+    let tail = match code[first..last].iter().rfind(own) {
         Some(t) => src[t.end as usize..e]
             .find('\n')
             .map_or(e, |i| t.end as usize + i + 1),
@@ -4071,13 +4535,22 @@ fn with_comments(src: &str, lang: crate::parse_ast::Lang, (start, end): (u32, u3
 }
 
 fn render_get_code_snippet(v: &Value) -> String {
-    format!(
+    let mut out = format!(
         "{}\n{}:{}\n\n{}\n",
         v["symbol"].as_str().unwrap_or(""),
         v["file"].as_str().unwrap_or(""),
         v["line"].as_u64().unwrap_or(0),
         v["source"].as_str().unwrap_or("")
-    )
+    );
+    if let Some(last) = v["through"].as_str() {
+        out.push_str(&format!("\nthrough {last}\n"));
+    }
+    if let Some(to) = v["continues_into"].as_str() {
+        out.push_str(&format!(
+            "\ncontinues into {to}: ask for its snippet to read on\n"
+        ));
+    }
+    out
 }
 
 fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, String> {

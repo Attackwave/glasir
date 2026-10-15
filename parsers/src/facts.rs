@@ -1,5 +1,8 @@
 //! Extracted symbol facts, perfectly compatible with glasir's AST extraction contract.
 
+/// (caller, callee, register, label, fields): see `FileFacts::passes`.
+pub type Pass = (String, String, String, Option<String>, Vec<String>);
+
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct FileFacts {
     /// Defined symbols: functions, structs, classes, modules, tables, types.
@@ -26,6 +29,44 @@ pub struct FileFacts {
     /// byte range of the line). Whether one defines that name is known only
     /// once every file is read, since the macro may live in another.
     pub macro_calls: Vec<(String, String, (u32, u32))>,
+    /// (routine, where it goes on): an assembly routine that ends in an
+    /// unconditional branch, or falls into the label after it, continues
+    /// there. Entry points sharing one body are written that way.
+    pub continues_into: Vec<(String, String)>,
+    /// (field, label): a label's address stored into a field or a variable,
+    /// `LEA ops,A0` / `MOVE.L A0,MN_OPS(A1)`. Paired with `dispatch` across
+    /// files, since the table and the call through it rarely share one.
+    pub stores: Vec<(String, String)>,
+    /// (routine, label, fields, line): an indirect call through a value
+    /// loaded along these fields, outermost first, from a label's address
+    /// when the chain starts at one. `MOVE.L MN_OPS(A1),A2` / `MOVE.L
+    /// OP_READ(A2),A2` / `JSR (A2)` is `(None, [MN_OPS, OP_READ])`.
+    pub dispatch: Vec<(String, Option<String>, Vec<String>, u32)>,
+    /// (routine, line): an indirect call whose target could not be traced.
+    pub indirect: Vec<(String, u32)>,
+    /// Labels holding pointer entries (`DC.L routine`) in their own body:
+    /// dispatch tables, and headers listing a module's entry points.
+    pub tables: Vec<String>,
+    /// (name, value): every `EQU`/`=` constant, its value as written. A
+    /// field's offset decides which entry of a table a call loads.
+    pub constants: Vec<(String, String)>,
+    /// (table, offset, routine): a `DC.L` entry at a known byte offset.
+    pub slots: Vec<(String, u32, String)>,
+    /// (caller, callee, register, label, fields): a value of known origin in
+    /// a register when control passes to another label — a call, a branch,
+    /// or falling into it.
+    pub passes: Vec<Pass>,
+    /// (caller, callee, registers): registers the caller never wrote, passed
+    /// on unchanged, as a mask of D0-D7 (bits 0-7) and A0-A6 (bits 8-14).
+    pub forwards: Vec<(String, String, u16)>,
+    /// (routine, register, fields, line): an indirect call through a value
+    /// the routine was handed, with the fields it reads from it first.
+    pub param_calls: Vec<(String, String, Vec<String>, u32)>,
+    /// (routine, register, field): a value the routine was handed, stored.
+    pub param_stores: Vec<(String, String, String)>,
+    /// (routine, vector, line): a call into a library through its base in
+    /// A6, `JSR _LVOOpen(A6)`; the vector as written.
+    pub library_calls: Vec<(String, String, u32)>,
 }
 
 impl FileFacts {

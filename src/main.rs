@@ -804,6 +804,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (node, span) in &stored.spans {
                 registry.set_span(*node, *span);
             }
+            for (file, dispatch) in stored.dispatch {
+                registry.set_dispatch(&file, dispatch);
+            }
             for (file, http) in stored.http {
                 registry.set_http(&file, http);
             }
@@ -941,6 +944,13 @@ fn store_snapshot(
         .collect();
     http.sort_by(|a, b| a.0.cmp(&b.0));
     stored.http = http;
+    let mut dispatch: Vec<(String, ingest::FileDispatch)> = reg
+        .dispatch()
+        .iter()
+        .map(|(f, d)| (f.clone(), d.clone()))
+        .collect();
+    dispatch.sort_by(|a, b| a.0.cmp(&b.0));
+    stored.dispatch = dispatch;
     let mut definers: Vec<(String, Vec<String>)> = reg
         .definers()
         .iter()
@@ -3560,6 +3570,7 @@ fn demo() -> std::io::Result<()> {
     // has nothing to do with what they test.
     demo_ignored_paths();
     demo_scope();
+    demo_dispatch();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -4535,6 +4546,33 @@ def pay(self):
     assert!(!targets.contains(&"log"), "the removed call must be gone");
     // The re-parse carries the newer timestamp, which temporal decay needs.
     assert!(snap.neighbors(pay).all(|e| e.timestamp == 2));
+
+    // A definition renamed in a save leaves the registry with its old name.
+    ingest_file(
+        &g,
+        &mut arena,
+        &mut reg,
+        Path::new("src/rename.py"),
+        Path::new(""),
+        "def before():\n    pass\n",
+        2,
+    )
+    .unwrap();
+    ingest_file(
+        &g,
+        &mut arena,
+        &mut reg,
+        Path::new("src/rename.py"),
+        Path::new(""),
+        "def after():\n    pass\n",
+        2,
+    )
+    .unwrap();
+    assert!(
+        reg.node_of("src/rename.py#before").is_none(),
+        "a save forgets a renamed definition"
+    );
+    assert!(reg.node_of("src/rename.py#after").is_some());
 
     // A second file defining `charge` resolves onto the placeholder the first
     // file minted, so the call actually connects.
@@ -7730,6 +7768,22 @@ fn demo_snippet() {
     .unwrap();
     // A modifier the range leaves out, and the doc comment above it.
     std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    // A routine followed by the next one's constants and header, and an entry
+    // point that is only a stub branching into a shared body.
+    std::fs::write(
+        dir.join("src/r.s"),
+        "read:\n    MOVE.B  D0,D1\n    RTS\n\nACK_US  EQU     85\n\n; head of handle\nhandle:\n    MOVEQ   #ACK_US,D0\n    RTS\nstub:\n    MOVEQ   #0,D0\n    BRA.S   handle\n",
+    )
+    .unwrap();
+    // Enough files that two edits stay under the fifth of the tree above
+    // which `analyse` rebuilds instead of taking the incremental path.
+    for i in 0..30 {
+        std::fs::write(
+            dir.join(format!("src/fill{i}.rs")),
+            format!("fn fill{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
     // A call across files routes through a placeholder tier 3 links.
     std::fs::write(dir.join("src/c.rs"), "fn caller() { delta(); }\n").unwrap();
     std::fs::write(dir.join("src/d.rs"), "fn delta() {}\n").unwrap();
@@ -7801,6 +7855,56 @@ fn demo_snippet() {
         "the snippet follows the file, not the analysis: {sc}"
     );
 
+    // Renamed after the graph was built: the stored range of the old name
+    // now cuts through the new code, and must be refused rather than served.
+    std::fs::write(
+        dir.join("src/m.rs"),
+        "// a longer header than before\n/// Docs.\npub fn gamma_renamed() {}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        call("src/m.rs#gamma")["result"]["isError"],
+        true,
+        "a renamed definition's stale range is not its source"
+    );
+
+    // And the next analysis forgets the old names, of code and of sections.
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First renamed\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
+    let r_s = std::fs::read_to_string(dir.join("src/r.s")).unwrap();
+    std::fs::write(dir.join("src/r.s"), format!("first:\n    RTS\n{r_s}")).unwrap();
+    let renamed = served_state(&dir).unwrap();
+    // Minted last, written first: the file's order, not the ids'.
+    let order: Vec<String> = mcp::seeds_for_test(&renamed.as_served(), "src/r.s")
+        .iter()
+        .map(|&(n, _)| renamed.as_served().name(n))
+        .collect();
+    assert_eq!(
+        order.first().map(String::as_str),
+        Some("src/r.s#first"),
+        "{order:?}"
+    );
+    for (gone, there) in [
+        ("src/m.rs#gamma", "src/m.rs#gamma_renamed"),
+        ("notes.md#First", "notes.md#First renamed"),
+    ] {
+        assert!(
+            renamed.registry.node_of(gone).is_none(),
+            "{gone} outlives its rename"
+        );
+        assert!(renamed.registry.node_of(there).is_some(), "{there}");
+    }
+    std::fs::write(dir.join("src/m.rs"), "/// Docs.\npub fn gamma() {}\n").unwrap();
+    std::fs::write(dir.join("src/r.s"), r_s).unwrap();
+    std::fs::write(
+        dir.join("notes.md"),
+        "Intro text.\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n",
+    )
+    .unwrap();
+
     // A document section comes back alone, not as the whole document.
     let section = call("notes.md#First");
     assert_eq!(
@@ -7820,6 +7924,84 @@ fn demo_snippet() {
             .map(|&(n, _)| served.name(n))
             .collect::<Vec<_>>(),
         ["src/d.rs#delta"],
+    );
+
+    // An assembly routine ends at its last instruction, not over the next
+    // routine's constants and header.
+    assert_eq!(
+        call("src/r.s#read")["result"]["structuredContent"]["source"],
+        "read:\n    MOVE.B  D0,D1\n    RTS\n"
+    );
+    // A run of routines in one answer: the constant between two of them is
+    // not counted as one, and the hint is the last routine's.
+    let run = |n: u64| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "get_code_snippet",
+                               "arguments": {"symbol": "src/r.s#read", "following": n}}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+    let one = run(1);
+    assert_eq!(
+        one["source"],
+        "read:\n    MOVE.B  D0,D1\n    RTS\n\nACK_US  EQU     85\n\n; head of handle\nhandle:\n    MOVEQ   #ACK_US,D0\n    RTS\n",
+        "{one}"
+    );
+    assert_eq!(one["through"], "src/r.s#handle");
+    assert_eq!(run(2)["continues_into"], "handle");
+    let stub = call("src/r.s#stub");
+    assert_eq!(
+        stub["result"]["structuredContent"]["continues_into"], "handle",
+        "{stub}"
+    );
+    assert!(
+        stub["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("continues into handle")
+    );
+
+    // A file's path seeds every definition in it, in the order written.
+    let in_file: Vec<String> = mcp::seeds_for_test(&served, "src/r.s")
+        .iter()
+        .map(|&(n, _)| served.name(n))
+        .collect();
+    assert_eq!(
+        in_file,
+        [
+            "src/r.s#read",
+            "src/r.s#ACK_US",
+            "src/r.s#handle",
+            "src/r.s#stub"
+        ]
+    );
+    assert!(
+        mcp::seeds_for_test(&served, "src/r.s")
+            .iter()
+            .all(|&(_, s)| s == 1.0),
+        "a file's definitions are named outright, not matched as a substring"
+    );
+
+    // One node of many is not "100% filtered out" in the structured half.
+    let one = mcp::handle_for_test(
+        &served,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "query_graph",
+                           "arguments": {"query": "delta", "max_hops": 0, "max_nodes": 1}}}),
+    )
+    .unwrap();
+    let sc = &one["result"]["structuredContent"];
+    let (returned, total) = (
+        sc["returned"].as_f64().unwrap(),
+        sc["total"].as_f64().unwrap(),
+    );
+    let pct = sc["filtered_out_percent"].as_f64().unwrap();
+    assert!(
+        returned > 0.0 && (pct - 100.0 * (1.0 - returned / total)).abs() < 1e-9,
+        "the percentage is exact, not rounded: {pct}"
     );
 
     // A name matched only as part of a longer one says which symbol answered.
@@ -9423,6 +9605,189 @@ fn demo_doc_ranking() {
     );
 }
 
+/// Indirect calls in assembly, resolved across files: a table stored into a
+/// field in one file and called through that field in another, so that
+/// "who can reach this handler" is answerable, and an untraced call named
+/// where nothing resolved reaches.
+fn demo_dispatch() {
+    use serde_json::json;
+
+    let dir = std::env::temp_dir().join(format!("glasir-dispatch-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    let put = |f: &str, text: &str| std::fs::write(dir.join(f), text).unwrap();
+    // Two filesystems' tables, one stored into MN_OPS directly and one
+    // through a register handed to the routine storing it, in another file.
+    put(
+        "src/ops.s",
+        "ffs_ops:\n    DC.L    ffs_read,  ffs_rename\nffs_read:\n    RTS\nffs_rename:\n    RTS\nfat_ops:\n    DC.L    fat_read,fat_rename\nfat_read:\n    RTS\nfat_rename:\n    RTS\n",
+    );
+    put(
+        "src/mount.s",
+        "mount:\n    LEA     ffs_ops,A0\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\nmount_fs:\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\nmount_fat:\n    LEA     fat_ops,A0\n    BSR     mount_fs\n    RTS\n",
+    );
+    // The slot is loaded, then the value goes along a tail branch and a
+    // call into the routine that finally calls through it.
+    put(
+        "src/vfs.s",
+        "OP_READ   EQU     0\nOP_RENAME EQU     OP_READ+4\nvfs_rename:\n    MOVE.L  MN_OPS(A1),A2\n    MOVE.L  OP_RENAME(A2),A2\n    BRA     vfs_call\nvfs_call:\n    CMPA.W  #0,A2\n    BSR     vfs_do\n    RTS\nvfs_do:\n    JSR     (A2)\n    RTS\nsys_rename:\n    BSR     vfs_rename\n    RTS\n",
+    );
+    // A record whose field holds the device, whose own field holds the
+    // handler: the deepest field stored into decides.
+    put(
+        "src/dev.s",
+        "dev_add:\n    MOVE.L  #td_read,DV_READ(A0)\n    MOVE.L  #floppy,PART_PHYS_DEV(A1)\n    RTS\ntd_read:\n    RTS\nfloppy:\n    DS.L    4\npart_read:\n    LEA     part_table,A1\n    MOVE.L  PART_PHYS_DEV(A1),A1\n    MOVE.L  DV_READ(A1),A2\n    JSR     (A2)\n    RTS\npart_table:\n    DS.L    8\n",
+    );
+    put(
+        "src/shell.s",
+        "run_cmd:\n    LEA     cmds,A3\n    MOVE.L  CMD_RUN(A3),A1\n    JSR     (A1)\n    RTS\ncmds:\n    DC.L    do_ls\ndo_ls:\n    RTS\n",
+    );
+    put(
+        "src/module.s",
+        "header:\n    MOVEQ   #-1,D0\n    RTS\n    DC.L    entry\nentry:\n    RTS\nloader:\n    MOVE.L  4(SP),A0\n    JSR     (A0)\n    RTS\n",
+    );
+
+    let state = served_state(&dir).unwrap();
+    let served = state.as_served();
+    let call = |tool: &str, symbol: &str| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {"symbol": symbol, "depth": 4}}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+
+    // The handler, its table, the routine dispatching through the field the
+    // table was stored into, and that routine's caller.
+    let reached: Vec<String> = call("impact", "ffs_rename")["hops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|h| h["symbols"].as_array().unwrap().clone())
+        .map(|s| s["symbol"].as_str().unwrap().to_string())
+        .collect();
+    for want in [
+        "src/ops.s#ffs_ops",
+        "src/vfs.s#vfs_rename",
+        "src/vfs.s#sys_rename",
+    ] {
+        assert!(reached.iter().any(|r| r == want), "{want} in {reached:?}");
+    }
+    // The routine that loaded the slot calls what sits in it, and nothing
+    // else of the table; the table stored through a parameter counts too.
+    let loaded = |symbol: &str| -> Vec<String> {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap()["result"]["structuredContent"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let rename = "src/vfs.s#vfs_rename".to_string();
+    assert!(
+        loaded("ffs_rename").contains(&rename),
+        "{:?}",
+        loaded("ffs_rename")
+    );
+    assert!(
+        loaded("fat_rename").contains(&rename),
+        "{:?}",
+        loaded("fat_rename")
+    );
+    assert!(
+        !loaded("ffs_read").contains(&rename),
+        "{:?}",
+        loaded("ffs_read")
+    );
+    assert!(
+        !loaded("fat_read").contains(&rename),
+        "{:?}",
+        loaded("fat_read")
+    );
+    assert!(
+        call("impact", "ffs_rename")["untraced"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let callers = |served: &mcp::Served, symbol: &str| -> Vec<String> {
+        mcp::handle_for_test(
+            served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap()["result"]["structuredContent"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        callers(&served, "td_read").contains(&"src/dev.s#part_read".to_string()),
+        "the handler field, not the record: {:?}",
+        callers(&served, "td_read")
+    );
+    assert!(!callers(&served, "floppy").contains(&"src/dev.s#part_read".to_string()));
+
+    // A table the chain starts at is reached whole, whatever field of an
+    // entry the call then loads.
+    assert!(callers(&served, "cmds").contains(&"src/shell.s#run_cmd".to_string()));
+
+    // A start from the stored graph knows the same.
+    let warm = served_state(&dir).unwrap();
+    assert!(callers(&warm.as_served(), "ffs_rename").contains(&"src/vfs.s#vfs_rename".to_string()));
+
+    // A module header nothing dispatches through: the answer names the call
+    // it could not trace instead of ending there.
+    let untraced = call("impact", "entry")["untraced"].clone();
+    assert_eq!(
+        untraced,
+        json!([{"symbol": "src/module.s#loader", "line": 9}]),
+        "{untraced}"
+    );
+    assert_eq!(call("impact", "entry")["untraced_total"], json!(1));
+
+    // Many untraced calls elsewhere: the answer names the nearest few and
+    // says how many there are.
+    let far: String = (0..12)
+        .map(|k| format!("far{k}:\n    MOVE.L  4(SP),A0\n    JSR     (A0)\n    RTS\n"))
+        .collect();
+    put("lib/far.s", &far);
+    // Library calls through A6 are counted apart, never as untraced.
+    put(
+        "lib/os.s",
+        "os:\n    MOVE.L  4.W,A6\n    JSR     _LVOOpen(A6)\n    JSR     _LVOClose(A6)\n    JSR     -30(A6)\n    RTS\n",
+    );
+    let many = served_state(&dir).unwrap();
+    let wide = mcp::handle_for_test(
+        &many.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "impact", "arguments": {"symbol": "entry"}}}),
+    )
+    .unwrap()["result"]["structuredContent"]
+        .clone();
+    assert_eq!(wide["untraced_total"], json!(13), "{wide}");
+    assert_eq!(wide["library_calls"], json!(3), "{wide}");
+    let named = wide["untraced"].as_array().unwrap();
+    assert_eq!(named.len(), 10, "{wide}");
+    assert_eq!(
+        named[0]["symbol"], "src/module.s#loader",
+        "nearest first: {wide}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("dispatch ok: tables, fields and parameters resolve across files");
+}
+
 /// The indexed scope: `.gitignore` at every level, `.glasirignore` above it,
 /// and the same answer from every path that reads the tree.
 ///
@@ -10668,6 +11033,45 @@ fn demo_overview() {
     // 4. Deterministic, like every other ranking here.
     let again = ask(json!({}));
     assert_eq!(out, again, "the same tree must produce the same overview");
+
+    // 5. The structured half is one page: two pages of one add up to the
+    // whole list, the total is stated, and `next_offset` marks what remains.
+    let page = |args: serde_json::Value| {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "overview", "arguments": args}}),
+        )
+        .unwrap()["result"]["structuredContent"]
+            .clone()
+    };
+    let whole = page(json!({}));
+    let names = |v: &serde_json::Value| -> Vec<String> {
+        v["subsystems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(names(&whole).len() >= 2, "{whole}");
+    let first = page(json!({"limit": 1}));
+    assert_eq!(names(&first).len(), 1, "a page holds `limit` subsystems");
+    assert_eq!(first["total_subsystems"], whole["total_subsystems"]);
+    let rest = page(json!({"limit": 60, "offset": first["next_offset"]}));
+    assert_eq!(
+        [names(&first), names(&rest)].concat(),
+        names(&whole),
+        "two pages add up to the whole list"
+    );
+    assert!(
+        rest.get("next_offset").is_none(),
+        "nothing remains after the last page"
+    );
+    assert!(
+        !ask(json!({"offset": 99})).contains("no partition"),
+        "past the end is not an empty tree"
+    );
 
     println!("phase E.2 ok: overview names the subsystems and the way into each");
 }

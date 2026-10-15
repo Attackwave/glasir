@@ -33,6 +33,44 @@ pub struct FileHttp {
     pub requests: Vec<(NodeId, crate::routes::Verb, String)>,
 }
 
+/// (caller, callee, register, label, fields): a known value handed on.
+pub type Pass = (NodeId, String, String, Option<String>, Vec<String>);
+
+/// What one file stores into fields and calls through them, for resolving
+/// indirect calls across files. See `mcp::References`.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FileDispatch {
+    /// (field, label): a label's address stored into a field.
+    pub stores: Vec<(String, String)>,
+    /// (routine, label, fields, line): an indirect call and what it goes
+    /// through.
+    pub calls: Vec<(NodeId, Option<String>, Vec<String>, u32)>,
+    /// (routine, line): an indirect call nothing here could trace.
+    pub unresolved: Vec<(NodeId, u32)>,
+    /// Labels of this file that are tables of routines.
+    pub tables: Vec<NodeId>,
+    /// (name, value as written) of every constant.
+    pub constants: Vec<(String, String)>,
+    /// (table, offset, routine): table entries at known offsets.
+    pub slots: Vec<(NodeId, u32, String)>,
+    /// (caller, callee, register, label, fields): a known value handed on.
+    pub passes: Vec<Pass>,
+    /// (caller, callee, registers): parameters handed on unchanged.
+    pub forwards: Vec<(NodeId, String, u16)>,
+    /// (routine, register, fields, line): a call through a parameter.
+    pub param_calls: Vec<(NodeId, String, Vec<String>, u32)>,
+    /// (routine, register, field): a parameter stored into a field.
+    pub param_stores: Vec<(NodeId, String, String)>,
+    /// (routine, vector, line): a call into a library through A6.
+    pub library: Vec<(NodeId, String, u32)>,
+}
+
+impl FileDispatch {
+    fn is_empty(&self) -> bool {
+        *self == FileDispatch::default()
+    }
+}
+
 /// Maps a qualified symbol name to a node id, minting ids for symbols the base
 /// graph has never seen.
 pub struct SymbolRegistry {
@@ -68,6 +106,7 @@ pub struct SymbolRegistry {
     /// and the requests it sends — sending node, verb, path. Matched against
     /// each other when served. See `routes`.
     http: HashMap<String, FileHttp>,
+    dispatch: HashMap<String, FileDispatch>,
     /// Per file, the macros it defines whose invocations define their first
     /// argument. Kept so a partial re-parse knows the whole tree's set.
     definers: HashMap<String, Vec<String>>,
@@ -85,6 +124,7 @@ impl SymbolRegistry {
             placeholder_lang: HashMap::new(),
             refs: HashMap::new(),
             http: HashMap::new(),
+            dispatch: HashMap::new(),
             definers: HashMap::new(),
             next: base_node_count as NodeId,
         }
@@ -148,6 +188,18 @@ impl SymbolRegistry {
 
     pub fn http(&self) -> &HashMap<String, FileHttp> {
         &self.http
+    }
+
+    pub fn set_dispatch(&mut self, file: &str, dispatch: FileDispatch) {
+        if dispatch.is_empty() {
+            self.dispatch.remove(file);
+        } else {
+            self.dispatch.insert(file.to_owned(), dispatch);
+        }
+    }
+
+    pub fn dispatch(&self) -> &HashMap<String, FileDispatch> {
+        &self.dispatch
     }
 
     pub fn set_definers(&mut self, file: &str, definers: Vec<String>) {
@@ -276,12 +328,31 @@ impl SymbolRegistry {
         self.by_name.retain(|k, _| !k.starts_with(&prefix));
         self.refs.remove(file);
         self.http.remove(file);
+        self.dispatch.remove(file);
         self.definers.remove(file);
         for n in gone {
             self.docs.remove(&n);
             // A span into a file that is gone points at bytes that are not
             // there; the same reasoning as the docs beside it.
             self.spans.remove(&n);
+        }
+    }
+
+    /// Drops the names of definitions a re-parsed file no longer has. A file
+    /// still on disk goes through `get_or_mint` only, which never removes a
+    /// key, so a renamed definition kept its old name, and a lookup of that
+    /// name cut its stale byte range out of the current text. Called with the
+    /// file's previous definitions that the parse did not produce again, which
+    /// is empty unless something was renamed or removed, so the scan over the
+    /// registry runs only then. The ids that remain are untouched.
+    pub fn forget_nodes(&mut self, gone: &HashSet<NodeId>) {
+        if gone.is_empty() {
+            return;
+        }
+        self.by_name.retain(|_, n| !gone.contains(n));
+        for n in gone {
+            self.docs.remove(n);
+            self.spans.remove(n);
         }
     }
 
@@ -382,6 +453,7 @@ pub fn ingest_markdown_into(
     let mut names = markdown_names(registry);
     for (path, src) in documents {
         let doc = markdown_facts(arena, registry, path, root, src, now, &mut names);
+        registry.forget_nodes(&dropped(d.file_nodes(doc.file_key), &doc.nodes));
         apply_markdown(snap, d, doc);
     }
 }
@@ -723,9 +795,82 @@ fn prepare_facts(
             .collect(),
     };
     registry.set_http(&file, http);
+    let in_file = |registry: &SymbolRegistry, name: &str| registry.node_of(&qualify(&file, name));
+    let dispatch = FileDispatch {
+        stores: facts.stores.clone(),
+        calls: facts
+            .dispatch
+            .iter()
+            .filter_map(|(r, label, fields, line)| {
+                Some((in_file(registry, r)?, label.clone(), fields.clone(), *line))
+            })
+            .collect(),
+        unresolved: facts
+            .indirect
+            .iter()
+            .filter_map(|(r, line)| Some((in_file(registry, r)?, *line)))
+            .collect(),
+        tables: facts
+            .tables
+            .iter()
+            .filter_map(|t| in_file(registry, t))
+            .collect(),
+        constants: facts.constants.clone(),
+        slots: facts
+            .slots
+            .iter()
+            .filter_map(|(t, at, to)| Some((in_file(registry, t)?, *at, to.clone())))
+            .collect(),
+        passes: facts
+            .passes
+            .iter()
+            .filter_map(|(from, to, reg, label, fields)| {
+                Some((
+                    in_file(registry, from)?,
+                    to.clone(),
+                    reg.clone(),
+                    label.clone(),
+                    fields.clone(),
+                ))
+            })
+            .collect(),
+        forwards: facts
+            .forwards
+            .iter()
+            .filter_map(|(from, to, mask)| Some((in_file(registry, from)?, to.clone(), *mask)))
+            .collect(),
+        param_calls: facts
+            .param_calls
+            .iter()
+            .filter_map(|(r, reg, fields, line)| {
+                Some((in_file(registry, r)?, reg.clone(), fields.clone(), *line))
+            })
+            .collect(),
+        param_stores: facts
+            .param_stores
+            .iter()
+            .filter_map(|(r, reg, field)| Some((in_file(registry, r)?, reg.clone(), field.clone())))
+            .collect(),
+        library: facts
+            .library_calls
+            .iter()
+            .filter_map(|(r, vector, line)| Some((in_file(registry, r)?, vector.clone(), *line)))
+            .collect(),
+    };
+    registry.set_dispatch(&file, dispatch);
 
     let file_key = arena.intern(&file);
     (file_key, edges, nodes)
+}
+
+/// The file's previous definitions that this parse did not produce again.
+fn dropped(previous: &[NodeId], now: &[NodeId]) -> HashSet<NodeId> {
+    let now: HashSet<NodeId> = now.iter().copied().collect();
+    previous
+        .iter()
+        .copied()
+        .filter(|n| !now.contains(n))
+        .collect()
 }
 
 /// The delta mutation one parsed file makes: drop what the file owned, then
@@ -770,6 +915,7 @@ pub fn apply_facts_into(
     now: u64,
 ) {
     let (file_key, edges, nodes) = prepare_facts(arena, registry, path, root, facts, now);
+    registry.forget_nodes(&dropped(d.file_nodes(file_key), &nodes));
     scope_file(snap, d, file_key, &edges, &nodes);
 }
 
@@ -783,6 +929,7 @@ pub fn apply_facts(
     now: u64,
 ) -> usize {
     let (file_key, edges, nodes) = prepare_facts(arena, registry, path, root, facts, now);
+    registry.forget_nodes(&dropped(graph.load().delta.file_nodes(file_key), &nodes));
     let count = edges.len();
     graph.update(|snap, d| scope_file(snap, d, file_key, &edges, &nodes));
     count

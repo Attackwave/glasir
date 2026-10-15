@@ -72,6 +72,21 @@ pub struct FileFacts {
     pub macro_definers: Vec<String>,
     /// Macro invocations naming an argument: (macro, argument, line range).
     pub macro_calls: Vec<(String, String, (u32, u32))>,
+    /// (routine, where it goes on), for assembly. Read by `get_code_snippet`.
+    pub continues_into: Vec<(String, String)>,
+    /// Indirect calls in assembly and what they go through; see the scanner's
+    /// `FileFacts` for each.
+    pub stores: Vec<(String, String)>,
+    pub dispatch: Vec<(String, Option<String>, Vec<String>, u32)>,
+    pub indirect: Vec<(String, u32)>,
+    pub tables: Vec<String>,
+    pub constants: Vec<(String, String)>,
+    pub slots: Vec<(String, u32, String)>,
+    pub passes: Vec<native_parsers::facts::Pass>,
+    pub forwards: Vec<(String, String, u16)>,
+    pub param_calls: Vec<(String, String, Vec<String>, u32)>,
+    pub param_stores: Vec<(String, String, String)>,
+    pub library_calls: Vec<(String, String, u32)>,
 }
 
 /// A language we can extract from.
@@ -334,6 +349,18 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         had_errors: f.had_errors,
         macro_definers: f.macro_definers,
         macro_calls: f.macro_calls,
+        continues_into: f.continues_into,
+        stores: f.stores,
+        dispatch: f.dispatch,
+        indirect: f.indirect,
+        tables: f.tables,
+        constants: f.constants,
+        slots: f.slots,
+        passes: f.passes,
+        forwards: f.forwards,
+        param_calls: f.param_calls,
+        param_stores: f.param_stores,
+        library_calls: f.library_calls,
     })
 }
 

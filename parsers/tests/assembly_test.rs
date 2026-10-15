@@ -159,3 +159,201 @@ SAVE        MACRO
     let src_line = "            VAR     balance,4";
     assert_eq!((end - start) as usize, src_line.len());
 }
+
+#[test]
+fn a_routine_continues_into_the_label_it_falls_or_branches_to() {
+    let src = "\
+release:
+    MOVEQ   #0,D0
+    BRA.S   release_go
+release_exit:
+    MOVEQ   #1,D0
+release_go:
+    MOVE.L  D0,D1
+    RTS
+table:
+    DC.L    release
+after_table:
+    NOP
+    BEQ.S   .out
+.out:
+    RTS
+";
+    let facts = parse(src);
+    let calls = calls(src);
+    assert!(
+        calls.contains(&pair("release_exit", "release_go")),
+        "{calls:?}"
+    );
+    assert!(calls.contains(&pair("release", "release_go")), "{calls:?}");
+    assert!(!calls.iter().any(|(f, _)| f == "release_go"), "{calls:?}");
+    // A table falls into nothing; it reaches what it lists.
+    assert!(!calls.contains(&pair("table", "after_table")), "{calls:?}");
+    assert!(calls.contains(&pair("table", "release")), "{calls:?}");
+    assert_eq!(
+        facts.continues_into,
+        [
+            ("release".to_string(), "release_go".to_string()),
+            ("release_exit".to_string(), "release_go".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn indirect_calls_name_the_table_or_field_they_go_through() {
+    let src = "\
+OP_READ   EQU     4
+mount:
+    LEA     ffs_ops,A0
+    MOVE.L  A0,MN_OPS(A1)
+    RTS
+call:
+    MOVE.L  MN_OPS(A1),A2
+    MOVE.L  OP_READ(A2),A2
+    BRA     tail
+tail:
+    CMPA.W  #0,A2
+    BSR     do
+    RTS
+do:
+    JSR     (A2)
+    RTS
+syscall:
+    LEA     calls,A0
+    MOVE.L  (A0,D0.W),A1
+    JSR     (A1)
+    RTS
+local:
+    LEA     .jump(PC),A0
+    MOVE.L  (A0,D0.W),A0
+    JSR     (A0)
+    RTS
+.jump:
+    DC.L    mount
+lost:
+    MOVE.L  4(SP),A0
+    JSR     (A0)
+    RTS
+keep:
+    MOVE.L  A3,MN_OPS(A1)
+    RTS
+calls:
+    DC.L    mount,  call
+    DC.W    2
+    DC.L    0,syscall
+name:
+    DC.B    'x',0
+names:
+    DC.L    name
+fall:
+    MOVE.L  MN_OPS(A1),A2
+fallen:
+    RTS
+";
+    let facts = parse(src);
+    let calls = calls(src);
+    assert_eq!(
+        facts.stores,
+        [("MN_OPS".to_string(), "ffs_ops".to_string())]
+    );
+    assert_eq!(facts.constants, [("OP_READ".to_string(), "4".to_string())]);
+    let read = vec!["MN_OPS".to_string(), "OP_READ".to_string()];
+    // The loaded value goes along a branch, and on through a call the
+    // receiving label makes with it untouched.
+    assert!(
+        facts.passes.contains(&(
+            "call".to_string(),
+            "tail".to_string(),
+            "a2".to_string(),
+            None,
+            read
+        )),
+        "{:?}",
+        facts.passes
+    );
+    assert!(
+        facts
+            .forwards
+            .iter()
+            .any(|(f, t, mask)| f == "tail" && t == "do" && mask & 1 << 10 != 0),
+        "{:?}",
+        facts.forwards
+    );
+    // Falling into the next label hands the registers on as a branch does.
+    assert!(facts
+        .passes
+        .iter()
+        .any(|(f, t, r, ..)| f == "fall" && t == "fallen" && r == "a2"));
+    assert_eq!(
+        facts.param_calls,
+        [("do".to_string(), "a2".to_string(), vec![], 15)]
+    );
+    assert_eq!(
+        facts.param_stores,
+        [("keep".to_string(), "a3".to_string(), "MN_OPS".to_string())]
+    );
+    assert!(facts.dispatch.contains(&(
+        "syscall".to_string(),
+        Some("calls".to_string()),
+        vec![],
+        20
+    )));
+    assert!(!facts.dispatch.iter().any(|(r, ..)| r == "local"));
+    // A local table's entries are its routine's own calls.
+    assert!(calls.contains(&pair("local", "mount")), "{calls:?}");
+    assert_eq!(facts.indirect, [("lost".to_string(), 31)]);
+    // A table, not a routine with a private one, nor a list of data only.
+    assert_eq!(facts.tables, ["calls".to_string()]);
+    assert!(
+        calls.contains(&pair("calls", "call")),
+        "an entry after `,  `: {calls:?}"
+    );
+    assert!(!calls.contains(&pair("names", "name")), "{calls:?}");
+    // Entries at their byte offsets: four, four, two of `DC.W`, four of zero.
+    let at = |t: &str| {
+        facts
+            .slots
+            .iter()
+            .filter(|s| s.0 == t)
+            .map(|s| (s.1, s.2.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(at("calls"), [(0, "mount"), (4, "call"), (14, "syscall")]);
+}
+
+#[test]
+fn a_library_vector_through_a6_is_a_library_call() {
+    let src = "\
+open:
+    MOVE.L  4.W,A6
+    JSR     _LVOOpenLibrary(A6)
+    JSR     -30(A6)
+    RTS
+own:
+    LEA     kx_table,A6
+    JSR     KX_GUARD(A6)
+    JSR     -6(A6)
+    RTS
+";
+    let facts = parse(src);
+    assert_eq!(
+        facts.library_calls,
+        [
+            ("open".to_string(), "_LVOOpenLibrary".to_string(), 3),
+            ("open".to_string(), "-30".to_string(), 4),
+        ]
+    );
+    // Not untraced, and A6 holding this tree's own table stays a dispatch.
+    assert!(
+        facts.indirect.is_empty() && facts.param_calls.is_empty(),
+        "{facts:?}"
+    );
+    assert!(facts
+        .dispatch
+        .iter()
+        .any(|(r, l, ..)| r == "own" && l.as_deref() == Some("kx_table")));
+    assert_eq!(
+        facts.dispatch.iter().filter(|(r, ..)| r == "own").count(),
+        2
+    );
+}

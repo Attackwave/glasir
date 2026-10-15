@@ -173,6 +173,11 @@ fn scope() {
 }
 
 #[test]
+fn dispatch() {
+    crate::demo_dispatch();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }
