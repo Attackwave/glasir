@@ -9615,6 +9615,7 @@ fn demo_dispatch() {
     let dir = std::env::temp_dir().join(format!("glasir-dispatch-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
     let put = |f: &str, text: &str| std::fs::write(dir.join(f), text).unwrap();
     // Two filesystems' tables, one stored into MN_OPS directly and one
     // through a register handed to the routine storing it, in another file.
@@ -9752,6 +9753,29 @@ fn demo_dispatch() {
         untraced,
         json!([{"symbol": "src/module.s#loader", "line": 9}]),
         "{untraced}"
+    );
+    assert_eq!(call("impact", "entry")["untraced_total"], json!(1));
+
+    // Many untraced calls elsewhere: the answer names the nearest few and
+    // says how many there are.
+    let far: String = (0..12)
+        .map(|k| format!("far{k}:\n    MOVE.L  4(SP),A0\n    JSR     (A0)\n    RTS\n"))
+        .collect();
+    put("lib/far.s", &far);
+    let many = served_state(&dir).unwrap();
+    let wide = mcp::handle_for_test(
+        &many.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "impact", "arguments": {"symbol": "entry"}}}),
+    )
+    .unwrap()["result"]["structuredContent"]
+        .clone();
+    assert_eq!(wide["untraced_total"], json!(13), "{wide}");
+    let named = wide["untraced"].as_array().unwrap();
+    assert_eq!(named.len(), 10, "{wide}");
+    assert_eq!(
+        named[0]["symbol"], "src/module.s#loader",
+        "nearest first: {wide}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

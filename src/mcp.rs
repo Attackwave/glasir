@@ -1043,6 +1043,8 @@ const VOCAB_FROM: usize = 10;
 /// One changed file here defines 54, which cost 972 tokens to print in full.
 /// Counts stay exact; only the naming is capped.
 const CHANGE_LIST_LIMIT: usize = 20;
+/// Untraced indirect calls named per answer, nearest first.
+const UNTRACED_LIMIT: usize = 10;
 
 /// Words the result is written in that the question did not use.
 ///
@@ -1625,7 +1627,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let (offset, limit) = page(args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
-    let untraced = served.untraced(node, &reached);
+    let (untraced, untraced_total) = served.untraced(node, &reached);
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
@@ -1647,6 +1649,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
         "within": within,
         "named_elsewhere": elsewhere,
         "untraced": untraced,
+        "untraced_total": untraced_total,
         "min_confidence": confidence_label(floor),
         // Grouped by hop because distance is the signal: a direct caller almost
         // certainly breaks, a fourth-hop one probably does not. Flattening the
@@ -1717,10 +1720,12 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|&(n, _)| n)
         .collect();
 
+    let (untraced, untraced_total) = served.untraced(node, &reached);
     let mut value = json!({
         "symbol": served.name(node),
         "named_elsewhere": served.unconnected_mentions(node, &reached),
-        "untraced": served.untraced(node, &reached),
+        "untraced": untraced,
+        "untraced_total": untraced_total,
         "callers": callers
             .iter()
             .skip(offset)
@@ -3552,11 +3557,15 @@ impl Served<'_> {
     /// answer: it runs into a table no resolved call goes through, or an
     /// assembly symbol has no caller at all. Ending there silently reads as
     /// "nothing reaches it", which an untraced `JSR (A0)` can contradict.
-    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> Vec<Value> {
+    ///
+    /// Only the nearest `UNTRACED_LIMIT` are named, with the total beside
+    /// them: every unresolved call in a tree (each program's library calls
+    /// among them) buried the few that sit next to the symbol.
+    fn untraced(&self, node: NodeId, reached: &[NodeId]) -> (Vec<Value>, usize) {
         let local = std::sync::OnceLock::new();
         let refs = self.references(&local);
         if refs.unresolved.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         // A table no resolved indirect call goes through is reached only in
         // a way the graph could not follow, whatever else lists it.
@@ -3571,7 +3580,7 @@ impl Served<'_> {
                     == Some(crate::parse_ast::Lang::Assembly)
             });
         if !stuck && !alone {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         // Nearest first: the same file, then the same directory.
         let file = |n: &str| n.split_once('#').map_or("", |(f, _)| f).to_string();
@@ -3591,10 +3600,13 @@ impl Served<'_> {
             })
             .collect();
         sites.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| (&a.1, a.2).cmp(&(&b.1, b.2))));
-        sites
+        let total = sites.len();
+        let named = sites
             .into_iter()
+            .take(UNTRACED_LIMIT)
             .map(|(_, symbol, line)| json!({"symbol": symbol, "line": line}))
-            .collect()
+            .collect();
+        (named, total)
     }
 
     fn unconnected_mentions(&self, node: NodeId, reached: &[NodeId]) -> Vec<String> {
@@ -3799,22 +3811,21 @@ fn render_untraced(v: &Value) -> String {
     if sites.is_empty() {
         return String::new();
     }
+    let total = v["untraced_total"]
+        .as_u64()
+        .map_or(sites.len(), |t| t as usize);
     let mut out = format!(
-        "\n{} indirect call(s) could not be traced, and any of them may reach this:\n",
-        sites.len()
+        "\n{total} indirect call(s) could not be traced, and any of them may reach this; nearest first:\n"
     );
-    for s in sites.iter().take(CHANGE_LIST_LIMIT) {
+    for s in sites {
         let sym = s["symbol"].as_str().unwrap_or("");
         match s["line"].as_u64() {
             Some(line) => out.push_str(&format!("  {sym} (line {line})\n")),
             None => out.push_str(&format!("  {sym}\n")),
         }
     }
-    if sites.len() > CHANGE_LIST_LIMIT {
-        out.push_str(&format!(
-            "  … and {} more (all of them in structuredContent)\n",
-            sites.len() - CHANGE_LIST_LIMIT
-        ));
+    if total > sites.len() {
+        out.push_str(&format!("  … and {} further away\n", total - sites.len()));
     }
     out
 }
