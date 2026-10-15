@@ -43,7 +43,8 @@ use std::path::Path;
 /// each file's defining macros are stored (`definers`).
 /// 36: a re-parse forgets the definitions a file no longer has.
 /// 37: assembly indirect calls, stores and tables per file (`dispatch`).
-const FORMAT_VERSION: u32 = 37;
+/// 38: `dispatch` carries slots, constants and parameters.
+const FORMAT_VERSION: u32 = 38;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
