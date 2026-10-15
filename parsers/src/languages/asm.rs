@@ -177,6 +177,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 if !seen_opcode {
                     last = Exit::Other;
                 }
+                if at_column_zero(tok) {
+                    track.local_seen = true;
+                }
                 match kind(i + 1) {
                     Some(TokenKind::Ident(d)) if d.eq_ignore_ascii_case("macro") => {
                         settle(&mut routine, &mut last, None, calls, &mut scope, &mut facts);
@@ -230,6 +233,15 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 match next {
                     // `name EQU value` and `name = value`: a constant.
                     Some(TokenKind::Ident(w)) if is(w, &["equ", "equr", "reg"]) => {
+                        let (_, end) = line_of(start);
+                        if let Some(value) = operands(
+                            src.get(tokens[i + 1].end as usize..end as usize)
+                                .unwrap_or(""),
+                        )
+                        .first()
+                        {
+                            facts.constants.push((ident.to_string(), value.to_string()));
+                        }
                         scope.open_statement_definition(*ident, start, &mut facts);
                         scope.on_word(ident);
                         in_constant = true;
@@ -238,6 +250,15 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         continue;
                     }
                     Some(TokenKind::Symbol('=')) => {
+                        let (_, end) = line_of(start);
+                        if let Some(value) = operands(
+                            src.get(tokens[i + 1].end as usize..end as usize)
+                                .unwrap_or(""),
+                        )
+                        .first()
+                        {
+                            facts.constants.push((ident.to_string(), value.to_string()));
+                        }
                         scope.open_statement_definition(*ident, start, &mut facts);
                         scope.on_word(ident);
                         in_constant = true;
@@ -257,6 +278,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     // `name:` is a label in every dialect; Motorola also takes
                     // a bare name in column zero, which an opcode never is.
                     Some(TokenKind::Symbol(':')) => {
+                        if let (Some(from), Exit::Flow) = (&routine, &last) {
+                            track.pass(from, ident, &mut facts);
+                        }
                         settle(
                             &mut routine,
                             &mut last,
@@ -267,14 +291,16 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         routine = Some(ident.to_string());
-                        track.regs.clear();
-                        track.written.clear();
+                        track.open();
                         i += 2;
                         continue;
                     }
                     Some(TokenKind::Newline | TokenKind::Ident(_)) | None
                         if !is(ident, OPCODES) && !is(ident, BRANCHES) =>
                     {
+                        if let (Some(from), Exit::Flow) = (&routine, &last) {
+                            track.pass(from, ident, &mut facts);
+                        }
                         settle(
                             &mut routine,
                             &mut last,
@@ -285,8 +311,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         );
                         open_body(&mut scope, &mut in_body, ident, start, &mut facts);
                         routine = Some(ident.to_string());
-                        track.regs.clear();
-                        track.written.clear();
+                        track.open();
                         i += 1;
                         continue;
                     }
@@ -453,26 +478,65 @@ impl Origin {
 
 /// Register contents through one routine, read straight down: enough to
 /// see which table or field an indirect call goes through, without
-/// following branches.
+/// following branches. What a routine was handed in a register is not known
+/// here; calls through it and stores of it are reported as facts about the
+/// parameter, resolved across files later.
 #[derive(Default)]
 struct Track {
     regs: std::collections::HashMap<String, Origin>,
+    /// Registers the open label has written; one it uses without writing it
+    /// is a parameter.
+    written: std::collections::HashSet<String>,
     /// Per label: (has an instruction, has data).
     kinds: std::collections::HashMap<String, (bool, bool)>,
     /// Calls made for `DC.L name` entries, by index into `facts.calls`, and
-    /// the labels holding at least one.
+    /// the labels holding one in their own body.
     entries: Vec<usize>,
     with_entries: std::collections::HashSet<String>,
-    /// Registers the open routine has written; one it calls through without
-    /// writing it is a parameter.
-    written: std::collections::HashSet<String>,
-    /// (routine, register, line): an indirect call through a parameter.
-    through_parameter: Vec<(String, String, u32)>,
-    /// (caller, callee, register, origin) at a direct call in this file.
-    passes: Vec<(String, String, String, Origin)>,
+    /// A local label (`.table`) has opened since the label: its entries
+    /// belong to a routine's private table, not to a table of its own.
+    local_seen: bool,
+    /// Byte offset into the open label's data, while it is known.
+    offset: Option<u32>,
 }
 
+const REGISTERS: [&str; 15] = [
+    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "a6",
+];
+
 impl Track {
+    /// A new label: nothing is known of its registers or its data yet.
+    fn open(&mut self) {
+        self.regs.clear();
+        self.written.clear();
+        self.local_seen = false;
+        self.offset = Some(0);
+    }
+
+    /// Control passes from `from` to `to` — a call, a branch, or falling into
+    /// the next label — and takes the registers with it.
+    fn pass(&self, from: &str, to: &str, facts: &mut FileFacts) {
+        for (reg, origin) in &self.regs {
+            facts.passes.push((
+                from.to_string(),
+                to.to_string(),
+                reg.clone(),
+                origin.label.clone(),
+                origin.fields.clone(),
+            ));
+        }
+        let mask = REGISTERS
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !self.written.contains(**r))
+            .fold(0u16, |m, (k, _)| m | 1 << k);
+        if mask != 0 {
+            facts
+                .forwards
+                .push((from.to_string(), to.to_string(), mask));
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
@@ -489,21 +553,17 @@ impl Track {
         let kind = self.kinds.entry(routine.to_string()).or_default();
         if code {
             kind.0 = true;
+            self.offset = None;
         }
         if is(op, &["dc", "dcb", "ds", "db", "dw", "dd", "dq"]) {
             kind.1 = true;
-            // A pointer entry: the table, or the routine owning a local
-            // table, reaches what it lists.
-            if op == "dc" && size == Some("l") {
-                for name in ops.iter().filter(|o| ident(o) == Some(o)) {
-                    if calls.allows(name) {
-                        scope.record_call(name, facts);
-                        self.entries.push(facts.calls.len() - 1);
-                        self.with_entries.insert(routine.to_string());
-                    }
-                }
-            }
+            self.data(routine, op, size, ops, calls, scope, facts);
             return;
+        }
+        if op == "even" {
+            self.offset = self.offset.map(|o| o + o % 2);
+        } else if is(op, &["cnop", "align", "org", "rs", "so", "fo"]) {
+            self.offset = None;
         }
         let dest = ops.last().map(|o| operand(o));
         match op {
@@ -542,44 +602,50 @@ impl Track {
                         self.set(d, origin);
                     }
                     Some(Operand::Mem { off, pc: false, .. }) => {
-                        let label = match src {
-                            Operand::Imm(x) => ident(x).map(str::to_string),
-                            Operand::Reg(m) => match self.regs.get(&m) {
-                                Some(Origin {
-                                    label: Some(t),
-                                    fields,
-                                }) if fields.is_empty() => Some(t.clone()),
-                                _ => None,
-                            },
-                            _ => None,
-                        };
-                        if let (Some(field), Some(label)) = (ident(off), label) {
-                            facts.stores.push((field.to_string(), label));
+                        if let Some(field) = ident(off) {
+                            match src {
+                                Operand::Imm(x) => {
+                                    if let Some(label) = ident(x) {
+                                        facts.stores.push((field.to_string(), label.to_string()));
+                                    }
+                                }
+                                Operand::Reg(m) => match self.regs.get(&m) {
+                                    Some(Origin {
+                                        label: Some(t),
+                                        fields,
+                                    }) if fields.is_empty() => {
+                                        facts.stores.push((field.to_string(), t.clone()));
+                                    }
+                                    None if !self.written.contains(&m) => {
+                                        facts.param_stores.push((
+                                            routine.to_string(),
+                                            m,
+                                            field.to_string(),
+                                        ));
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
                         }
                     }
                     _ => {}
                 }
             }
-            "bsr" | "jsr" | "bra" | "jmp"
-                if matches!(
+            _ if is(op, BRANCHES)
+                && !matches!(
                     ops.first().map(|o| operand(o)),
-                    Some(Operand::Mem { base: None, .. } | Operand::Mem { pc: true, .. })
+                    Some(Operand::Mem {
+                        base: Some(_),
+                        pc: false,
+                        ..
+                    })
                 ) =>
             {
-                // A direct call hands the callee what this routine knows of
-                // its registers, for a callee that calls through one.
-                let callee = match ops.first().map(|o| operand(o)) {
-                    Some(Operand::Mem { off, .. }) => ident(off),
-                    _ => None,
-                };
-                if let Some(callee) = callee {
-                    for (reg, origin) in &self.regs {
-                        self.passes.push((
-                            routine.to_string(),
-                            callee.to_string(),
-                            reg.clone(),
-                            origin.clone(),
-                        ));
+                // Control goes to a label and takes the registers along.
+                if let Some(Operand::Mem { off, .. }) = ops.first().map(|o| operand(o)) {
+                    if let Some(to) = ident(off).filter(|t| !t.starts_with('.')) {
+                        self.pass(routine, to, facts);
                     }
                 }
             }
@@ -594,18 +660,24 @@ impl Track {
                         // A table local to this routine lists its targets
                         // as this routine's own entries already.
                         Some(Origin { label: Some(t), .. }) if t.starts_with('.') => {}
-                        Some(o) => facts
-                            .dispatch
-                            .push((routine.to_string(), o.label, o.fields)),
+                        Some(o) => {
+                            facts
+                                .dispatch
+                                .push((routine.to_string(), o.label, o.fields, line))
+                        }
+                        None if !self.written.contains(&b) => facts.param_calls.push((
+                            routine.to_string(),
+                            b,
+                            ident(off).map(str::to_string).into_iter().collect(),
+                            line,
+                        )),
                         None => match ident(off) {
                             Some(f) => facts.dispatch.push((
                                 routine.to_string(),
                                 None,
                                 vec![f.to_string()],
+                                line,
                             )),
-                            None if !self.written.contains(&b) => {
-                                self.through_parameter.push((routine.to_string(), b, line));
-                            }
                             None => facts.indirect.push((routine.to_string(), line)),
                         },
                     }
@@ -614,14 +686,14 @@ impl Track {
             // A comparison or a test writes no register.
             "cmp" | "cmpa" | "cmpi" | "cmpm" | "cmp2" | "tst" | "btst" | "chk" | "chk2" => {}
             // Pointer arithmetic keeps an address register's origin.
-            "adda" | "suba" | "addq" | "subq" | "add" | "sub" if matches!(&dest, Some(Operand::Reg(d)) if d.starts_with('a')) =>
-                {}
+            "adda" | "suba" | "addq" | "subq" | "add" | "sub" if matches!(&dest, Some(Operand::Reg(d)) if d.starts_with('a')) => {
+                if let Some(Operand::Reg(d)) = dest {
+                    self.written.insert(d);
+                }
+            }
             // A register list restored, or two registers swapped: forget.
             "movem" if !ops.last().is_some_and(|o| o.contains('(')) => {
-                for r in [
-                    "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4",
-                    "a5", "a6",
-                ] {
+                for r in REGISTERS {
                     self.set(r.to_string(), None);
                 }
             }
@@ -640,6 +712,62 @@ impl Track {
         }
     }
 
+    /// A data directive: pointer entries become calls, and their byte
+    /// offset is kept while every size before them is known.
+    #[allow(clippy::too_many_arguments)]
+    fn data(
+        &mut self,
+        routine: &str,
+        op: &str,
+        size: Option<&str>,
+        ops: &[&str],
+        calls: &crate::rules::Calls,
+        scope: &mut ScopeStack,
+        facts: &mut FileFacts,
+    ) {
+        let unit = match size {
+            Some("b") => 1,
+            Some("l") => 4,
+            _ => 2,
+        };
+        match op {
+            "dc" => {
+                for o in ops {
+                    let name = (ident(o) == Some(*o)).then_some(*o);
+                    if let (4, Some(name)) = (unit, name) {
+                        // A pointer entry: the table, or the routine owning a
+                        // local table, reaches what it lists.
+                        if calls.allows(name) {
+                            scope.record_call(name, facts);
+                            self.entries.push(facts.calls.len() - 1);
+                            if !self.local_seen {
+                                self.with_entries.insert(routine.to_string());
+                            }
+                        }
+                        if let (Some(at), false) = (self.offset, self.local_seen) {
+                            facts
+                                .slots
+                                .push((routine.to_string(), at, name.to_string()));
+                        }
+                    }
+                    let bytes = match (
+                        unit,
+                        o.strip_prefix('\'').and_then(|q| q.strip_suffix('\'')),
+                    ) {
+                        (1, Some(text)) => Some(text.replace("''", "'").len() as u32),
+                        _ => Some(unit),
+                    };
+                    self.offset = self.offset.zip(bytes).map(|(a, b)| a + b);
+                }
+            }
+            "ds" | "dcb" => {
+                let count = ops.first().and_then(|n| number(n));
+                self.offset = self.offset.zip(count).map(|(a, n)| a + n * unit);
+            }
+            _ => self.offset = None,
+        }
+    }
+
     fn set(&mut self, reg: String, origin: Option<Origin>) {
         self.written.insert(reg.clone());
         match origin {
@@ -649,32 +777,8 @@ impl Track {
     }
 
     /// Drops the entries naming this file's own data (a string, a buffer),
-    /// and names the labels holding pointer entries: a table, or a module
-    /// header after a routine's code.
+    /// and names the labels holding pointer entries of their own.
     fn finish(self, facts: &mut FileFacts) {
-        // A call through a parameter resolves at the callers that pass a
-        // known value in that register: the caller dispatches.
-        for (callee, reg, line) in &self.through_parameter {
-            let mut resolved = false;
-            for (caller, _, _, origin) in self
-                .passes
-                .iter()
-                .filter(|(_, c, r, _)| c == callee && r == reg)
-            {
-                resolved = true;
-                match origin {
-                    Origin { label: Some(t), .. } if t.starts_with('.') => {}
-                    o => facts
-                        .dispatch
-                        .push((caller.clone(), o.label.clone(), o.fields.clone())),
-                }
-            }
-            if !resolved {
-                facts.indirect.push((callee.clone(), *line));
-            }
-        }
-        facts.dispatch.sort();
-        facts.dispatch.dedup();
         let data: std::collections::HashSet<&str> = self
             .kinds
             .iter()
@@ -698,6 +802,7 @@ impl Track {
                 k += 1;
                 !drop.contains(&(k - 1))
             });
+            facts.slots.retain(|(_, _, to)| !data.contains(to.as_str()));
         }
         let kept: std::collections::HashSet<&str> = facts
             .calls
@@ -711,6 +816,20 @@ impl Track {
             .collect();
         tables.sort();
         facts.tables = tables;
+        facts.dispatch.sort();
+        facts.dispatch.dedup();
+    }
+}
+
+/// A plain number: decimal, `$` hex or `%` binary.
+fn number(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(h) = s.strip_prefix('$') {
+        u32::from_str_radix(h, 16).ok()
+    } else if let Some(b) = s.strip_prefix('%') {
+        u32::from_str_radix(b, 2).ok()
+    } else {
+        s.parse().ok()
     }
 }
 

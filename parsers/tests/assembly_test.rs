@@ -202,6 +202,7 @@ after_table:
 #[test]
 fn indirect_calls_name_the_table_or_field_they_go_through() {
     let src = "\
+OP_READ   EQU     4
 mount:
     LEA     ffs_ops,A0
     MOVE.L  A0,MN_OPS(A1)
@@ -209,10 +210,12 @@ mount:
 call:
     MOVE.L  MN_OPS(A1),A2
     MOVE.L  OP_READ(A2),A2
+    BRA     tail
+tail:
+    CMPA.W  #0,A2
     BSR     do
     RTS
 do:
-    CMPA.W  #0,A2
     JSR     (A2)
     RTS
 syscall:
@@ -231,13 +234,21 @@ lost:
     MOVE.L  4(SP),A0
     JSR     (A0)
     RTS
+keep:
+    MOVE.L  A3,MN_OPS(A1)
+    RTS
 calls:
     DC.L    mount,  call
     DC.W    2
+    DC.L    0,syscall
 name:
     DC.B    'x',0
 names:
     DC.L    name
+fall:
+    MOVE.L  MN_OPS(A1),A2
+fallen:
+    RTS
 ";
     let facts = parse(src);
     let calls = calls(src);
@@ -245,29 +256,67 @@ names:
         facts.stores,
         [("MN_OPS".to_string(), "ffs_ops".to_string())]
     );
-    // `do` is called through a parameter; its caller dispatches.
+    assert_eq!(facts.constants, [("OP_READ".to_string(), "4".to_string())]);
     let read = vec!["MN_OPS".to_string(), "OP_READ".to_string()];
+    // The loaded value goes along a branch, and on through a call the
+    // receiving label makes with it untouched.
     assert!(
-        facts.dispatch.contains(&("call".to_string(), None, read)),
+        facts.passes.contains(&(
+            "call".to_string(),
+            "tail".to_string(),
+            "a2".to_string(),
+            None,
+            read
+        )),
         "{:?}",
-        facts.dispatch
+        facts.passes
     );
+    assert!(
+        facts
+            .forwards
+            .iter()
+            .any(|(f, t, mask)| f == "tail" && t == "do" && mask & 1 << 10 != 0),
+        "{:?}",
+        facts.forwards
+    );
+    // Falling into the next label hands the registers on as a branch does.
     assert!(facts
-        .dispatch
-        .contains(&("syscall".to_string(), Some("calls".to_string()), vec![])));
-    assert!(!facts
-        .dispatch
+        .passes
         .iter()
-        .any(|(r, _, _)| r == "local" || r == "do"));
+        .any(|(f, t, r, ..)| f == "fall" && t == "fallen" && r == "a2"));
+    assert_eq!(
+        facts.param_calls,
+        [("do".to_string(), "a2".to_string(), vec![], 15)]
+    );
+    assert_eq!(
+        facts.param_stores,
+        [("keep".to_string(), "a3".to_string(), "MN_OPS".to_string())]
+    );
+    assert!(facts.dispatch.contains(&(
+        "syscall".to_string(),
+        Some("calls".to_string()),
+        vec![],
+        20
+    )));
+    assert!(!facts.dispatch.iter().any(|(r, ..)| r == "local"));
     // A local table's entries are its routine's own calls.
     assert!(calls.contains(&pair("local", "mount")), "{calls:?}");
-    assert_eq!(facts.indirect, [("lost".to_string(), 28)]);
-    // A table, and a routine holding a local one; not a list of data only.
-    assert_eq!(facts.tables, ["calls".to_string(), "local".to_string()]);
+    assert_eq!(facts.indirect, [("lost".to_string(), 31)]);
+    // A table, not a routine with a private one, nor a list of data only.
+    assert_eq!(facts.tables, ["calls".to_string()]);
     assert!(
         calls.contains(&pair("calls", "call")),
         "an entry after `,  `: {calls:?}"
     );
-    // An entry naming this file's own data is not a call.
     assert!(!calls.contains(&pair("names", "name")), "{calls:?}");
+    // Entries at their byte offsets: four, four, two of `DC.W`, four of zero.
+    let at = |t: &str| {
+        facts
+            .slots
+            .iter()
+            .filter(|s| s.0 == t)
+            .map(|s| (s.1, s.2.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(at("calls"), [(0, "mount"), (4, "call"), (14, "syscall")]);
 }

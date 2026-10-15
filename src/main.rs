@@ -9616,17 +9616,21 @@ fn demo_dispatch() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     let put = |f: &str, text: &str| std::fs::write(dir.join(f), text).unwrap();
+    // Two filesystems' tables, one stored into MN_OPS directly and one
+    // through a register handed to the routine storing it, in another file.
     put(
         "src/ops.s",
-        "ffs_ops:\n    DC.L    ffs_read,  ffs_rename\nffs_read:\n    RTS\nffs_rename:\n    RTS\n",
+        "ffs_ops:\n    DC.L    ffs_read,  ffs_rename\nffs_read:\n    RTS\nffs_rename:\n    RTS\nfat_ops:\n    DC.L    fat_read,fat_rename\nfat_read:\n    RTS\nfat_rename:\n    RTS\n",
     );
     put(
         "src/mount.s",
-        "mount:\n    LEA     ffs_ops,A0\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\n",
+        "mount:\n    LEA     ffs_ops,A0\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\nmount_fs:\n    MOVE.L  A0,MN_OPS(A1)\n    RTS\nmount_fat:\n    LEA     fat_ops,A0\n    BSR     mount_fs\n    RTS\n",
     );
+    // The slot is loaded, then the value goes along a tail branch and a
+    // call into the routine that finally calls through it.
     put(
         "src/vfs.s",
-        "vfs_rename:\n    MOVE.L  MN_OPS(A1),A2\n    MOVE.L  OP_RENAME(A2),A2\n    BSR     vfs_do\n    RTS\nvfs_do:\n    JSR     (A2)\n    RTS\nsys_rename:\n    BSR     vfs_rename\n    RTS\n",
+        "OP_READ   EQU     0\nOP_RENAME EQU     OP_READ+4\nvfs_rename:\n    MOVE.L  MN_OPS(A1),A2\n    MOVE.L  OP_RENAME(A2),A2\n    BRA     vfs_call\nvfs_call:\n    CMPA.W  #0,A2\n    BSR     vfs_do\n    RTS\nvfs_do:\n    JSR     (A2)\n    RTS\nsys_rename:\n    BSR     vfs_rename\n    RTS\n",
     );
     // A record whose field holds the device, whose own field holds the
     // handler: the deepest field stored into decides.
@@ -9671,6 +9675,42 @@ fn demo_dispatch() {
     ] {
         assert!(reached.iter().any(|r| r == want), "{want} in {reached:?}");
     }
+    // The routine that loaded the slot calls what sits in it, and nothing
+    // else of the table; the table stored through a parameter counts too.
+    let loaded = |symbol: &str| -> Vec<String> {
+        mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap()["result"]["structuredContent"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let rename = "src/vfs.s#vfs_rename".to_string();
+    assert!(
+        loaded("ffs_rename").contains(&rename),
+        "{:?}",
+        loaded("ffs_rename")
+    );
+    assert!(
+        loaded("fat_rename").contains(&rename),
+        "{:?}",
+        loaded("fat_rename")
+    );
+    assert!(
+        !loaded("ffs_read").contains(&rename),
+        "{:?}",
+        loaded("ffs_read")
+    );
+    assert!(
+        !loaded("fat_read").contains(&rename),
+        "{:?}",
+        loaded("fat_read")
+    );
     assert!(
         call("impact", "ffs_rename")["untraced"]
             .as_array()
@@ -9703,7 +9743,7 @@ fn demo_dispatch() {
 
     // A start from the stored graph knows the same.
     let warm = served_state(&dir).unwrap();
-    assert!(callers(&warm.as_served(), "ffs_ops").contains(&"src/vfs.s#vfs_rename".to_string()));
+    assert!(callers(&warm.as_served(), "ffs_rename").contains(&"src/vfs.s#vfs_rename".to_string()));
 
     // A module header nothing dispatches through: the answer names the call
     // it could not trace instead of ending there.

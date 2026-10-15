@@ -77,9 +77,15 @@ pub struct FileFacts {
     /// Indirect calls in assembly and what they go through; see the scanner's
     /// `FileFacts` for each.
     pub stores: Vec<(String, String)>,
-    pub dispatch: Vec<(String, Option<String>, Vec<String>)>,
+    pub dispatch: Vec<(String, Option<String>, Vec<String>, u32)>,
     pub indirect: Vec<(String, u32)>,
     pub tables: Vec<String>,
+    pub constants: Vec<(String, String)>,
+    pub slots: Vec<(String, u32, String)>,
+    pub passes: Vec<native_parsers::facts::Pass>,
+    pub forwards: Vec<(String, String, u16)>,
+    pub param_calls: Vec<(String, String, Vec<String>, u32)>,
+    pub param_stores: Vec<(String, String, String)>,
 }
 
 /// A language we can extract from.
@@ -347,6 +353,12 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         dispatch: f.dispatch,
         indirect: f.indirect,
         tables: f.tables,
+        constants: f.constants,
+        slots: f.slots,
+        passes: f.passes,
+        forwards: f.forwards,
+        param_calls: f.param_calls,
+        param_stores: f.param_stores,
     })
 }
 

@@ -2278,6 +2278,8 @@ pub struct References {
     unresolved: Vec<(NodeId, Option<u32>)>,
     /// Tables of routines, which an indirect call reaches as a whole.
     tables: std::collections::HashSet<NodeId>,
+    /// The tables some resolved indirect call goes through.
+    dispatched: std::collections::HashSet<NodeId>,
 }
 
 impl Served<'_> {
@@ -2391,51 +2393,214 @@ impl Served<'_> {
                 sources.dedup();
             }
 
-            // An indirect call reaches what was stored where it loads from:
-            // a table the chain starts at reaches the table, which lists its
-            // routines; otherwise the deepest field anything is stored into
-            // decides, so a record's handler field wins over the record.
+            // An indirect call reaches what was stored where it loads from.
+            // A chain starting at a table reaches the table; otherwise the
+            // deepest field anything is stored into decides, so a record's
+            // handler field wins over the record, and the field read after
+            // it is the slot: `[MN_OPS, OP_RENAME]` is the entry at offset
+            // OP_RENAME of every table stored into MN_OPS.
             let dispatch = self.registry.dispatch();
+            let file_of = |n: NodeId| self.name(n).split_once('#').map(|(f, _)| f.to_string());
+            // A label by name: the one the tree defines, or else the one in
+            // the file naming it.
+            let near = |name: &str, file: &str| -> Option<NodeId> {
+                resolve(name).or_else(|| {
+                    let mut here = defs.get(name)?.iter().filter(|(f, _)| *f == file);
+                    match (here.next(), here.next()) {
+                        (Some(&(_, n)), None) => Some(n),
+                        _ => None,
+                    }
+                })
+            };
             let tables: std::collections::HashSet<NodeId> = dispatch
                 .values()
                 .flat_map(|d| d.tables.iter().copied())
                 .collect();
-            let mut stored: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+
+            let mut written: std::collections::HashMap<&str, Vec<&str>> = Default::default();
             for d in dispatch.values() {
+                for (name, value) in &d.constants {
+                    written
+                        .entry(name.as_str())
+                        .or_default()
+                        .push(value.as_str());
+                }
+            }
+            let value = |name: &str| -> Option<u32> {
+                let mut name = name.to_string();
+                let mut add: i64 = 0;
+                for _ in 0..8 {
+                    let values = written.get(name.as_str())?;
+                    if values.iter().any(|v| *v != values[0]) {
+                        return None;
+                    }
+                    let v = values[0].trim();
+                    if let Some(n) = asm_number(v) {
+                        return u32::try_from(n + add).ok();
+                    }
+                    // `OTHER+4`: one step along, at most a few deep.
+                    let (base, rest) = v.split_at(v.find(['+', '-']).unwrap_or(v.len()));
+                    add += match rest.chars().next() {
+                        Some('+') => asm_number(&rest[1..])?,
+                        Some('-') => -asm_number(&rest[1..])?,
+                        _ => 0,
+                    };
+                    name = base.trim().to_string();
+                }
+                None
+            };
+            let mut slots: std::collections::HashMap<NodeId, Vec<(u32, NodeId)>> =
+                Default::default();
+            for (file, d) in dispatch {
+                for (table, at, to) in &d.slots {
+                    if let Some(to) = near(to, file) {
+                        slots.entry(*table).or_default().push((*at, to));
+                    }
+                }
+            }
+
+            // What a routine was handed in a register: the values its callers
+            // pass, and through any routine that hands its own on unchanged.
+            type Origin = (NodeId, Option<String>, Vec<String>);
+            let mut passed: std::collections::HashMap<(NodeId, &str), Vec<Origin>> =
+                Default::default();
+            let mut forwarded: std::collections::HashMap<NodeId, Vec<(NodeId, u16)>> =
+                Default::default();
+            for (file, d) in dispatch {
+                for (from, to, reg, label, fields) in &d.passes {
+                    if let Some(to) = near(to, file) {
+                        passed.entry((to, reg.as_str())).or_default().push((
+                            *from,
+                            label.clone(),
+                            fields.clone(),
+                        ));
+                    }
+                }
+                for (from, to, mask) in &d.forwards {
+                    if let Some(to) = near(to, file) {
+                        forwarded.entry(to).or_default().push((*from, *mask));
+                    }
+                }
+            }
+            const REGISTERS: [&str; 15] = [
+                "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5",
+                "a6",
+            ];
+            let handed = |routine: NodeId, reg: &str| -> Vec<Origin> {
+                let bit = REGISTERS.iter().position(|r| *r == reg).map(|k| 1u16 << k);
+                let mut out = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut todo = vec![routine];
+                while let Some(r) = todo.pop() {
+                    if !seen.insert(r) {
+                        continue;
+                    }
+                    out.extend(passed.get(&(r, reg)).into_iter().flatten().cloned());
+                    for &(from, mask) in forwarded.get(&r).into_iter().flatten() {
+                        if bit.is_some_and(|b| mask & b != 0) {
+                            todo.push(from);
+                        }
+                    }
+                }
+                out
+            };
+
+            let mut stored: std::collections::HashMap<&str, Vec<(String, String)>> =
+                Default::default();
+            for (file, d) in dispatch {
                 for (field, label) in &d.stores {
                     stored
                         .entry(field.as_str())
                         .or_default()
-                        .push(label.as_str());
+                        .push((label.clone(), file.clone()));
                 }
-            }
-            let mut by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>> =
-                Default::default();
-            let mut unresolved: Vec<(NodeId, Option<u32>)> = Vec::new();
-            for d in dispatch.values() {
-                for (routine, label, fields) in &d.calls {
-                    let anchor = label.as_deref().and_then(resolve);
-                    let targets: Vec<NodeId> = match anchor {
-                        Some(t) if fields.is_empty() || tables.contains(&t) => vec![t],
-                        _ => fields
-                            .iter()
-                            .rev()
-                            .find_map(|f| stored.get(f.as_str()))
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|l| resolve(l))
-                            .collect(),
-                    };
-                    if targets.is_empty() {
-                        unresolved.push((*routine, None));
-                    }
-                    for t in targets {
-                        if t != *routine {
-                            by_dispatch.entry(t).or_default().push(*routine);
+                for (routine, reg, field) in &d.param_stores {
+                    for (from, label, fields) in handed(*routine, reg) {
+                        if let (Some(label), true) = (label, fields.is_empty()) {
+                            let file = file_of(from).unwrap_or_default();
+                            stored
+                                .entry(field.as_str())
+                                .or_default()
+                                .push((label, file));
                         }
                     }
                 }
+            }
+
+            // Every indirect call as (loader, label, fields, site, line): the
+            // loader is the routine that loaded the value, which is the one
+            // reaching the target, wherever the call itself is made.
+            type Indirect = (NodeId, Option<String>, Vec<String>, NodeId, Option<u32>);
+            let mut calls: Vec<Indirect> = Vec::new();
+            let mut unresolved: Vec<(NodeId, Option<u32>)> = Vec::new();
+            for d in dispatch.values() {
+                for (routine, label, fields, line) in &d.calls {
+                    calls.push((
+                        *routine,
+                        label.clone(),
+                        fields.clone(),
+                        *routine,
+                        Some(*line),
+                    ));
+                }
+                for (routine, reg, fields, line) in &d.param_calls {
+                    let origins = handed(*routine, reg);
+                    if origins.is_empty() && !fields.is_empty() {
+                        calls.push((*routine, None, fields.clone(), *routine, Some(*line)));
+                    } else if origins.is_empty() {
+                        unresolved.push((*routine, Some(*line)));
+                    }
+                    for (from, label, mut path) in origins {
+                        path.extend(fields.iter().cloned());
+                        calls.push((from, label, path, *routine, Some(*line)));
+                    }
+                }
                 unresolved.extend(d.unresolved.iter().map(|&(r, line)| (r, Some(line))));
+            }
+
+            let mut by_dispatch: std::collections::HashMap<NodeId, Vec<NodeId>> =
+                Default::default();
+            let mut dispatched: std::collections::HashSet<NodeId> = Default::default();
+            for (loader, label, fields, site, line) in calls {
+                let home = file_of(loader).unwrap_or_default();
+                let anchor = label.as_deref().and_then(|l| near(l, &home));
+                let mut targets: Vec<NodeId> = Vec::new();
+                match anchor {
+                    Some(t) if fields.is_empty() || tables.contains(&t) => {
+                        targets.push(t);
+                        dispatched.insert(t);
+                    }
+                    _ => {
+                        let deepest = fields
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find_map(|(k, f)| stored.get(f.as_str()).map(|s| (k, s)));
+                        if let Some((k, labels)) = deepest {
+                            let slot = fields.get(k + 1).map(|f| value(f));
+                            for (l, file) in labels {
+                                let Some(t) = near(l, file) else { continue };
+                                dispatched.insert(t);
+                                match (slot, slots.get(&t)) {
+                                    // The entry at that offset, or none: an
+                                    // empty slot reaches nothing.
+                                    (Some(Some(at)), Some(entries)) => targets.extend(
+                                        entries.iter().filter(|(o, _)| *o == at).map(|&(_, to)| to),
+                                    ),
+                                    _ => targets.push(t),
+                                }
+                            }
+                        }
+                    }
+                }
+                if targets.is_empty() {
+                    unresolved.push((site, line));
+                }
+                for t in targets {
+                    if t != loader {
+                        by_dispatch.entry(t).or_default().push(loader);
+                    }
+                }
             }
             for sources in by_dispatch.values_mut() {
                 sources.sort_unstable();
@@ -2450,6 +2615,7 @@ impl Served<'_> {
                 by_dispatch,
                 unresolved,
                 tables,
+                dispatched,
             }
         })
     }
@@ -3392,14 +3558,11 @@ impl Served<'_> {
         if refs.unresolved.is_empty() {
             return Vec::new();
         }
-        // A table nothing calls, not even through a resolved indirect call,
-        // is reached only in a way the graph could not follow.
-        let reverse = self.snap.reverse();
-        let stuck = std::iter::once(&node).chain(reached).any(|&n| {
-            refs.tables.contains(&n)
-                && !refs.by_dispatch.contains_key(&n)
-                && reverse.callers(n).next().is_none()
-        });
+        // A table no resolved indirect call goes through is reached only in
+        // a way the graph could not follow, whatever else lists it.
+        let stuck = std::iter::once(&node)
+            .chain(reached)
+            .any(|n| refs.tables.contains(n) && !refs.dispatched.contains(n));
         use crate::parse_ast::LangExt;
         let name = self.name(node);
         let alone = reached.is_empty()
@@ -3611,6 +3774,23 @@ breaks no caller here. Callers in code the graph does not cover are not ruled ou
     }
     out.push_str(&render_untraced(v));
     out
+}
+
+/// An assembler number: decimal, `$` hex or `%` binary, optionally negative.
+fn asm_number(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (neg, s) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let n = if let Some(h) = s.strip_prefix('$') {
+        i64::from_str_radix(h, 16).ok()?
+    } else if let Some(b) = s.strip_prefix('%') {
+        i64::from_str_radix(b, 2).ok()?
+    } else {
+        s.parse().ok()?
+    };
+    Some(if neg { -n } else { n })
 }
 
 /// The indirect calls an answer could not follow, after it.

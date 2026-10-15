@@ -33,26 +33,39 @@ pub struct FileHttp {
     pub requests: Vec<(NodeId, crate::routes::Verb, String)>,
 }
 
+/// (caller, callee, register, label, fields): a known value handed on.
+pub type Pass = (NodeId, String, String, Option<String>, Vec<String>);
+
 /// What one file stores into fields and calls through them, for resolving
 /// indirect calls across files. See `mcp::References`.
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileDispatch {
     /// (field, label): a label's address stored into a field.
     pub stores: Vec<(String, String)>,
-    /// (routine, label, fields): an indirect call and what it goes through.
-    pub calls: Vec<(NodeId, Option<String>, Vec<String>)>,
+    /// (routine, label, fields, line): an indirect call and what it goes
+    /// through.
+    pub calls: Vec<(NodeId, Option<String>, Vec<String>, u32)>,
     /// (routine, line): an indirect call nothing here could trace.
     pub unresolved: Vec<(NodeId, u32)>,
     /// Labels of this file that are tables of routines.
     pub tables: Vec<NodeId>,
+    /// (name, value as written) of every constant.
+    pub constants: Vec<(String, String)>,
+    /// (table, offset, routine): table entries at known offsets.
+    pub slots: Vec<(NodeId, u32, String)>,
+    /// (caller, callee, register, label, fields): a known value handed on.
+    pub passes: Vec<Pass>,
+    /// (caller, callee, registers): parameters handed on unchanged.
+    pub forwards: Vec<(NodeId, String, u16)>,
+    /// (routine, register, fields, line): a call through a parameter.
+    pub param_calls: Vec<(NodeId, String, Vec<String>, u32)>,
+    /// (routine, register, field): a parameter stored into a field.
+    pub param_stores: Vec<(NodeId, String, String)>,
 }
 
 impl FileDispatch {
     fn is_empty(&self) -> bool {
-        self.stores.is_empty()
-            && self.calls.is_empty()
-            && self.unresolved.is_empty()
-            && self.tables.is_empty()
+        *self == FileDispatch::default()
     }
 }
 
@@ -786,8 +799,8 @@ fn prepare_facts(
         calls: facts
             .dispatch
             .iter()
-            .filter_map(|(r, label, fields)| {
-                Some((in_file(registry, r)?, label.clone(), fields.clone()))
+            .filter_map(|(r, label, fields, line)| {
+                Some((in_file(registry, r)?, label.clone(), fields.clone(), *line))
             })
             .collect(),
         unresolved: facts
@@ -799,6 +812,42 @@ fn prepare_facts(
             .tables
             .iter()
             .filter_map(|t| in_file(registry, t))
+            .collect(),
+        constants: facts.constants.clone(),
+        slots: facts
+            .slots
+            .iter()
+            .filter_map(|(t, at, to)| Some((in_file(registry, t)?, *at, to.clone())))
+            .collect(),
+        passes: facts
+            .passes
+            .iter()
+            .filter_map(|(from, to, reg, label, fields)| {
+                Some((
+                    in_file(registry, from)?,
+                    to.clone(),
+                    reg.clone(),
+                    label.clone(),
+                    fields.clone(),
+                ))
+            })
+            .collect(),
+        forwards: facts
+            .forwards
+            .iter()
+            .filter_map(|(from, to, mask)| Some((in_file(registry, from)?, to.clone(), *mask)))
+            .collect(),
+        param_calls: facts
+            .param_calls
+            .iter()
+            .filter_map(|(r, reg, fields, line)| {
+                Some((in_file(registry, r)?, reg.clone(), fields.clone(), *line))
+            })
+            .collect(),
+        param_stores: facts
+            .param_stores
+            .iter()
+            .filter_map(|(r, reg, field)| Some((in_file(registry, r)?, reg.clone(), field.clone())))
             .collect(),
     };
     registry.set_dispatch(&file, dispatch);
