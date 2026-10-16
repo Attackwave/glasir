@@ -25,7 +25,7 @@ could reach:
   `.glasir-audit.jsonl` (mode 0600). `install` adds them to `.gitignore`.
 - **`install` writes editor configuration and git hooks**: an MCP registration
   for each assistant it detects (`.mcp.json`, `.codex/config.toml`,
-  `.gemini/settings.json`, `.qwen/settings.json`, `.cursor/mcp.json`,
+  `.gemini/settings.json`, `.qwen/settings.json`, `.agents/mcp_config.json`, `.cursor/mcp.json`,
   `.vscode/mcp.json`, `opencode.json`, or the neutral `glasir-mcp.json`) holding the absolute
   path to the binary and the tree, and `post-merge`, `post-checkout` and
   `post-rewrite` hooks that run `glasir analyse`. Existing files are merged

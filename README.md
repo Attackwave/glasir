@@ -61,6 +61,7 @@ project — and registers Glasir with each, in the project's own configuration:
 | Codex | `.codex/config.toml` |
 | Gemini CLI | `.gemini/settings.json` |
 | Qwen Code | `.qwen/settings.json` |
+| Antigravity | `.agents/mcp_config.json` |
 | Cursor | `.cursor/mcp.json` |
 | VS Code (Copilot) | `.vscode/mcp.json` |
 | OpenCode | `opencode.json` |
@@ -75,7 +76,8 @@ assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.
 
 Most assistants ask before they start a new server: Claude Code and Qwen Code
 want the server approved, Codex and Gemini CLI read project settings only in a
-folder you have trusted. `install` prints the step for each one it wrote.
+folder you have trusted, and Antigravity asks before its first use of an MCP
+tool. `install` prints the step for each one it wrote.
 
 Restart the assistant and ask it something about the code: *"what breaks if I
 change `parse_config`?"*, *"how does a request reach the database?"*. The
