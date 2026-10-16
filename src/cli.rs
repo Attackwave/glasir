@@ -100,6 +100,7 @@ USAGE
 
 SETUP
   install [path]        Register with detected assistants, add git hooks
+                        (path: the current directory when left out)
   uninstall [path]      Remove those registrations and hooks
   status [path]         Show registration and graph status
 
@@ -155,7 +156,8 @@ DIAGNOSTICS
 
 OPTIONS
   --language-rules <dir> Load explicit TOML overrides for Go, Rust and Ruby
-  --platform <name>     claude, codex, gemini, qwen, cursor, vscode, opencode, mcp
+  --platform <name>     claude, codex, gemini, qwen, antigravity, cursor, vscode,
+                        opencode, mcp
   --user                Install for the user rather than the project
   --dry-run             Print what would be written, change nothing
   --no-hook             install: skip the git hooks that keep the graph current

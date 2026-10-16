@@ -7085,6 +7085,11 @@ fn demo_install() {
         cli::Args::parse(v.into_iter())
     };
 
+    // Every client `--platform` accepts is named in the help.
+    for t in TARGETS {
+        assert!(cli::HELP.contains(t.name), "{} missing from --help", t.name);
+    }
+
     // A dry run must change nothing at all.
     run_install(&args("install", &["--platform", "mcp", "--dry-run"])).unwrap();
     assert!(
