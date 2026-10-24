@@ -2964,18 +2964,40 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// Where this repository keeps its hooks.
+/// The repository's own hooks directory, `<common dir>/hooks`.
 ///
-/// Asked of git rather than assumed to be `.git/hooks`: `core.hooksPath`
-/// (husky and friends), a linked worktree where `.git` is a file, and
-/// `includeIf` all change the answer, and git resolves every one of them.
-/// `--path-format=absolute` is deliberately not passed — it arrived in git 2.31
-/// and older versions echo it back as a literal argument.
+/// Asked of git rather than assumed to be `.git/hooks`, since a linked
+/// worktree's `.git` is a file. Deliberately not where `core.hooksPath`
+/// points: that directory may serve every repository on the machine, and a
+/// refresh hook written there ran for all of them, or not at all behind an
+/// early `exit`. `--path-format=absolute` is not passed — it arrived in git
+/// 2.31 and older versions echo it back as a literal argument.
 fn hooks_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    git_path(root, &["rev-parse", "--git-common-dir"]).map(|dir| dir.join("hooks"))
+}
+
+/// Where `core.hooksPath` sends git instead of `hooks_dir`, when it is set.
+/// That directory is often shared by every repository on the machine, or
+/// checked in (`.husky`), so the refresh hook is never written there; only
+/// a block an older version put there is removed.
+fn redirected_hooks(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let used = git_path(root, &["rev-parse", "--git-path", "hooks"])?;
+    let own = hooks_dir(root)?;
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a.canonicalize()
+            .ok()
+            .zip(b.canonicalize().ok())
+            .map_or(a == b, |(x, y)| x == y)
+    };
+    (!same(&used, &own)).then_some(used)
+}
+
+/// A path git prints for this repository, made absolute.
+fn git_path(root: &std::path::Path, args: &[&str]) -> Option<std::path::PathBuf> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["rev-parse", "--git-path", "hooks"])
+        .args(args)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -3043,6 +3065,14 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
         }
         notes.push(format!("{hook}: installed"));
     }
+    if let Some(other) = redirected_hooks(root) {
+        notes.push(format!(
+            "note: core.hooksPath makes git run hooks from {} instead; these run only if \
+             it forwards to {}",
+            other.display(),
+            dir.display()
+        ));
+    }
     notes
 }
 
@@ -3052,10 +3082,12 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
 /// a bare shebang, which git would still run on every operation.
 fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
     let mut notes = Vec::new();
-    let Some(dir) = hooks_dir(root) else {
-        return notes;
-    };
-    for hook in HOOKS {
+    // Also where core.hooksPath points: an older version wrote there.
+    let dirs: Vec<std::path::PathBuf> = hooks_dir(root)
+        .into_iter()
+        .chain(redirected_hooks(root))
+        .collect();
+    for (dir, hook) in dirs.iter().flat_map(|d| HOOKS.iter().map(move |h| (d, h))) {
         let path = dir.join(hook);
         let Ok(existing) = std::fs::read_to_string(&path) else {
             continue;
@@ -8612,6 +8644,13 @@ fn demo_hooks() {
     };
     git(&["init", "-q"]);
     let exe = std::path::Path::new("/usr/local/bin/glasir");
+    // A core.hooksPath elsewhere, as a machine-wide hook directory is: its
+    // shared script must stay as it was, and is set here so the check does
+    // not depend on the machine's own git configuration.
+    let shared = dir.join("shared-hooks");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("post-merge"), "#!/bin/sh\nexit 0\n").unwrap();
+    git(&["config", "core.hooksPath", shared.to_str().unwrap()]);
 
     // A `git pull --rebase` never merges, so post-merge alone misses it, and a
     // branch switch fires neither. That omission is the whole failure this item
@@ -8622,7 +8661,16 @@ fn demo_hooks() {
     );
 
     let notes = install_hooks(&dir, exe, false);
-    assert_eq!(notes.len(), HOOKS.len());
+    assert_eq!(notes.len(), HOOKS.len() + 1, "{notes:?}");
+    assert!(
+        notes.last().unwrap().contains("core.hooksPath"),
+        "{notes:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(shared.join("post-merge")).unwrap(),
+        "#!/bin/sh\nexit 0\n",
+        "a hook directory core.hooksPath shares is never written"
+    );
     for hook in HOOKS {
         let path = dir.join(".git/hooks").join(hook);
         let body = std::fs::read_to_string(&path).unwrap();
@@ -8655,7 +8703,9 @@ fn demo_hooks() {
     // Installing twice must not stack two copies.
     let again = install_hooks(&dir, exe, false);
     assert!(
-        again.iter().all(|n| n.contains("already installed")),
+        again
+            .iter()
+            .all(|n| n.contains("already installed") || n.starts_with("note:")),
         "a second install must be a no-op"
     );
 
@@ -8675,7 +8725,20 @@ fn demo_hooks() {
         "another tool's hook survives"
     );
 
+    // A block an older version wrote into the shared directory goes too.
+    std::fs::write(
+        shared.join("post-merge"),
+        format!("#!/bin/sh\nexit 0\n{}", hook_script("post-merge", exe)),
+    )
+    .unwrap();
     uninstall_hooks(&dir, false);
+    assert_eq!(
+        std::fs::read_to_string(shared.join("post-merge"))
+            .unwrap()
+            .trim_end(),
+        "#!/bin/sh\nexit 0",
+        "uninstall removes an old block from the shared directory"
+    );
     let after = std::fs::read_to_string(dir.join(".git/hooks/post-merge")).unwrap();
     assert!(
         after.contains("npm install"),
