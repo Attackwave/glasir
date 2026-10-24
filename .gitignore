@@ -16,4 +16,3 @@ glasir.cdx.json
 # 452 artefacts (87 MB) were tracked here before anyone noticed.
 parsers/target/
 __pycache__/
-.agents/mcp_config.json
