@@ -82,6 +82,8 @@ fn main() -> std::io::Result<()> {
         "token" => run_token(&args),
         "watch" => run_watch(&args.path),
         "impact-of" => run_impact_of(&args),
+        "review" => run_review(&args),
+        "export" => run_export(&args),
         "guard" => run_guard(&args),
         // Refreshes the stored snapshot and exits. What the git hooks run, and
         // useful by hand: it moves the cost of a cold analysis off the moment
@@ -246,8 +248,11 @@ enum Format {
     McpJson,
     /// The same without `type`, as Gemini CLI and Qwen Code write it.
     McpJsonPlain,
-    /// Without `type` and with `disabled: false`, as Antigravity writes it.
-    Antigravity,
+    /// Without `type` and with `disabled: false`, as Antigravity and Kiro
+    /// write it.
+    McpJsonDisabled,
+    /// Amp's `{"amp.mcpServers": {"glasir": {"command", "args"}}}`.
+    Amp,
     /// VS Code's `{"servers": {...}}`.
     VsCode,
     /// OpenCode's `{"mcp": {"glasir": {"type": "local", "command": [...]}}}`.
@@ -255,17 +260,43 @@ enum Format {
     /// Codex's `[mcp_servers.glasir]` table, edited as text so the comments and
     /// layout of the rest of the file survive.
     CodexToml,
+    /// Continue's one-server block file under `.continue/mcpServers/`, YAML
+    /// that is entirely ours, so it is written whole and deleted whole.
+    ContinueYaml,
+}
+
+/// Where a format keeps the entry: a key in a JSON document shared with other
+/// servers, a TOML table in a shared file, or a file that holds nothing else.
+enum Store {
+    Json(&'static str),
+    CodexToml,
+    OwnFile,
 }
 
 impl Format {
-    /// The JSON object holding the servers; `None` for the TOML format.
-    fn container(self) -> Option<&'static str> {
+    fn store(self) -> Store {
         match self {
-            Format::McpJson | Format::McpJsonPlain | Format::Antigravity => Some("mcpServers"),
-            Format::VsCode => Some("servers"),
-            Format::OpenCode => Some("mcp"),
-            Format::CodexToml => None,
+            Format::McpJson | Format::McpJsonPlain | Format::McpJsonDisabled => {
+                Store::Json("mcpServers")
+            }
+            Format::Amp => Store::Json("amp.mcpServers"),
+            Format::VsCode => Store::Json("servers"),
+            Format::OpenCode => Store::Json("mcp"),
+            Format::CodexToml => Store::CodexToml,
+            Format::ContinueYaml => Store::OwnFile,
         }
+    }
+
+    /// The whole file for a format that owns one. A JSON string is a valid
+    /// double-quoted YAML scalar, so paths need no escaping of their own.
+    fn own_file(self, exe: &str, root: &str) -> String {
+        let q = |v: &str| serde_json::Value::from(v).to_string();
+        format!(
+            "name: glasir\nversion: 0.0.1\nschema: v1\nmcpServers:\n  - name: glasir\n    \
+             command: {}\n    args:\n      - serve\n      - {}\n      - --watch\n",
+            q(exe),
+            q(root)
+        )
     }
 
     /// `--watch`: an editor's server lives as long as the session, and
@@ -278,10 +309,10 @@ impl Format {
                 "command": [exe, "serve", root, "--watch"],
                 "enabled": true,
             }),
-            Format::McpJsonPlain => {
+            Format::McpJsonPlain | Format::Amp => {
                 serde_json::json!({"command": exe, "args": ["serve", root, "--watch"]})
             }
-            Format::Antigravity => serde_json::json!({
+            Format::McpJsonDisabled => serde_json::json!({
                 "command": exe,
                 "args": ["serve", root, "--watch"],
                 "disabled": false,
@@ -405,11 +436,68 @@ const TARGETS: &[Target] = &[
         name: "antigravity",
         project: Some(".agents/mcp_config.json"),
         user: Some(".gemini/config/mcp_config.json"),
-        format: Format::Antigravity,
+        format: Format::McpJsonDisabled,
         binaries: &["agy"],
         markers: &[".agents/mcp_config.json"],
         home_markers: &[".gemini/antigravity-cli", ".gemini/antigravity"],
         next: "Antigravity: start agy here and allow the glasir tools when asked",
+    },
+    // Copilot CLI reads the `.mcp.json` Claude Code uses (and a `.github/mcp.json`),
+    // with `stdio` named in its documentation as the standard type; its own
+    // file is user-level only. Roo Code, Kiro, Amp and Continue each document
+    // a project file in the shape below. Not here: Zed (its project-level
+    // server schema changed between releases and is undocumented), Windsurf
+    // and Cline (a global file only, which one tree's registration would
+    // claim for every tree) and Aider (no documented MCP client).
+    Target {
+        name: "copilot",
+        project: Some(".mcp.json"),
+        user: Some(".copilot/mcp-config.json"),
+        format: Format::McpJson,
+        binaries: &["copilot"],
+        markers: &[],
+        home_markers: &[".copilot"],
+        next: "Copilot CLI: start it here and allow the glasir server",
+    },
+    Target {
+        name: "roo",
+        project: Some(".roo/mcp.json"),
+        user: None,
+        format: Format::McpJsonPlain,
+        binaries: &[],
+        markers: &[".roo", ".roomodes"],
+        home_markers: &[],
+        next: "Roo Code: reload the window and allow the glasir server",
+    },
+    Target {
+        name: "kiro",
+        project: Some(".kiro/settings/mcp.json"),
+        user: Some(".kiro/settings/mcp.json"),
+        format: Format::McpJsonDisabled,
+        binaries: &["kiro", "kiro-cli"],
+        markers: &[".kiro"],
+        home_markers: &[".kiro"],
+        next: "Kiro: it reads .kiro/settings/mcp.json on the next start",
+    },
+    Target {
+        name: "amp",
+        project: Some(".amp/settings.json"),
+        user: Some(".config/amp/settings.json"),
+        format: Format::Amp,
+        binaries: &["amp"],
+        markers: &[".amp"],
+        home_markers: &[".config/amp"],
+        next: "Amp: approve the workspace server when asked",
+    },
+    Target {
+        name: "continue",
+        project: Some(".continue/mcpServers/glasir.yaml"),
+        user: Some(".continue/mcpServers/glasir.yaml"),
+        format: Format::ContinueYaml,
+        binaries: &["cn"],
+        markers: &[".continue"],
+        home_markers: &[".continue"],
+        next: "Continue: reload it here; glasir appears under MCP",
     },
     Target {
         name: "vscode",
@@ -1477,8 +1565,15 @@ fn write_registration(
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let (exe, root) = (exe.to_string_lossy(), root.to_string_lossy());
 
-    let updated = match target.format.container() {
-        None => {
+    let updated = match target.format.store() {
+        Store::OwnFile => {
+            let content = target.format.own_file(&exe, &root);
+            if existing == content {
+                return Ok(false);
+            }
+            content
+        }
+        Store::CodexToml => {
             let (rest, _) = strip_codex_block(&existing);
             let block = codex_block(&exe, &root);
             if existing.contains(&block) {
@@ -1491,7 +1586,7 @@ fn write_registration(
                 format!("{rest}\n\n{block}")
             }
         }
-        Some(key) => {
+        Store::Json(key) => {
             let mut doc: serde_json::Value = if existing.trim().is_empty() {
                 serde_json::json!({})
             } else {
@@ -1541,15 +1636,22 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
             continue;
         };
 
-        let updated = match target.format.container() {
-            None => {
+        let updated = match target.format.store() {
+            // Ours alone, so it goes rather than being emptied.
+            Store::OwnFile => {
+                if !existing.contains("name: glasir") {
+                    continue;
+                }
+                None
+            }
+            Store::CodexToml => {
                 let (rest, found) = strip_codex_block(&existing);
                 if !found {
                     continue;
                 }
-                rest
+                Some(rest)
             }
-            Some(key) => {
+            Store::Json(key) => {
                 let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&existing) else {
                     continue;
                 };
@@ -1559,12 +1661,15 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
                 if let Some(servers) = doc[key].as_object_mut() {
                     servers.remove("glasir");
                 }
-                format!("{doc:#}\n")
+                Some(format!("{doc:#}\n"))
             }
         };
 
         if !dry {
-            std::fs::write(&path, updated)?;
+            match updated {
+                Some(text) => std::fs::write(&path, text)?,
+                None => std::fs::remove_file(&path)?,
+            }
         }
         if !quiet {
             println!(
@@ -1631,9 +1736,10 @@ fn is_registered(target: &Target, path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
-    match target.format.container() {
-        None => strip_codex_block(&text).1,
-        Some(key) => serde_json::from_str::<serde_json::Value>(&text)
+    match target.format.store() {
+        Store::OwnFile => text.contains("name: glasir"),
+        Store::CodexToml => strip_codex_block(&text).1,
+        Store::Json(key) => serde_json::from_str::<serde_json::Value>(&text)
             .is_ok_and(|d| d[key]["glasir"].is_object()),
     }
 }
@@ -2314,6 +2420,242 @@ fn run_impact_of(args: &cli::Args) -> std::io::Result<()> {
         impact_of_report(args, &canonical(std::path::Path::new("."))?)?
     );
     Ok(())
+}
+
+/// `glasir review [rev]`: what `detect_changes` and `affected_tests` say about
+/// a diff, as Markdown a pull request can carry. `--fail-on <level>` makes it
+/// a merge gate.
+fn run_review(args: &cli::Args) -> std::io::Result<()> {
+    let root = canonical(std::path::Path::new("."))?;
+    let rev = match args.path.as_str() {
+        "." | "" => "",
+        r => r,
+    };
+    let depth: u64 = args
+        .value("depth")
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(3);
+    let gate = match args.value("fail-on") {
+        None => None,
+        Some(l) => Some(risk_rank(l).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--fail-on takes low, medium or high",
+            )
+        })?),
+    };
+    let state = served_state(&root)?;
+    let (report, level) = review_report(&state.as_served(), rev, depth)?;
+    print!("{report}");
+    if let (Some(gate), Some(level)) = (gate, risk_rank(&level))
+        && level >= gate
+    {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// low < medium < high; `None` for anything else.
+fn risk_rank(level: &str) -> Option<u8> {
+    match level {
+        "low" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        _ => None,
+    }
+}
+
+/// The review as Markdown and its risk level, through the same tools an agent
+/// calls, so the two cannot disagree. An HTML comment opens it, which is what
+/// a later run looks for to update its comment rather than add one.
+fn review_report(served: &mcp::Served, rev: &str, depth: u64) -> std::io::Result<(String, String)> {
+    use serde_json::json;
+    let call = |tool: &str, args: serde_json::Value| -> std::io::Result<serde_json::Value> {
+        let reply = mcp::handle(
+            served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": args}}),
+        )
+        .ok_or_else(|| std::io::Error::other(format!("{tool}: no reply")))?;
+        if reply["result"]["isError"].as_bool().unwrap_or(false) {
+            return Err(std::io::Error::other(format!(
+                "{tool}: {}",
+                reply["result"]["content"][0]["text"].as_str().unwrap_or("")
+            )));
+        }
+        Ok(reply["result"]["structuredContent"].clone())
+    };
+    let mut dc_args = json!({"depth": depth});
+    let mut at_args = json!({});
+    if !rev.is_empty() {
+        dc_args["rev"] = json!(rev);
+        at_args["rev"] = json!(rev);
+    }
+    let dc = call("detect_changes", dc_args)?;
+    let at = call("affected_tests", at_args)?;
+    Ok(review_markdown(&dc, &at))
+}
+
+/// Renders the two tools' structured answers. Lists are capped at
+/// `REVIEW_LIST_LIMIT` entries each, since a comment is read, not parsed.
+fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, String) {
+    const REVIEW_LIST_LIMIT: usize = 25;
+    let strs = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let list = |out: &mut String, items: &[String]| {
+        for item in items.iter().take(REVIEW_LIST_LIMIT) {
+            out.push_str(&format!("- `{item}`\n"));
+        }
+        if items.len() > REVIEW_LIST_LIMIT {
+            out.push_str(&format!(
+                "- … and {} more\n",
+                items.len() - REVIEW_LIST_LIMIT
+            ));
+        }
+    };
+    let level = dc["risk"]["level"].as_str().unwrap_or("low").to_string();
+    let files = dc["changed_files"].as_u64().unwrap_or(0);
+    let symbols = strs(&dc["changed_symbols"]);
+    let dependents = dc["dependents"].as_u64().unwrap_or(0);
+    let hops = dc["hops"].as_array().map_or(0, Vec::len);
+    let unknown = strs(&dc["files_without_known_symbols"]);
+    let untested = strs(&dc["risk"]["untested"]);
+
+    let mut out = String::from("<!-- glasir-review -->\n");
+    out.push_str(&format!(
+        "## Glasir review: risk {}\n\n",
+        level.to_uppercase()
+    ));
+    if files == 0 {
+        out.push_str("No files changed.\n");
+        return (out, level);
+    }
+    out.push_str(&format!(
+        "{files} file(s) changed, {} symbol(s) in them, {dependents} dependent(s) within {hops} hop(s).\n",
+        symbols.len()
+    ));
+
+    let partners = dc["risk"]["missed_partners"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !untested.is_empty() || !partners.is_empty() {
+        out.push_str("\n### Why\n");
+        if !untested.is_empty() {
+            out.push_str(&format!(
+                "- {} changed symbol(s) have callers and no test reaches them:\n",
+                untested.len()
+            ));
+            for s in untested.iter().take(REVIEW_LIST_LIMIT) {
+                out.push_str(&format!("  - `{s}`\n"));
+            }
+        }
+        for m in partners {
+            out.push_str(&format!(
+                "- `{}` usually changes with `{}` ({} of {} commits); this change leaves it out\n",
+                m["file"].as_str().unwrap_or(""),
+                m["partner"].as_str().unwrap_or(""),
+                m["together"].as_u64().unwrap_or(0),
+                m["commits"].as_u64().unwrap_or(0)
+            ));
+        }
+    }
+
+    if !symbols.is_empty() {
+        out.push_str("\n### Changed symbols\n");
+        list(&mut out, &symbols);
+    }
+    if dependents > 0 {
+        out.push_str("\n### Dependents, nearest first\n");
+        for level in dc["hops"].as_array().map_or(&[][..], Vec::as_slice) {
+            let syms = strs(&level["symbols"]);
+            out.push_str(&format!("- hop {}: ", level["hop"].as_u64().unwrap_or(0)));
+            out.push_str(
+                &syms
+                    .iter()
+                    .take(REVIEW_LIST_LIMIT)
+                    .map(|s| format!("`{s}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            if syms.len() > REVIEW_LIST_LIMIT {
+                out.push_str(&format!(" … and {} more", syms.len() - REVIEW_LIST_LIMIT));
+            }
+            out.push('\n');
+        }
+    }
+    let tests = strs(&at["files"]);
+    out.push_str(&format!(
+        "\n### Tests to run ({})\n",
+        at["count"].as_u64().unwrap_or(0)
+    ));
+    if tests.is_empty() {
+        out.push_str("No test in the graph reaches this change.\n");
+    } else {
+        list(&mut out, &tests);
+    }
+    if !unknown.is_empty() {
+        out.push_str("\n### Files the graph does not cover\n");
+        list(&mut out, &unknown);
+    }
+    (out, level)
+}
+
+/// `glasir export [path]`: the stored graph as node-link JSON, the form
+/// `import` reads back, so a graph can be moved into another tool or
+/// compared between two builds. Names, not ids: ids are not stable across
+/// a rebuild.
+fn run_export(args: &cli::Args) -> std::io::Result<()> {
+    let root = canonical(std::path::Path::new(&args.path))?;
+    let a = analyse(&root)?;
+    let doc = export_json(&a.snap, &a.registry);
+    let mut out = std::io::stdout().lock();
+    serde_json::to_writer_pretty(&mut out, &doc).map_err(std::io::Error::other)?;
+    use std::io::Write;
+    writeln!(out)
+}
+
+fn export_json(
+    snap: &graph::GraphSnapshot,
+    registry: &ingest::SymbolRegistry,
+) -> serde_json::Value {
+    use serde_json::json;
+    let names = mcp::name_table(registry, snap.width());
+    let name = |n: csr::NodeId| names.get(n as usize).map(String::as_str).unwrap_or("");
+    let mut nodes = Vec::new();
+    let mut links = Vec::new();
+    for n in 0..snap.width() as csr::NodeId {
+        let id = name(n);
+        if id.is_empty() {
+            continue;
+        }
+        let (file, label) = id.split_once('#').unwrap_or(("", id));
+        nodes.push(json!({"id": id, "label": label, "source_file": file}));
+        for e in snap.neighbors(n) {
+            let target = name(e.target);
+            if target.is_empty() {
+                continue;
+            }
+            links.push(json!({
+                "source": id,
+                "target": target,
+                "relation": if e.edge_kind == resolve::RESOLVES_TO { "resolves_to" } else { "calls" },
+                "confidence": match e.confidence {
+                    csr::Confidence::Extracted => "EXTRACTED",
+                    csr::Confidence::Inferred => "INFERRED",
+                    csr::Confidence::Ambiguous => "AMBIGUOUS",
+                },
+                "weight": e.authority,
+            }));
+        }
+    }
+    json!({"nodes": nodes, "links": links})
 }
 
 /// The report itself, as text.
@@ -3624,6 +3966,7 @@ fn demo() -> std::io::Result<()> {
     demo_ignored_paths();
     demo_scope();
     demo_dispatch();
+    demo_export();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -6921,6 +7264,28 @@ fn demo_change_tools() {
     let missed = v["risk"]["missed_partners"].as_array().unwrap();
     assert_eq!(missed.len(), 1, "{text}");
     assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
+
+    // `glasir review` renders the same two answers as Markdown: the marker a
+    // later run updates its comment by, the level, both reasons, and the
+    // files the graph does not cover.
+    let (md, level) = review_report(&served, "", 3).unwrap();
+    assert_eq!(level, "high");
+    assert!(
+        md.starts_with("<!-- glasir-review -->\n## Glasir review: risk HIGH\n"),
+        "{md}"
+    );
+    for want in [
+        "no test reaches them",
+        "`src/report.rs#render`",
+        "`src/charge.rs`",
+        "leaves it out",
+        "### Tests to run",
+        "### Files the graph does not cover",
+        "`src/new.rs`",
+    ] {
+        assert!(md.contains(want), "{want} missing from:\n{md}");
+    }
+    assert!(risk_rank("high") > risk_rank("medium") && risk_rank("x").is_none());
     assert!(
         v["files_without_known_symbols"]
             .as_array()
@@ -7178,6 +7543,17 @@ fn demo_install() {
             ".agents/mcp_config.json",
             "/mcpServers/glasir/command",
         ),
+        ("roo", ".roo/mcp.json", "/mcpServers/glasir/command"),
+        (
+            "kiro",
+            ".kiro/settings/mcp.json",
+            "/mcpServers/glasir/command",
+        ),
+        (
+            "amp",
+            ".amp/settings.json",
+            "/amp.mcpServers/glasir/command",
+        ),
         ("vscode", ".vscode/mcp.json", "/servers/glasir/command"),
         ("opencode", "opencode.json", "/mcp/glasir/command/0"),
     ] {
@@ -7204,6 +7580,26 @@ fn demo_install() {
     .unwrap();
     assert!(agy["mcpServers"]["glasir"]["type"].is_null());
     assert_eq!(agy["mcpServers"]["glasir"]["disabled"], false);
+    // Continue's block file is ours alone: written whole, valid as the client
+    // documents it, unchanged by a second install, and deleted on uninstall.
+    run_install(&args("install", &["--platform", "continue"])).unwrap();
+    let yaml_path = dir.join(".continue/mcpServers/glasir.yaml");
+    let yaml = std::fs::read_to_string(&yaml_path).unwrap();
+    assert!(
+        yaml.starts_with("name: glasir\nversion: 0.0.1\nschema: v1\nmcpServers:\n"),
+        "{yaml}"
+    );
+    assert!(
+        yaml.contains("    command: \"") && yaml.contains("      - --watch\n"),
+        "{yaml}"
+    );
+    run_install(&args("install", &["--platform", "continue"])).unwrap();
+    assert_eq!(std::fs::read_to_string(&yaml_path).unwrap(), yaml);
+    // Copilot CLI shares Claude Code's file: one entry, in the stdio shape.
+    run_install(&args("install", &["--platform", "copilot"])).unwrap();
+    let shared: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(shared["mcpServers"]["glasir"]["type"], "stdio");
 
     // Codex is TOML edited as text: the rest of the file survives verbatim,
     // a second install does not duplicate the table, and uninstall removes
@@ -7250,6 +7646,14 @@ fn demo_install() {
     )
     .unwrap();
     assert!(agy["mcpServers"]["glasir"].is_null());
+    assert!(
+        !yaml_path.exists(),
+        "a file holding only our server is removed"
+    );
+    let amp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".amp/settings.json")).unwrap())
+            .unwrap();
+    assert!(amp["amp.mcpServers"]["glasir"].is_null());
 
     std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
     std::fs::write(dir.join(".glasir-layout-free"), b"x").unwrap();
@@ -9892,6 +10296,83 @@ fn demo_dispatch() {
 
     let _ = std::fs::remove_dir_all(&dir);
     println!("dispatch ok: tables, fields and parameters resolve across files");
+}
+
+/// `glasir export` writes what `import` reads: a graph exported and imported
+/// again has the same nodes, the same edges and the same confidence on each.
+fn demo_export() {
+    let dir = std::env::temp_dir().join(format!("glasir-export-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/a.rs"), "fn alpha() { beta(); gamma(); }\n").unwrap();
+    std::fs::write(dir.join("src/b.rs"), "fn beta() {}\n").unwrap();
+    let a = analyse(&dir).unwrap();
+    let doc = export_json(&a.snap, &a.registry);
+
+    let nodes = doc["nodes"].as_array().unwrap();
+    let links = doc["links"].as_array().unwrap();
+    let ids: std::collections::HashSet<&str> =
+        nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
+    assert!(
+        ids.contains("src/a.rs#alpha") && ids.contains("src/b.rs#beta"),
+        "{doc}"
+    );
+    for l in links {
+        assert!(
+            ids.contains(l["source"].as_str().unwrap()),
+            "dangling source: {l}"
+        );
+        assert!(
+            ids.contains(l["target"].as_str().unwrap()),
+            "dangling target: {l}"
+        );
+    }
+    // Tier 3's link from the placeholder to the definition, at its own tier.
+    assert!(
+        links
+            .iter()
+            .any(|l| l["relation"] == "resolves_to" && l["confidence"] == "AMBIGUOUS"),
+        "tier 3's link crosses the files: {doc}"
+    );
+
+    let path = dir.join("graph.json");
+    std::fs::write(&path, doc.to_string()).unwrap();
+    let mut arena = arena::SymbolArena::new();
+    let back = import_json::import(&path, &mut arena, 1).unwrap();
+    assert_eq!(back.csr.node_count(), nodes.len());
+    assert_eq!(back.csr.edge_count(), links.len());
+    assert_eq!(back.skipped_edges, 0);
+
+    // A slot without a name — a definition forgotten after a rename — gets
+    // no node, and no link may point at it: `import` would drop such a link
+    // as dangling, and a file that exports clean must import clean.
+    let mut b = csr::CsrBuilder::new();
+    for _ in 0..3u32 {
+        b.add_node(0);
+    }
+    let e = |t| csr::Edge {
+        target: t,
+        timestamp: 1,
+        authority: 1.0,
+        edge_kind: 0,
+        confidence: csr::Confidence::Inferred,
+    };
+    b.add_edge(0, e(1));
+    b.add_edge(0, e(2));
+    let g = graph::Graph::new(b.build());
+    let mut reg = ingest::SymbolRegistry::new(0);
+    reg.insert("src/x.rs#x".into(), 0);
+    reg.insert("src/x.rs#y".into(), 1);
+    let doc = export_json(&g.load(), &reg);
+    assert_eq!(doc["nodes"].as_array().unwrap().len(), 2, "{doc}");
+    assert_eq!(
+        doc["links"].as_array().unwrap().len(),
+        1,
+        "a link into a nameless slot is dropped: {doc}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("export ok: node-link JSON imports back to the same graph");
 }
 
 /// The indexed scope: `.gitignore` at every level, `.glasirignore` above it,

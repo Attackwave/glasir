@@ -1,0 +1,110 @@
+name: Glasir review
+description: >
+  Reviews a pull request against the code graph: risk and its reasons, the
+  changed symbols, their dependents, and the tests that reach the change,
+  as one comment kept up to date on every push.
+branding:
+  icon: git-branch
+  color: gray-dark
+inputs:
+  version:
+    description: Glasir release to run (a tag such as v0.9.0, or "latest").
+    default: latest
+  base:
+    description: Revision to compare HEAD against. Defaults to the pull request's base.
+    default: ${{ github.event.pull_request.base.sha }}
+  depth:
+    description: Backwards hops for dependents.
+    default: "3"
+  fail-on:
+    description: Fail the job at this risk level or above (low, medium, high). Empty never fails.
+    default: ""
+  comment:
+    description: Post the review as a pull request comment, updating an earlier one.
+    default: "true"
+  token:
+    description: Token used to post the comment.
+    default: ${{ github.token }}
+outputs:
+  risk:
+    description: The review's risk level.
+    value: ${{ steps.review.outputs.risk }}
+  report:
+    description: Path of the Markdown report.
+    value: ${{ steps.review.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - name: Install glasir
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        repo=Attackwave/glasir
+        if [ "$VERSION" = latest ]; then
+          VERSION=$(gh release view --repo "$repo" --json tagName -q .tagName)
+        fi
+        case "$(uname -m)" in
+          x86_64) arch=x86_64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+        name="glasir-${VERSION#v}-linux-${arch}.tar.gz"
+        dir="$RUNNER_TEMP/glasir"
+        mkdir -p "$dir"
+        gh release download "$VERSION" --repo "$repo" --pattern "$name" --pattern "$name.sha256" --dir "$dir"
+        (cd "$dir" && sha256sum --check --strict "$name.sha256")
+        tar -xzf "$dir/$name" -C "$dir"
+        bin=$(find "$dir" -type f -name glasir | head -n 1)
+        chmod +x "$bin"
+        echo "$(dirname "$bin")" >> "$GITHUB_PATH"
+        "$bin" --version
+    - name: Review the change
+      id: review
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        DEPTH: ${{ inputs.depth }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -uo pipefail
+        glasir analyse .
+        report="$RUNNER_TEMP/glasir-review.md"
+        args=(--depth "$DEPTH")
+        if [ -n "$FAIL_ON" ]; then args+=(--fail-on "$FAIL_ON"); fi
+        set +e
+        glasir review "$BASE" "${args[@]}" > "$report"
+        status=$?
+        set -e
+        risk=$(sed -n 's/^## Glasir review: risk \([A-Z]*\).*/\1/p' "$report" | tr '[:upper:]' '[:lower:]')
+        echo "risk=${risk:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+    - name: Comment on the pull request
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPORT: ${{ steps.review.outputs.report }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        # One comment per pull request: the marker the report opens with finds
+        # the earlier one, which is edited rather than joined by another.
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          -q '.[] | select(.body | startswith("<!-- glasir-review -->")) | .id' | head -n 1)
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null
+        else
+          gh api "repos/$REPO/issues/$PR/comments" -F body=@"$REPORT" > /dev/null
+        fi
+    - name: Apply the gate
+      if: steps.review.outputs.status != '0'
+      shell: bash
+      run: |
+        echo "glasir review exited with ${{ steps.review.outputs.status }} (risk ${{ steps.review.outputs.risk }})" >&2
+        exit 1

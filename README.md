@@ -88,6 +88,8 @@ listed under [What it serves](#what-it-serves).
 glasir status .             # what is registered, what the graph holds
 glasir why "your question"  # what the search saw, when an answer surprises you
 glasir view .               # the graph as a map in the browser, one region per subsystem
+glasir review               # the uncommitted change as a Markdown review: risk, dependents, tests
+glasir export . > graph.json  # the graph as node-link JSON, for another tool
 glasir uninstall .          # remove the registration and the hooks
 ```
 
@@ -474,6 +476,37 @@ Set `--max-index-age 900` on a watched production server to make `/ready`
 return `503` once its loaded graph is older than the agreed 15-minute SLO. The
 last valid graph remains available while the orchestrator replaces or repairs
 the instance.
+
+## Pull requests
+
+`glasir review [rev]` prints what `detect_changes` and `affected_tests` say
+about a change, as Markdown: the risk level and its reasons, the changed
+symbols, their dependents by distance, the tests that reach the change, and
+the files the graph does not cover. `--fail-on medium` makes it a gate.
+
+The repository ships a composite GitHub Action that runs it on every pull
+request and keeps one comment up to date:
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # the base commit has to be in the clone
+      - uses: Attackwave/glasir@v0.9.0
+        with:
+          fail-on: high           # optional: block the merge at this risk
+```
+
+The graph is built on the runner from the checked-out tree; no source leaves
+it. The action downloads the release named by its own tag and checks the
+archive against the published SHA-256.
 
 ## Licence
 
