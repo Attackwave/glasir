@@ -3967,6 +3967,7 @@ fn demo() -> std::io::Result<()> {
     demo_scope();
     demo_dispatch();
     demo_export();
+    demo_cli();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -10296,6 +10297,56 @@ fn demo_dispatch() {
 
     let _ = std::fs::remove_dir_all(&dir);
     println!("dispatch ok: tables, fields and parameters resolve across files");
+}
+
+/// Every option the code reads a value from takes one on the command line.
+/// `--fail-on high` and `--depth 2` were parsed as a flag and a path, so the
+/// gate never fired and `impact-of --depth 2` diffed a revision called `2`.
+fn demo_cli() {
+    let src = include_str!("main.rs");
+    let mut missing = Vec::new();
+    for (k, _) in src.match_indices("value(\"") {
+        let key = &src[k + 7..k + 7 + src[k + 7..].find('"').unwrap()];
+        if !cli::VALUE_OPTIONS.contains(&key) {
+            missing.push(key);
+        }
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "read with value() but not in VALUE_OPTIONS: {missing:?}"
+    );
+
+    let args = cli::Args::parse(
+        [
+            "glasir",
+            "review",
+            "--fail-on",
+            "low",
+            "--depth",
+            "2",
+            "HEAD~1",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    assert_eq!(args.value("fail-on"), Some("low"));
+    assert_eq!(args.value("depth"), Some("2"));
+    assert_eq!(
+        args.path, "HEAD~1",
+        "the revision is the path, not an option's value"
+    );
+    let flags = cli::Args::parse(
+        ["glasir", "install", "--dry-run", "."]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    assert!(
+        flags.has("dry-run") && flags.path == ".",
+        "a flag takes no value"
+    );
+    println!("cli ok: every value option is parsed with its value");
 }
 
 /// `glasir export` writes what `import` reads: a graph exported and imported

@@ -16,6 +16,33 @@ pub struct Args {
     values: Vec<(String, String)>,
 }
 
+/// The options that take a value, so `--key value` is read as one. Any
+/// other `--key` is a flag, and a word after it is the path: a key missing
+/// here is accepted and silently ignored, which is how `--fail-on high` once
+/// gated nothing. `demo_cli` checks every key the code reads is listed.
+pub const VALUE_OPTIONS: &[&str] = &[
+    "platform",
+    "output",
+    "as",
+    "http",
+    "token",
+    "port",
+    "questions",
+    "structural",
+    "floors",
+    "days",
+    "depth",
+    "fail-on",
+    "rules",
+    "public-url",
+    "tls-cert",
+    "tls-key",
+    "control-plane-client-ca",
+    "control-plane-cidr",
+    "language-rules",
+    "max-index-age",
+];
+
 impl Args {
     pub fn parse(argv: impl Iterator<Item = String>) -> Args {
         let mut argv = argv.skip(1).peekable();
@@ -36,26 +63,7 @@ impl Args {
                 // with no value is a boolean.
                 if let Some((k, v)) = name.split_once('=') {
                     values.push((k.to_string(), v.to_string()));
-                } else if matches!(
-                    name,
-                    "platform"
-                        | "output"
-                        | "as"
-                        | "http"
-                        | "token"
-                        | "port"
-                        | "questions"
-                        | "structural"
-                        | "floors"
-                        | "days"
-                        | "public-url"
-                        | "tls-cert"
-                        | "tls-key"
-                        | "control-plane-client-ca"
-                        | "control-plane-cidr"
-                        | "language-rules"
-                        | "max-index-age"
-                ) {
+                } else if VALUE_OPTIONS.contains(&name) {
                     if let Some(v) = argv.next() {
                         values.push((name.to_string(), v));
                     } else {
