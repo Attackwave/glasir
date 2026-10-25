@@ -29,6 +29,11 @@ pub struct Change {
 pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec<Change>, String> {
     let lang = Lang::from_path(Path::new(file))
         .ok_or_else(|| format!("{file} is not a language this history reads"))?;
+    // The repository the file is in, which may sit below the served tree.
+    let repos = crate::repos::repos(root);
+    let (repo, local) = crate::repos::owner(&repos, file)
+        .ok_or_else(|| format!("{file} is in no git repository under {}", root.display()))?;
+    let (root, file) = (repo.root.as_path(), local.as_str());
     let out = Command::new("git")
         .arg("-C")
         .arg(root)

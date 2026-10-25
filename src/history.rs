@@ -17,30 +17,48 @@ pub const MIN_TOGETHER: usize = 2;
 /// The files of each of the last `limit` non-merge commits, relative to `root`
 /// and restricted to it.
 pub fn commits(root: &std::path::Path, limit: usize) -> Result<Vec<Vec<String>>, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "log",
-            "--no-merges",
-            "--relative",
-            "--name-only",
-            "--format=%x1e",
-        ])
-        .arg(format!("-n{limit}"))
-        .output()
-        .map_err(|e| format!("git could not run: {e}"))?;
-    if !out.status.success() {
+    // Several repositories under one tree: each history on its own, every
+    // path prefixed with where its repository sits, so coupling never
+    // crosses repositories — commits do not either.
+    let repos = crate::repos::repos(root);
+    if repos.is_empty() {
         return Err(format!(
-            "git could not read the history: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "no git repository at or under {}: no history to read",
+            root.display()
         ));
     }
-    Ok(parse(&String::from_utf8_lossy(&out.stdout)))
+    let mut all = Vec::new();
+    for repo in &repos {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args([
+                "log",
+                "--no-merges",
+                "--relative",
+                "--name-only",
+                "--format=%x1e",
+            ])
+            .arg(format!("-n{limit}"))
+            .output()
+            .map_err(|e| format!("git could not run: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "git could not read the history of {}: {}",
+                repo.root.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        for mut commit in parse(&String::from_utf8_lossy(&out.stdout)) {
+            for file in &mut commit {
+                file.insert_str(0, &repo.prefix);
+            }
+            all.push(commit);
+        }
+    }
+    Ok(all)
 }
 
-/// Splits `git log --name-only --format=%x1e` output into one file list per
-/// commit, dropping empty commits and the oversized ones.
 pub fn parse(log: &str) -> Vec<Vec<String>> {
     log.split('\u{1e}')
         .map(|chunk| {

@@ -39,6 +39,7 @@ mod parse_ast;
 mod pem;
 mod physics;
 mod published;
+mod repos;
 mod resolve;
 mod routes;
 mod scip_wire;
@@ -2676,23 +2677,40 @@ fn impact_of_report(args: &cli::Args, root: &std::path::Path) -> std::io::Result
         ),
         r => (vec!["diff", "--name-only", r, "HEAD"], format!("{r}..HEAD")),
     };
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(&range)
-        .output()?;
-    if !out.status.success() {
+    let repos = repos::repos(root);
+    if repos.is_empty() {
         return Err(std::io::Error::other(format!(
-            "git could not diff {what}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "no git repository at or under {}",
+            root.display()
         )));
     }
-    let changed: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|path| path.replace('\\', "/"))
-        .collect();
+    let mut changed: Vec<String> = Vec::new();
+    let mut resolved = 0;
+    let mut last_error = String::new();
+    for repo in &repos {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args(&range)
+            .output()?;
+        if !out.status.success() {
+            last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            continue;
+        }
+        resolved += 1;
+        changed.extend(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(|path| format!("{}{}", repo.prefix, path.replace('\\', "/"))),
+        );
+    }
+    if resolved == 0 {
+        return Err(std::io::Error::other(format!(
+            "git could not diff {what}: {last_error}"
+        )));
+    }
     if changed.is_empty() {
         report.push_str(&format!("no files changed in {what}"));
         report.push('\n');
@@ -3260,7 +3278,14 @@ const HOOKS: &[&str] = &["post-merge", "post-checkout", "post-rewrite"];
 /// Failures go to a log rather than to the terminal — a hook that prints during
 /// a pull is noise, but one that fails silently forever is the bug this whole
 /// item exists to fix.
-fn hook_script(hook: &str, exe: &std::path::Path) -> String {
+/// `graph`: the served tree whose graph the hook refreshes, when the
+/// repository is one of several below it; `None` for a tree that is the
+/// repository, where the hook works in its own directory.
+fn hook_script(hook: &str, exe: &std::path::Path, graph: Option<&std::path::Path>) -> String {
+    let tree = graph.map_or(".".to_string(), |p| shell_quote(&p.to_string_lossy()));
+    let graph_file = graph.map_or(".glasir-graph".to_string(), |p| {
+        shell_quote(&format!("{}/.glasir-graph", p.to_string_lossy()))
+    });
     // A checkout that is not a branch switch touches nothing, and git says
     // which it was in $3. Each guard is tied to a documented Git transition.
     let guard = if hook == "post-checkout" {
@@ -3285,12 +3310,12 @@ fn hook_script(hook: &str, exe: &std::path::Path) -> String {
          [ -f \"$GIT_DIR/MERGE_HEAD\" ] && exit 0\n\
          \n\
          # Nothing to refresh if this tree was never analysed.\n\
-         [ -f .glasir-graph ] || exit 0\n\
+         [ -f {graph_file} ] || exit 0\n\
          \n\
          # Detached: git returns now, the graph catches up. A cold analysis is\n\
          # seconds on a large tree and nobody should wait for it during a pull.\n\
          _log=\"${{TMPDIR:-/tmp}}/glasir-refresh.log\"\n\
-         ({exe} analyse . >>\"$_log\" 2>&1 || \\\n\
+         ({exe} analyse {tree} >>\"$_log\" 2>&1 || \\\n\
          \techo \"$(date): glasir analyse failed, graph may be stale\" >>\"$_log\") &\n\
          {HOOK_END}\n",
         // Single-quoted, with any embedded quote escaped. `current_exe` is not
@@ -3365,6 +3390,24 @@ fn git_path(root: &std::path::Path, args: &[&str]) -> Option<std::path::PathBuf>
 /// reported: appending shell to something that is not shell would break it.
 fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Vec<String> {
     let mut notes = Vec::new();
+    // A tree holding several repositories gets a hook in each, refreshing the
+    // tree's graph rather than the repository's own.
+    for repo in repos::repos(root) {
+        let graph = (!repo.prefix.is_empty()).then_some(root);
+        for note in install_hooks_in(&repo.root, exe, graph, dry) {
+            notes.push(format!("{}{note}", repo.prefix));
+        }
+    }
+    notes
+}
+
+fn install_hooks_in(
+    root: &std::path::Path,
+    exe: &std::path::Path,
+    graph: Option<&std::path::Path>,
+    dry: bool,
+) -> Vec<String> {
+    let mut notes = Vec::new();
     let Some(dir) = hooks_dir(root) else {
         return notes;
     };
@@ -3387,9 +3430,9 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
         }
 
         let body = if existing.trim().is_empty() {
-            format!("#!/bin/sh\n{}", hook_script(hook, exe))
+            format!("#!/bin/sh\n{}", hook_script(hook, exe, graph))
         } else {
-            format!("{}\n{}", existing.trim_end(), hook_script(hook, exe))
+            format!("{}\n{}", existing.trim_end(), hook_script(hook, exe, graph))
         };
         if dry {
             notes.push(format!("{hook}: would write {}", path.display()));
@@ -3424,10 +3467,15 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
 /// a bare shebang, which git would still run on every operation.
 fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
     let mut notes = Vec::new();
-    // Also where core.hooksPath points: an older version wrote there.
-    let dirs: Vec<std::path::PathBuf> = hooks_dir(root)
-        .into_iter()
-        .chain(redirected_hooks(root))
+    // Every repository under the tree, and also where core.hooksPath points:
+    // an older version wrote there.
+    let dirs: Vec<std::path::PathBuf> = repos::repos(root)
+        .iter()
+        .flat_map(|r| {
+            hooks_dir(&r.root)
+                .into_iter()
+                .chain(redirected_hooks(&r.root))
+        })
         .collect();
     for (dir, hook) in dirs.iter().flat_map(|d| HOOKS.iter().map(move |h| (d, h))) {
         let path = dir.join(hook);
@@ -3968,6 +4016,7 @@ fn demo() -> std::io::Result<()> {
     demo_dispatch();
     demo_export();
     demo_cli();
+    demo_repos();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -9133,7 +9182,10 @@ fn demo_hooks() {
     // A block an older version wrote into the shared directory goes too.
     std::fs::write(
         shared.join("post-merge"),
-        format!("#!/bin/sh\nexit 0\n{}", hook_script("post-merge", exe)),
+        format!(
+            "#!/bin/sh\nexit 0\n{}",
+            hook_script("post-merge", exe, None)
+        ),
     )
     .unwrap();
     uninstall_hooks(&dir, false);
@@ -10297,6 +10349,190 @@ fn demo_dispatch() {
 
     let _ = std::fs::remove_dir_all(&dir);
     println!("dispatch ok: tables, fields and parameters resolve across files");
+}
+
+/// Several repositories served as one tree: the graph joins them, and every
+/// tool that asks git asks each repository and prefixes what it answers.
+fn demo_repos() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("glasir-repos-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let git = |repo: &std::path::Path, args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?} in {}", repo.display());
+    };
+    // A client and a server, each its own repository, below one directory
+    // that is none. The server also has a repository two levels down.
+    for repo in ["client", "server", "libs/shared"] {
+        let r = dir.join(repo);
+        std::fs::create_dir_all(r.join("src")).unwrap();
+        git(&r, &["init", "-q"]);
+    }
+    std::fs::write(
+        dir.join("client/src/app.rs"),
+        "fn fetch() { render(); }\nfn render() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("server/src/api.rs"),
+        "fn handle() { store(); }\nfn store() {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("server/src/db.rs"), "fn open() {}\n").unwrap();
+    std::fs::write(dir.join("libs/shared/src/lib.rs"), "fn shared() {}\n").unwrap();
+    for repo in ["client", "server", "libs/shared"] {
+        let r = dir.join(repo);
+        git(&r, &["add", "-A"]);
+        git(&r, &["commit", "-q", "-m", "first"]);
+    }
+    // A second server commit touching api.rs and db.rs together, twice.
+    for round in 0..2 {
+        std::fs::write(
+            dir.join("server/src/api.rs"),
+            format!("fn handle() {{ store(); }}\nfn store() {{}}\n// {round}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("server/src/db.rs"),
+            format!("fn open() {{}}\n// {round}\n"),
+        )
+        .unwrap();
+        git(&dir.join("server"), &["add", "-A"]);
+        git(&dir.join("server"), &["commit", "-q", "-m", "together"]);
+    }
+
+    let found: Vec<String> = repos::repos(&dir)
+        .iter()
+        .map(|r| r.prefix.clone())
+        .collect();
+    assert_eq!(found, ["client/", "libs/shared/", "server/"]);
+    assert_eq!(repos::repos(&dir.join("server"))[0].prefix, "");
+    assert!(
+        repos::repos(&dir.join("server/src")).is_empty(),
+        "a plain directory holds none"
+    );
+
+    // Uncommitted edits in two repositories read as one change.
+    std::fs::write(
+        dir.join("client/src/app.rs"),
+        "fn fetch() { render(); }\nfn render() { 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("server/src/api.rs"),
+        "fn handle() { store(); 2; }\nfn store() {}\n// 1\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let served = state.as_served();
+    let call = |tool: &str, args: serde_json::Value| -> serde_json::Value {
+        let r = mcp::handle_for_test(
+            &served,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": args}}),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false, "{tool}: {r}");
+        r["result"]["structuredContent"].clone()
+    };
+    let dc = call("detect_changes", json!({}));
+    let symbols: Vec<&str> = dc["changed_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(symbols.contains(&"client/src/app.rs#render"), "{symbols:?}");
+    assert!(symbols.contains(&"server/src/api.rs#handle"), "{symbols:?}");
+    assert!(
+        !symbols.contains(&"server/src/api.rs#store"),
+        "line-level still holds across the prefix: {symbols:?}"
+    );
+
+    // History stays within a repository, and carries the prefix.
+    let cc = call("co_changes", json!({"file": "server/src/api.rs"}));
+    let partners: Vec<&str> = cc["coupled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(partners, ["server/src/db.rs"], "{cc}");
+    let ch = call(
+        "change_history",
+        json!({"symbol": "server/src/api.rs#handle"}),
+    );
+    assert!(ch["changes"].as_array().unwrap().len() >= 1, "{ch}");
+
+    // A revision only one repository has diffs that one and skips the rest.
+    let head = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.join("server").to_str().unwrap(),
+            "rev-parse",
+            "HEAD~1",
+        ])
+        .output()
+        .unwrap();
+    let rev = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let one = call("detect_changes", json!({"rev": rev}));
+    assert!(one["changed_files"].as_u64().unwrap() >= 1, "{one}");
+
+    // Hooks go into every repository and refresh the tree's graph, not the
+    // repository's own; uninstall removes them from every one.
+    let exe = std::path::Path::new("/usr/local/bin/glasir");
+    let notes = install_hooks(&dir, exe, false);
+    assert_eq!(
+        notes.iter().filter(|n| n.ends_with("installed")).count(),
+        3 * HOOKS.len(),
+        "{notes:?}"
+    );
+    let hook = std::fs::read_to_string(dir.join("client/.git/hooks/post-merge")).unwrap();
+    let tree = format!("'{}'", dir.display());
+    assert!(hook.contains(&format!("analyse {tree}")), "{hook}");
+    assert!(
+        hook.contains(&format!("/.glasir-graph'")) && hook.contains("[ -f '"),
+        "{hook}"
+    );
+    uninstall_hooks(&dir, false);
+    assert!(!dir.join("client/.git/hooks/post-merge").exists());
+    assert!(!dir.join("libs/shared/.git/hooks/post-merge").exists());
+
+    // A tree with no repository says so instead of "nothing changed".
+    let plain = dir.join("server/src");
+    let plain_state = served_state(&plain).unwrap();
+    let r = mcp::handle_for_test(
+        &plain_state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "detect_changes", "arguments": {}}}),
+    )
+    .unwrap();
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no git repository"),
+        "{r}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("repos ok: several repositories under one tree diff, couple and hook apart");
 }
 
 /// Every option the code reads a value from takes one on the command line.

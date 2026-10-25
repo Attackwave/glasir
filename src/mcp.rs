@@ -2018,8 +2018,6 @@ pub fn check_rev(rev: &str) -> Result<(), String> {
 fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     let rev = rev.trim();
     check_rev(rev)?;
-    // Same default as the CLI: the working tree against HEAD is what someone
-    // asking mid-change means.
     let working = rev.is_empty() || rev == ".";
     let against: Vec<&str> = if working {
         vec!["HEAD"]
@@ -2029,59 +2027,85 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     let root = served
         .root
         .ok_or("this server has no tree on disk to diff")?;
-    let git = |args: &[&str]| {
+    // One repository, or several below the tree: each is diffed on its own
+    // and its paths carry its prefix, so a change in the client and one in
+    // the server read as one change over the graph that joins them.
+    let repos = crate::repos::repos(root);
+    if repos.is_empty() {
+        return Err(format!(
+            "no git repository at or under {}: nothing to diff",
+            root.display()
+        ));
+    }
+    let git = |repo: &std::path::Path, args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")
-            .arg(root)
+            .arg(repo)
             .args(args)
             .output()
     };
-    let out = git(&[&["diff", "--name-only"][..], &against].concat())
-        .map_err(|e| format!("git could not run: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git could not diff: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
     let lines_of = |bytes: &[u8]| -> Vec<String> {
         String::from_utf8_lossy(bytes)
             .lines()
             .map(str::trim)
-            // What Glasir writes beside the tree is never part of a change.
             .filter(|l| !l.is_empty() && !l.rsplit('/').next().unwrap_or(l).starts_with(".glasir-"))
             .map(str::to_string)
             .collect()
     };
-    let mut files = lines_of(&out.stdout);
-    // `git diff HEAD` leaves out a file that was never added, so a new module
-    // went unreported until it was committed.
-    if working && let Ok(new) = git(&["ls-files", "--others", "--exclude-standard"]) {
-        files.extend(lines_of(&new.stdout));
+    // (tree-relative path, repository, path inside it).
+    let mut located: Vec<(String, &crate::repos::Repo, String)> = Vec::new();
+    let mut resolved = 0;
+    let mut last_error = String::new();
+    for repo in &repos {
+        let out = git(
+            &repo.root,
+            &[&["diff", "--name-only"][..], &against].concat(),
+        )
+        .map_err(|e| format!("git could not run: {e}"))?;
+        if !out.status.success() {
+            // A revision names a commit of one repository; the others do not
+            // have it, and that is not an error unless none does.
+            last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            continue;
+        }
+        resolved += 1;
+        let mut local = lines_of(&out.stdout);
+        if working && let Ok(new) = git(&repo.root, &["ls-files", "--others", "--exclude-standard"])
+        {
+            local.extend(lines_of(&new.stdout));
+        }
+        for f in local {
+            located.push((format!("{}{f}", repo.prefix), repo, f));
+        }
+    }
+    if resolved == 0 {
+        return Err(format!("git could not diff: {last_error}"));
     }
 
-    // Per changed file, the definitions the diff actually touches. `None`
-    // falls back to every symbol of the file: a new, deleted or unparsable one.
-    let mut narrowed: std::collections::HashMap<&str, std::collections::HashSet<String>> =
+    let mut narrowed: std::collections::HashMap<String, std::collections::HashSet<String>> =
         Default::default();
-    for file in &files {
+    for (file, repo, local) in &located {
         let new_src = if working {
             std::fs::read_to_string(root.join(file)).ok()
         } else {
-            git(&["show", &format!("HEAD:{file}")])
+            git(&repo.root, &["show", &format!("HEAD:{local}")])
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         };
-        let hunks = git(&[&["diff", "-U0", "--no-color"][..], &against, &["--", file]].concat())
-            .ok()
-            .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
+        let hunks = git(
+            &repo.root,
+            &[&["diff", "-U0", "--no-color"][..], &against, &["--", local]].concat(),
+        )
+        .ok()
+        .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
         if let (Some(src), Some(hunks)) = (new_src, hunks)
             && let Some(names) = touched_names(served, file, &src, &hunks)
         {
-            narrowed.insert(file.as_str(), names);
+            narrowed.insert(file.clone(), names);
         }
     }
+    let files: Vec<String> = located.into_iter().map(|(f, _, _)| f).collect();
 
     // Symbols defined in a changed file. The file is the name's prefix, so no
     // file-to-node map is needed — the property incremental indexing relies on.

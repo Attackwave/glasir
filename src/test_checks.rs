@@ -188,6 +188,11 @@ fn cli() {
 }
 
 #[test]
+fn repos() {
+    crate::demo_repos();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }
