@@ -68,6 +68,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             }
             TokenKind::Symbol('.') => {
                 scope.on_receiver();
+                // `community.get(i)` is a value's method: only `::` names a
+                // module, so a variable sharing a file's name is no module.
+                scope.module_receiver = None;
                 i += 1;
                 continue;
             }

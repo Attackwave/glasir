@@ -22,15 +22,19 @@
 # the certificate one half answered. partition 47 -> 62: it now scores code
 # answers only — a Markdown section is never a subsystem member, and counting
 # the documentation answers moved the floor with every question added.
+# questions-identifier 93 -> 89, partition 62 -> 58: a Rust call `m::f()`
+# now resolves to `f` in m's file (import confidence, where the bare name was
+# refused when defined twice). One answer at the 40-slot edge dropped out,
+# and one symbol with two callers in another file left its own subsystem.
 questions                93
-questions-identifier     93
+questions-identifier     89
 questions-docs           95
 # German: the documentation questions asked in German against English
 # documentation. Without the spelling fold, or with the earlier z->t fold, it
 # reads 50%.
 questions-docs-de        65
 structural               100
-partition                62
+partition                58
 deep                     92
 
 # A tolerance of three points catches material regressions while avoiding a
