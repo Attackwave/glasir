@@ -1933,30 +1933,16 @@ fn has_test_attribute(text: &str, start: usize) -> bool {
 }
 
 /// Whether any test reaches `node`, stopping at the first one found.
+/// Whether a test reaches `node`, by the same sweep `affected_tests` answers
+/// with: through placeholders, routes and, at the first hop, uses by name. It
+/// walked raw call edges before, so a constant a test read by name was
+/// "untested" here while `affected_tests` named the test.
 fn reaches_test(served: &Served, node: NodeId) -> bool {
-    let reverse = served.snap.reverse();
     let mut texts = std::collections::HashMap::new();
-    let mut seen = std::collections::HashSet::from([node]);
-    let mut frontier = vec![node];
-    for _ in 0..TEST_DEPTH {
-        let mut next = Vec::new();
-        for &n in &frontier {
-            for (caller, _) in reverse.callers(n) {
-                if !seen.insert(caller) {
-                    continue;
-                }
-                if served.defined.contains(&caller) && is_test_node(served, caller, &mut texts) {
-                    return true;
-                }
-                next.push(caller);
-            }
-        }
-        if next.is_empty() {
-            return false;
-        }
-        frontier = next;
-    }
-    false
+    reverse_levels(served, &[node], TEST_DEPTH as usize, Confidence::Ambiguous)
+        .iter()
+        .flatten()
+        .any(|&(n, _)| served.defined.contains(&n) && is_test_node(served, n, &mut texts))
 }
 
 fn render_risk(v: &Value) -> String {

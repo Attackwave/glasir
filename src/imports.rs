@@ -548,6 +548,36 @@ pub fn module_file(lang: Lang, module: &str) -> Option<String> {
     }
 }
 
+/// The file a call's module qualifier names, for a language whose modules
+/// are files: `module_file` where the name alone decides, and for Rust the
+/// path, since `commits::changes()` means `commits.rs` beside the caller or
+/// `src/commits.rs` of the crate (`mod.rs` either way). Without it a
+/// module-qualified call fell back to the bare name and stayed unlinked
+/// whenever another file defined that name too.
+pub fn module_target(lang: Lang, file: &str, module: &str, root: &Path) -> Option<String> {
+    if lang != Lang::Rust {
+        return module_file(lang, module);
+    }
+    let dir = Path::new(file).parent().unwrap_or(Path::new(""));
+    let mut bases = vec![dir.to_path_buf()];
+    if let Some(crate_root) = dir
+        .ancestors()
+        .find(|a| root.join(a).join("Cargo.toml").is_file())
+    {
+        bases.push(crate_root.join("src"));
+    }
+    bases
+        .iter()
+        .flat_map(|b| {
+            [
+                b.join(format!("{module}.rs")),
+                b.join(module).join("mod.rs"),
+            ]
+        })
+        .find(|p| root.join(p).is_file())
+        .map(|p| slash(&p))
+}
+
 /// The placeholder for a name an import says lives at `target`: `f from
 /// path/to/file.py`. A placeholder never contains a space, so the form cannot
 /// collide with one written by any scanner, and it reads as what it is.
