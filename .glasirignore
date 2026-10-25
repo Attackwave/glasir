@@ -1,0 +1,10 @@
+# What this repository keeps out of its own graph. These are reasons of this
+# tree, so they live here rather than in the indexer's fixed rules.
+
+# The language scanners: ten thousand lines of token loops whose vocabulary
+# (parse, scope, depth, ident) collides with questions about the engine.
+/parsers/
+
+# Fixture trees that are measured as their own tree, never as part of this one.
+/bench/deep/
+/bench/langs/

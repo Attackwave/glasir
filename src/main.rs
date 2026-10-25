@@ -10812,25 +10812,15 @@ fn demo_ignored_paths() {
     );
     assert!(!watcher::is_ignored(Path::new("/tmp/fixture/f.rs")));
 
-    // A benchmark fixture tree is excluded from the tree holding it, because
-    // it exists to be measured on its own: indexing `bench/deep` as part of
-    // this repository took it from 1,200 to 1,305 nodes and made `create
-    // contact` answer with the fixture's schema classes, which moves the
-    // document frequency behind all four recall floors.
-    assert!(watcher::ignored_under(
+    // Fixture trees and the scanner crate stay out of this repository through
+    // its `.glasirignore`, not through a fixed rule: a rule here is taken from
+    // every project, and `parsers/` or `bench/deep` is someone else's code.
+    assert!(!watcher::ignored_under(
         &root.join("bench/deep/backend/app/core/errors.py"),
         Some(root)
     ));
-    // Root-relative, like `tmp`: the fixture is a normal tree when it is the
-    // root, or the set measured against it would be empty.
-    let deep = Path::new("/home/u/repo/bench/deep");
-    assert!(
-        !watcher::ignored_under(&deep.join("backend/app/core/errors.py"), Some(deep)),
-        "the fixture must index normally when it is the tree being measured"
-    );
-    // And the exclusion is a path, not a name: someone else's `deep/` is code.
     assert!(!watcher::ignored_under(
-        &root.join("src/deep/f.rs"),
+        &root.join("parsers/src/lib.rs"),
         Some(root)
     ));
     assert!(!watcher::ignored_under(&root.join("deep/f.rs"), Some(root)));

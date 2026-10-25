@@ -32,6 +32,8 @@ pub fn ignored_under(path: &Path, root: Option<&Path>) -> bool {
     /// save, measured.
     const ANYWHERE: &[&str] = &["target", "node_modules", "__pycache__"];
     /// Scratch space and build output, and only at the top of the indexed tree.
+    /// Anything a tree wants out for its own reasons belongs in its
+    /// `.glasirignore`, not here: a name here is taken from every project.
     ///
     /// `tmp` is a real incident rather than a precaution: a checkout left under
     /// `tmp/` was indexed as part of this repository and the graph went from
@@ -47,28 +49,7 @@ pub fn ignored_under(path: &Path, root: Option<&Path>) -> bool {
     /// with our own answers in the search index. Measured: indexing it took
     /// the tree from 1,293 to 1,363 nodes and cost 12 points of English
     /// documentation recall.
-    /// `parsers` holds the language scanners. They are ours, but they are a
-    /// separate concern from the graph engine: 10,000 lines of token loops
-    /// whose vocabulary — `parse`, `scope`, `depth`, `ident` — collides with
-    /// what a question about the engine is phrased in. Measured, indexing them
-    /// took this tree from 1,349 to 1,596 nodes and cost 4 points of partition
-    /// purity.
-    const AT_ROOT: &[&str] = &["tmp", "vendor", "parsers"];
-    /// Fixture trees that exist to be measured *as their own tree*, never as
-    /// part of the one holding them. `bench/deep` is a second shape — layered,
-    /// two languages, deep paths — and folding it in moves the document
-    /// frequency of every word, so the four floors would score the fixture as
-    /// much as the code: measured, this tree went from 1,200 to 1,305 nodes and
-    /// `create contact` answered with the fixture's schema classes. Same
-    /// reasoning as `tmp`, one level down, which is why it is a path and not a
-    /// name — a directory called `deep` anywhere else is not this.
-    ///
-    /// `bench/langs` is the same idea for extraction rather than retrieval: 25
-    /// files writing the same four functions in 25 languages, so that
-    /// `langcheck --check` has something to measure that CI actually holds.
-    /// Twenty-five `charge`, `refuse` and `commit` definitions would otherwise
-    /// compete with this tree's own vocabulary on every question.
-    const AT_ROOT_PATHS: &[&str] = &["bench/deep", "bench/langs"];
+    const AT_ROOT: &[&str] = &["tmp", "vendor"];
 
     if path.components().any(|c| {
         let name = c.as_os_str().to_string_lossy();
@@ -86,15 +67,6 @@ pub fn ignored_under(path: &Path, root: Option<&Path>) -> bool {
         .is_some_and(|c| AT_ROOT.contains(&c.as_os_str().to_string_lossy().as_ref()))
     {
         return true;
-    }
-    if let Ok(rel) = path.strip_prefix(root) {
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        if AT_ROOT_PATHS
-            .iter()
-            .any(|p| rel == *p || rel.starts_with(&format!("{p}/")))
-        {
-            return true;
-        }
     }
     is_build_output(path, root)
 }
