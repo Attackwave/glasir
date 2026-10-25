@@ -6577,7 +6577,8 @@ fn demo_workflows() {
             "scripts/test.sh",
             "#!/bin/sh\nrun_tests() { cargo test; }\nrun_tests\n",
         ),
-        ("scripts/install.sh", "#!/bin/sh\ncargo fetch\n"),
+        // Calls nothing, and is still the file the action runs.
+        ("scripts/install.sh", "#!/bin/sh\necho installed\n"),
         ("tools/gen.py", "def gen():\n    pass\n\ngen()\n"),
         ("parsers/Cargo.toml", "[package]\nname = \"p\"\n"),
         ("src/a.rs", "pub fn publish() {}\n"),

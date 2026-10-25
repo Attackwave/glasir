@@ -722,6 +722,15 @@ fn prepare_facts(
         ));
     }
 
+    // A shell script is run as a whole, so its top level is a node even
+    // when it calls nothing: a workflow step that runs it refers to that.
+    if matches!(
+        lang,
+        Some(Lang::Bash | Lang::PowerShell | Lang::Batch | Lang::Fish)
+    ) {
+        registry.get_or_mint(&qualify(&file, "<module>"));
+    }
+
     // A step that runs or uses a file depends on it: the reference goes to
     // that file's top level, through a placeholder tier 3 links there.
     let mut seen_refs = std::collections::HashSet::new();
