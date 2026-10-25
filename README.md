@@ -121,6 +121,11 @@ question is asked in, and outrank the code they describe. A project that wants
 one indexed names it in `.glasirignore`, e.g. `!AGENTS.md`. A change to either file
 takes effect on the next analysis, and immediately under `--watch`.
 
+Of `.github`, the workflows, local actions and `scripts/` are indexed although
+it is a dot-directory: a workflow's jobs are symbols, `needs` connects them,
+and `uses: ./…` and the scripts a step runs connect the job to those files,
+so `impact` on a script and `review` of a workflow see each other.
+
 ## Why a graph
 
 Search finds text. A graph preserves the relationships that make a repository

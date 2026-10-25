@@ -22,6 +22,10 @@ pub fn parse_bash(src: &str) -> FileFacts {
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    // Only the first word of a command is the command: `set -e` calls `set`,
+    // not `e`, and `echo hi` names nothing. A word after a newline, `;`, `|`,
+    // `&&`, `(` or a keyword such as `then` is in command position.
+    let mut command = true;
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -32,29 +36,53 @@ pub fn parse_bash(src: &str) -> FileFacts {
                 continue;
             }
             TokenKind::Newline => {
+                // `cmd \\` + newline continues the command's arguments.
+                command = !(i > 0 && tokens[i - 1].kind == TokenKind::Symbol('\\'));
                 i += 1;
                 continue;
             }
             TokenKind::Symbol('{') => {
                 scope.on_open_delimiter();
+                // `${var}` is a value; `{ cmd; }` opens a group.
+                command = !(i > 0 && tokens[i - 1].kind == TokenKind::Symbol('$'));
                 i += 1;
                 continue;
             }
             TokenKind::Symbol('}') => {
                 scope.on_close_delimiter(tok.end as usize, &mut facts);
+                command = true;
+                i += 1;
+                continue;
+            }
+            TokenKind::Symbol(';' | '|' | '&' | '(' | '!')
+            | TokenKind::DoubleSymbol("&&" | "||") => {
+                command = true;
+                i += 1;
+                continue;
+            }
+            // `-z`, `$X`, `[ x ]`: a flag, a variable or an operand, never
+            // the command.
+            TokenKind::Symbol(_) | TokenKind::DoubleSymbol(_) => {
+                command = false;
                 i += 1;
                 continue;
             }
             TokenKind::Ident(ident) => {
+                let assignment =
+                    i + 1 < tokens.len() && tokens[i + 1].kind == TokenKind::Symbol('=');
                 // `MAX_RETRIES=3` — a shell has no keyword for a constant,
                 // and the assignment carries no spaces around the `=`.
-                if crate::scope::is_screaming_case(ident)
-                    && i + 1 < tokens.len()
-                    && tokens[i + 1].kind == TokenKind::Symbol('=')
-                {
+                if crate::scope::is_screaming_case(ident) && assignment {
                     scope.open_statement_definition(*ident, tok.start as usize, &mut facts);
                     scope.on_word(ident);
-                    i += 1;
+                    i += 2;
+                    continue;
+                }
+                // `CI=1 cmd`: the command follows the assignment, so the `=`
+                // is stepped over and the position kept.
+                if assignment {
+                    scope.on_word(ident);
+                    i += 2;
                     continue;
                 }
                 if *ident == "function" {
@@ -77,7 +105,7 @@ pub fn parse_bash(src: &str) -> FileFacts {
                     i += 3;
                     continue;
                 } else {
-                    if !matches!(
+                    let keyword = matches!(
                         *ident,
                         "if" | "then"
                             | "else"
@@ -96,9 +124,29 @@ pub fn parse_bash(src: &str) -> FileFacts {
                             | "local"
                             | "export"
                             | "echo"
-                    ) {
+                    );
+                    if command && !keyword {
                         scope.record_call(ident, &mut facts);
                     }
+                    // `then cmd`, `do cmd`, `sudo cmd`, `time cmd`: the word
+                    // after these is the command.
+                    command = matches!(
+                        *ident,
+                        "then"
+                            | "do"
+                            | "else"
+                            | "elif"
+                            | "if"
+                            | "while"
+                            | "until"
+                            | "sudo"
+                            | "time"
+                            | "exec"
+                            | "env"
+                            | "nohup"
+                            | "xargs"
+                            | "command"
+                    );
                     scope.on_word(ident);
                 }
             }

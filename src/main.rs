@@ -50,6 +50,7 @@ mod store;
 mod test_checks;
 mod view;
 mod watcher;
+mod workflow;
 
 use csr::{Confidence, CsrBuilder, Edge};
 
@@ -4017,6 +4018,7 @@ fn demo() -> std::io::Result<()> {
     demo_export();
     demo_cli();
     demo_repos();
+    demo_workflows();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -6551,6 +6553,103 @@ fn demo_mcp() {
     println!("phase 5 ok: dual-era handshake, 7 tools, wire shapes pinned");
 }
 
+/// Workflows and local actions: jobs are symbols, `needs` and the files a step
+/// runs are edges, and the rest of `.github` stays out.
+fn demo_workflows() {
+    let dir = std::env::temp_dir().join(format!("glasir-workflows-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        (
+            ".github/workflows/ci.yml",
+            "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: ./.github/actions/setup\n      - run: scripts/build.sh\n      - run: |\n          bash scripts/test.sh --all\n          python3 ${{ github.workspace }}/tools/gen.py\n          cargo build --manifest-path parsers/Cargo.toml\n  test:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo test\n  publish:\n    needs: [build, test]\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          gh release create \"$TAG\" \\\n            --repo \"$REPO\"\n",
+        ),
+        (
+            ".github/actions/setup/action.yml",
+            "name: setup\nruns:\n  using: composite\n  steps:\n    - run: ./scripts/install.sh\n      shell: bash\n",
+        ),
+        (".github/dependabot.yml", "version: 2\nupdates: []\n"),
+        (".github/ISSUE_TEMPLATE/bug.yml", "name: bug\nbody: []\n"),
+        (
+            "scripts/build.sh",
+            "#!/bin/sh\nset -e\necho hi\nout=${X}\nCI=1 cargo build\n",
+        ),
+        (
+            "scripts/test.sh",
+            "#!/bin/sh\nrun_tests() { cargo test; }\nrun_tests\n",
+        ),
+        // Calls nothing, and is still the file the action runs.
+        ("scripts/install.sh", "#!/bin/sh\necho installed\n"),
+        ("tools/gen.py", "def gen():\n    pass\n\ngen()\n"),
+        ("parsers/Cargo.toml", "[package]\nname = \"p\"\n"),
+        ("src/a.rs", "pub fn publish() {}\n"),
+        ("src/b.rs", "fn go() { publish(); }\n"),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let a = analyse(&dir).unwrap();
+    let node = |s: &str| a.registry.node_of(s).unwrap_or_else(|| panic!("no {s}"));
+    let reaches = |from: &str, to: &str| {
+        let target = node(to);
+        a.snap
+            .neighbors(node(from))
+            .any(|e| e.target == target || a.snap.neighbors(e.target).any(|e2| e2.target == target))
+    };
+    for (from, to) in [
+        (
+            ".github/workflows/ci.yml#<module>",
+            ".github/workflows/ci.yml#build",
+        ),
+        (
+            ".github/workflows/ci.yml#test",
+            ".github/workflows/ci.yml#build",
+        ),
+        (
+            ".github/workflows/ci.yml#publish",
+            ".github/workflows/ci.yml#test",
+        ),
+        (
+            ".github/workflows/ci.yml#build",
+            "scripts/build.sh#<module>",
+        ),
+        (".github/workflows/ci.yml#build", "scripts/test.sh#<module>"),
+        (".github/workflows/ci.yml#build", "tools/gen.py#<module>"),
+        (
+            ".github/workflows/ci.yml#build",
+            ".github/actions/setup/action.yml#<module>",
+        ),
+        (
+            ".github/actions/setup/action.yml#<module>",
+            "scripts/install.sh#<module>",
+        ),
+        // A job named `publish` leaves the bare name to the code.
+        ("src/b.rs#go", "src/a.rs#publish"),
+    ] {
+        assert!(reaches(from, to), "{from} must reach {to}");
+    }
+    for absent in [
+        ".github/workflows/ci.yml#name",
+        ".github/workflows/ci.yml#on",
+        ".github/workflows/ci.yml#jobs",
+        ".github/workflows/ci.yml#steps",
+        ".github/dependabot.yml#version",
+        ".github/ISSUE_TEMPLATE/bug.yml#name",
+        "<module> from parsers/Cargo.toml",
+        // Arguments and `${X}` in a shell line are not commands.
+        "e",
+        "hi",
+        "X",
+        "repo",
+    ] {
+        assert!(
+            a.registry.node_of(absent).is_none(),
+            "{absent} must not be a node"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// install/uninstall touch the user's editor configuration, so the property
 /// that matters is that a round trip leaves other people's settings exactly as
 /// they were.
@@ -6605,6 +6704,25 @@ fn demo_imports() {
             "ex/pay.ex",
             "defmodule Shop.Pay do\n  alias Shop.Cart, as: C\n  def full(c), do: Shop.Cart.total(c)\n  def short(c), do: C.total(c)\nend\n",
         ),
+        // Rust: a module is a file. `changes` is defined twice, so the bare
+        // name is refused; the module qualifier decides, beside the caller,
+        // under the crate's src/, or as a mod.rs. `crate::` is dropped.
+        ("rs/Cargo.toml", "[package]\nname = \"rs\"\n"),
+        (
+            "rs/src/commits.rs",
+            "pub fn changes() {}\npub fn get() {}\n",
+        ),
+        ("rs/src/embed.rs", "pub fn get() {}\n"),
+        ("rs/src/watcher.rs", "pub fn changes() {}\n"),
+        ("rs/src/deep/mod.rs", "pub fn changes() {}\n"),
+        (
+            "rs/src/mcp.rs",
+            "fn history() { crate::commits::changes(); }\nfn watch() { watcher::changes(); }\nfn dig() { crate::deep::changes(); }\nfn relax(commits: &[u8]) { commits.get(0); }\n",
+        ),
+        ("rs/src/sub/near.rs", "pub fn changes() {}\n"),
+        ("rs/src/sub/user.rs", "fn use_near() { near::changes(); }\n"),
+        // A value named like a file is no module: `commits.get()` stays off
+        // `commits.rs`.
         // Java names the class through the declared type. `mixed` is declared
         // with both types, so a call through it stays refused.
         (
@@ -6665,6 +6783,22 @@ fn demo_imports() {
         ("kt/Dock.kt#build", "kt/Hatch.kt#seal", true),
         ("kt/Dock.kt#two", "kt/Latch.kt#seal", false),
         ("kt/Dock.kt#two", "kt/Hatch.kt#seal", false),
+        ("rs/src/mcp.rs#history", "rs/src/commits.rs#changes", true),
+        ("rs/src/mcp.rs#history", "rs/src/watcher.rs#changes", false),
+        ("rs/src/mcp.rs#watch", "rs/src/watcher.rs#changes", true),
+        ("rs/src/mcp.rs#watch", "rs/src/commits.rs#changes", false),
+        ("rs/src/mcp.rs#dig", "rs/src/deep/mod.rs#changes", true),
+        ("rs/src/mcp.rs#relax", "rs/src/commits.rs#get", false),
+        (
+            "rs/src/sub/user.rs#use_near",
+            "rs/src/sub/near.rs#changes",
+            true,
+        ),
+        (
+            "rs/src/sub/user.rs#use_near",
+            "rs/src/commits.rs#changes",
+            false,
+        ),
     ] {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
@@ -7035,7 +7169,7 @@ fn demo_change_tools() {
     // pay -> charge -> log, a test two hops from log and one three hops out,
     // and a test elsewhere that must not be named.
     let mut b = csr::CsrBuilder::new();
-    for _ in 0..25u32 {
+    for _ in 0..26u32 {
         b.add_node(0);
     }
     let e = |t| csr::Edge {
@@ -7050,8 +7184,10 @@ fn demo_change_tools() {
     b.add_edge(3, e(0));
     b.add_edge(6, e(1));
     b.add_edge(5, e(4));
-    // export -> render, and no test reaches either.
+    // export -> render, and no test reaches either. export -> format too, and
+    // a test reads `format` by name without calling it.
     b.add_edge(8, e(7));
+    b.add_edge(8, e(25));
     // A test known only by its attribute: `checks_itself` calls sub.
     b.add_edge(12, e(10));
     // `#[cfg(test)]` marks code a test uses, not a test.
@@ -7085,12 +7221,16 @@ fn demo_change_tools() {
         "src/box.py#open",
         "src/hist.rs#first",
         "src/hist.rs#second",
+        "src/report.rs#format",
     ]
     .iter()
     .enumerate()
     {
         reg.insert((*name).to_string(), i as csr::NodeId);
     }
+    // `pays_once` names `format` without calling it: a use, which is how a
+    // test reads a constant or a type. It counts as reaching it.
+    reg.set_refs("tests/pay.rs", vec![(3, "format".to_string())]);
     // Read by `find_unused` below; its span is what lets the attribute above
     // `checks_itself` be seen.
     let tools = "#[test]\nfn checks_itself() {}\n\nfn helper() {}\n\nfn used_by_text() {}\n// see used_by_text\n\n#[cfg(test)]\nfn only_in_tests() {}\n";
@@ -7098,7 +7238,7 @@ fn demo_change_tools() {
     reg.set_span(12, (at, at + 20));
     let at = tools.find("fn only_in_tests").unwrap() as u32;
     reg.set_span(18, (at, at + 20));
-    let defined: std::collections::HashSet<csr::NodeId> = (0..25).collect();
+    let defined: std::collections::HashSet<csr::NodeId> = (0..26).collect();
     let comms = community::detect(
         &snap,
         &community::Params::default(),

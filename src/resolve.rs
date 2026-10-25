@@ -60,8 +60,11 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
     // Definition name -> nodes defining it. A name may be defined many times.
     let mut by_name: HashMap<&str, Vec<NodeId>> = HashMap::new();
     for (symbol, &node) in registry.entries() {
+        // A workflow's jobs are named `build`, `test`, `publish`: reached by
+        // `needs` in their own file, never by a bare name from code.
         if let Some((file, name)) = symbol.split_once('#')
             && !is_test_path(file)
+            && !crate::workflow::is_workflow(std::path::Path::new(file))
         {
             by_name.entry(name).or_default().push(node);
         }
