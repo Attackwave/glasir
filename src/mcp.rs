@@ -4612,6 +4612,19 @@ fn server_info() -> Value {
 
 /// Handles one request. `None` means the message was a notification and takes
 /// no reply.
+/// What a client is told once, at the handshake, about when to reach for
+/// which tool. Measured on the clients in the field: without it an agent
+/// calls the server only when a question happens to name a symbol.
+const INSTRUCTIONS: &str = "A graph of this codebase, served as tools. Start with `overview` in an \
+            unfamiliar tree, and `query_graph` for a question or a name (a file's path \
+            lists its definitions in order). Read a definition with `get_code_snippet` \
+            instead of opening the file; `following: N` reads on. Before changing a \
+            symbol, ask `impact` or `find_callers`; before committing, `detect_changes` \
+            and `affected_tests` on the diff. Every edge says whether it was \
+            compiler-resolved, syntax-inferred or name-matched, and every answer ends \
+            with the words this code uses: when nothing fits, ask again in those words \
+            before reading files.";
+
 pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
     let method = msg["method"].as_str()?;
     let id = msg.get("id").cloned();
@@ -4633,14 +4646,13 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": capabilities(),
                 "serverInfo": server_info(),
-                "instructions": "A graph of this codebase. Prefer query_graph over \
-            reading files when a question spans several symbols; each edge says whether it \
-            was compiler-resolved, syntax-inferred or name-matched."
+                "instructions": INSTRUCTIONS,
             }})
         }
         // Modern discovery: no handshake, version carried per request.
         "server/discover" => json!({"jsonrpc": "2.0", "id": id, "result": {
             "supportedVersions": [MODERN_VERSION, LEGACY_VERSION],
+            "instructions": INSTRUCTIONS,
             "cacheScope": "public",
             "ttlMs": 0,
             "capabilities": capabilities(),

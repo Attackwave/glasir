@@ -178,6 +178,11 @@ fn dispatch() {
 }
 
 #[test]
+fn export() {
+    crate::demo_export();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }

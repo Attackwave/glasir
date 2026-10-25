@@ -128,6 +128,9 @@ RUNNING
     --days <n>          add: expire after n days (default: never)
   impact-of [rev]       What a change reaches: git diff -> symbols -> dependents
     --depth <n>         How many hops back to report (default 3)
+  review [rev]          A Markdown review of a change: risk, dependents, tests to run
+    --depth <n>         Backwards hops for dependents (default 3)
+    --fail-on <level>   Exit 1 at this risk or above: low, medium, high
   guard [path]          Check the architecture contract in glasir-rules.txt
     --rules <file>      Use a different contract
   analyse [path]        Refresh the stored graph and exit (what the git hooks run)
@@ -137,6 +140,7 @@ RUNNING
 
 GRAPH
   import <graph.json>   Import a pre-built graph and report its cost
+  export [path]         The graph as node-link JSON on stdout, in the form `import` reads
   why <question>        Why a question scores what it does: seeds and results
   benchmark [path]      Recall and token cost against bench/questions.txt
     --questions <file>  Use a different question set
@@ -156,8 +160,8 @@ DIAGNOSTICS
 
 OPTIONS
   --language-rules <dir> Load explicit TOML overrides for Go, Rust and Ruby
-  --platform <name>     claude, codex, gemini, qwen, antigravity, cursor, vscode,
-                        opencode, mcp
+  --platform <name>     claude, codex, gemini, qwen, antigravity, copilot, roo,
+                        kiro, amp, continue, cursor, vscode, opencode, mcp
   --user                Install for the user rather than the project
   --dry-run             Print what would be written, change nothing
   --no-hook             install: skip the git hooks that keep the graph current
