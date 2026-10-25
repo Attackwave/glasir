@@ -14,4 +14,4 @@ jobs:
         with:
           # The base commit has to be in the clone for the diff.
           fetch-depth: 0
-      - uses: Attackwave/glasir@6610a70476ecb99ca5ecb4aba63d060e502dafe4 # v0.9.0
+      - uses: Attackwave/glasir@d9881406eb54c9377d838b690f460c2f72b1c7ef # v0.9.1
