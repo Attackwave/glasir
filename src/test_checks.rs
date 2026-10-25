@@ -193,6 +193,11 @@ fn repos() {
 }
 
 #[test]
+fn workflows() {
+    crate::demo_workflows();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }

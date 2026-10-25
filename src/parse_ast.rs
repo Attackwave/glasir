@@ -65,6 +65,9 @@ pub struct FileFacts {
     pub refs: Vec<(u32, Box<str>, Option<Box<str>>)>,
     /// HTTP routes the file declares and requests it sends. See `routes`.
     pub http: crate::routes::Http,
+    /// (definition, path): a file of the tree this one runs or uses, as
+    /// written. See `workflow`.
+    pub file_refs: Vec<(String, String)>,
     /// True if the scanner reported malformed source. The facts are still usable —
     /// that is the point of this tier — but a caller may prefer tier 1 output.
     pub had_errors: bool,
@@ -323,6 +326,16 @@ pub fn parse_file(path: &Path, src: &str, lang: Lang) -> Option<FileFacts> {
     if misidentified(path, src) {
         return None;
     }
+    if crate::workflow::is_workflow(path) {
+        let w = crate::workflow::extract(src);
+        return Some(FileFacts {
+            defines: w.defines,
+            ranges: w.ranges,
+            calls: w.calls.into_iter().map(|(a, b)| (a, b, false)).collect(),
+            file_refs: w.file_refs,
+            ..Default::default()
+        });
+    }
     parse(src, lang)
 }
 
@@ -346,6 +359,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         imports: crate::imports::read(lang, src),
         refs,
         http,
+        file_refs: Vec::new(),
         had_errors: f.had_errors,
         macro_definers: f.macro_definers,
         macro_calls: f.macro_calls,
