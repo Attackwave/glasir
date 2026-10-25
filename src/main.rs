@@ -50,6 +50,7 @@ mod store;
 mod test_checks;
 mod view;
 mod watcher;
+mod workflow;
 
 use csr::{Confidence, CsrBuilder, Edge};
 
@@ -4017,6 +4018,7 @@ fn demo() -> std::io::Result<()> {
     demo_export();
     demo_cli();
     demo_repos();
+    demo_workflows();
 
     let mut arena = arena::SymbolArena::new();
     let mut b = CsrBuilder::new();
@@ -6549,6 +6551,103 @@ fn demo_mcp() {
     assert_eq!(unknown["error"]["code"], -32601);
 
     println!("phase 5 ok: dual-era handshake, 7 tools, wire shapes pinned");
+}
+
+/// Workflows and local actions: jobs are symbols, `needs` and the files a step
+/// runs are edges, and the rest of `.github` stays out.
+fn demo_workflows() {
+    let dir = std::env::temp_dir().join(format!("glasir-workflows-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (file, text) in [
+        (
+            ".github/workflows/ci.yml",
+            "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: ./.github/actions/setup\n      - run: scripts/build.sh\n      - run: |\n          bash scripts/test.sh --all\n          python3 ${{ github.workspace }}/tools/gen.py\n          cargo build --manifest-path parsers/Cargo.toml\n  test:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo test\n  publish:\n    needs: [build, test]\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          gh release create \"$TAG\" \\\n            --repo \"$REPO\"\n",
+        ),
+        (
+            ".github/actions/setup/action.yml",
+            "name: setup\nruns:\n  using: composite\n  steps:\n    - run: ./scripts/install.sh\n      shell: bash\n",
+        ),
+        (".github/dependabot.yml", "version: 2\nupdates: []\n"),
+        (".github/ISSUE_TEMPLATE/bug.yml", "name: bug\nbody: []\n"),
+        (
+            "scripts/build.sh",
+            "#!/bin/sh\nset -e\necho hi\nout=${X}\nCI=1 cargo build\n",
+        ),
+        (
+            "scripts/test.sh",
+            "#!/bin/sh\nrun_tests() { cargo test; }\nrun_tests\n",
+        ),
+        // Calls nothing, and is still the file the action runs.
+        ("scripts/install.sh", "#!/bin/sh\necho installed\n"),
+        ("tools/gen.py", "def gen():\n    pass\n\ngen()\n"),
+        ("parsers/Cargo.toml", "[package]\nname = \"p\"\n"),
+        ("src/a.rs", "pub fn publish() {}\n"),
+        ("src/b.rs", "fn go() { publish(); }\n"),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let a = analyse(&dir).unwrap();
+    let node = |s: &str| a.registry.node_of(s).unwrap_or_else(|| panic!("no {s}"));
+    let reaches = |from: &str, to: &str| {
+        let target = node(to);
+        a.snap
+            .neighbors(node(from))
+            .any(|e| e.target == target || a.snap.neighbors(e.target).any(|e2| e2.target == target))
+    };
+    for (from, to) in [
+        (
+            ".github/workflows/ci.yml#<module>",
+            ".github/workflows/ci.yml#build",
+        ),
+        (
+            ".github/workflows/ci.yml#test",
+            ".github/workflows/ci.yml#build",
+        ),
+        (
+            ".github/workflows/ci.yml#publish",
+            ".github/workflows/ci.yml#test",
+        ),
+        (
+            ".github/workflows/ci.yml#build",
+            "scripts/build.sh#<module>",
+        ),
+        (".github/workflows/ci.yml#build", "scripts/test.sh#<module>"),
+        (".github/workflows/ci.yml#build", "tools/gen.py#<module>"),
+        (
+            ".github/workflows/ci.yml#build",
+            ".github/actions/setup/action.yml#<module>",
+        ),
+        (
+            ".github/actions/setup/action.yml#<module>",
+            "scripts/install.sh#<module>",
+        ),
+        // A job named `publish` leaves the bare name to the code.
+        ("src/b.rs#go", "src/a.rs#publish"),
+    ] {
+        assert!(reaches(from, to), "{from} must reach {to}");
+    }
+    for absent in [
+        ".github/workflows/ci.yml#name",
+        ".github/workflows/ci.yml#on",
+        ".github/workflows/ci.yml#jobs",
+        ".github/workflows/ci.yml#steps",
+        ".github/dependabot.yml#version",
+        ".github/ISSUE_TEMPLATE/bug.yml#name",
+        "<module> from parsers/Cargo.toml",
+        // Arguments and `${X}` in a shell line are not commands.
+        "e",
+        "hi",
+        "X",
+        "repo",
+    ] {
+        assert!(
+            a.registry.node_of(absent).is_none(),
+            "{absent} must not be a node"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// install/uninstall touch the user's editor configuration, so the property

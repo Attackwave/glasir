@@ -46,7 +46,8 @@ use std::path::Path;
 /// 38: `dispatch` carries slots, constants and parameters.
 /// 39: library calls through A6 apart from untraced ones (`dispatch.library`).
 /// 40: Rust module-qualified calls mint a scoped placeholder (`f from src/m.rs`).
-const FORMAT_VERSION: u32 = 40;
+/// 41: workflows and actions are read (`workflow`), with `.github/{workflows,actions,scripts}` in scope.
+const FORMAT_VERSION: u32 = 41;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {

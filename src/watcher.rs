@@ -70,10 +70,29 @@ pub fn ignored_under(path: &Path, root: Option<&Path>) -> bool {
     /// compete with this tree's own vocabulary on every question.
     const AT_ROOT_PATHS: &[&str] = &["bench/deep", "bench/langs"];
 
-    if path.components().any(|c| {
-        let name = c.as_os_str().to_string_lossy();
-        ANYWHERE.contains(&name.as_ref()) || (name.starts_with('.') && name.len() > 1)
-    }) {
+    /// The parts of `.github` that are code: workflows and local actions, and
+    /// the scripts they run. The rest — issue templates, dependabot, funding —
+    /// is configuration, and a dot-directory stays out as everywhere else.
+    const GITHUB: &[&str] = &[".github/workflows", ".github/actions", ".github/scripts"];
+
+    let hidden = |name: &str| ANYWHERE.contains(&name) || (name.starts_with('.') && name.len() > 1);
+    let rel = root
+        .and_then(|r| path.strip_prefix(r).ok())
+        .map(|r| r.to_string_lossy().replace('\\', "/"));
+    let under_github = rel.as_deref().is_some_and(|rel| {
+        rel == ".github"
+            || GITHUB
+                .iter()
+                .any(|d| rel == *d || rel.starts_with(&format!("{d}/")))
+    });
+    if under_github {
+        if rel.as_deref().unwrap_or("").split('/').skip(1).any(hidden) {
+            return true;
+        }
+    } else if path
+        .components()
+        .any(|c| hidden(&c.as_os_str().to_string_lossy()))
+    {
         return true;
     }
     let Some(root) = root else {

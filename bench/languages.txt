@@ -41,7 +41,7 @@ Apex                      130    104      10
 ArkTs                     142    142      10
 Assembly                  150    128      10
 Awk                        86    114      10
-Bash                       96    168      10
+Bash                       96    120      10
 Bicep                     170    163      10
 Blade                     160    214      10
 C                         120     96      10
@@ -215,7 +215,7 @@ Astro                     125    156      10
 # BitBake and Astro fixtures lost their file-level calls (`addtask`, a template
 # calling charge): a statement that never closed had attributed them to
 # `LIMIT`, and with that fixed they measure the program, not the scanner.
-BitBake                   158    265      10
+BitBake                   158    176      10
 Magma                     142    142      10
 Mermaid                   624    500      10
 Pine                      158    158      10

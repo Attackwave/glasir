@@ -722,6 +722,39 @@ fn prepare_facts(
         ));
     }
 
+    // A shell script is run as a whole, so its top level is a node even
+    // when it calls nothing: a workflow step that runs it refers to that.
+    if matches!(
+        lang,
+        Some(Lang::Bash | Lang::PowerShell | Lang::Batch | Lang::Fish)
+    ) {
+        registry.get_or_mint(&qualify(&file, "<module>"));
+    }
+
+    // A step that runs or uses a file depends on it: the reference goes to
+    // that file's top level, through a placeholder tier 3 links there.
+    let mut seen_refs = std::collections::HashSet::new();
+    for (caller, written) in &facts.file_refs {
+        let Some(target) = crate::workflow::target(root, written) else {
+            continue;
+        };
+        if !seen_refs.insert((caller, target.clone())) {
+            continue;
+        }
+        let source_node = registry.get_or_mint(&qualify(&file, caller));
+        let placeholder = crate::imports::scoped("<module>", &target);
+        edges.push((
+            source_node,
+            Edge {
+                target: registry.get_or_mint(&placeholder),
+                timestamp: now,
+                authority: crate::physics::SOURCE_CODE,
+                edge_kind: 0,
+                confidence: parse_ast::TIER_CONFIDENCE,
+            },
+        ));
+    }
+
     // After the calls, which mint `<module>` when the top level calls
     // anything. Only from a definition that exists: minting `<module>` for a file whose
     // top level merely names something would add a node nothing calls.
