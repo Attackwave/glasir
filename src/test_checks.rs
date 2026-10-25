@@ -183,6 +183,11 @@ fn export() {
 }
 
 #[test]
+fn cli() {
+    crate::demo_cli();
+}
+
+#[test]
 fn import() {
     crate::demo_import();
 }
