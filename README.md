@@ -477,6 +477,25 @@ return `503` once its loaded graph is older than the agreed 15-minute SLO. The
 last valid graph remains available while the orchestrator replaces or repairs
 the instance.
 
+## Several repositories at once
+
+A client and the server it talks to usually live in two repositories. Serve
+the directory holding both, and they are one graph:
+
+```sh
+cd ~/work            # holds shop-web/ and shop-api/, each a git repository
+glasir install .     # registers the server for this directory, hooks in each repository
+```
+
+An HTTP request in one repository reaches its handler in the other, so
+`find_callers`, `impact` and `affected_tests` cross the boundary without a
+control plane. Symbols carry the repository as the first path segment
+(`shop-api/src/orders.rs#create`). The tools that ask git — `detect_changes`,
+`affected_tests`, `co_changes`, `change_history`, `review` — ask each
+repository and prefix what it answers; a revision that only one repository
+has diffs that one. A directory with no repository at or under it is refused
+rather than reported as unchanged.
+
 ## Pull requests
 
 `glasir review [rev]` prints what `detect_changes` and `affected_tests` say
