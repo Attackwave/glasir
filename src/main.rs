@@ -10477,7 +10477,7 @@ fn demo_repos() {
         "change_history",
         json!({"symbol": "server/src/api.rs#handle"}),
     );
-    assert!(ch["changes"].as_array().unwrap().len() >= 1, "{ch}");
+    assert!(!ch["changes"].as_array().unwrap().is_empty(), "{ch}");
 
     // A revision only one repository has diffs that one and skips the rest.
     let head = std::process::Command::new("git")
@@ -10506,7 +10506,7 @@ fn demo_repos() {
     let tree = format!("'{}'", dir.display());
     assert!(hook.contains(&format!("analyse {tree}")), "{hook}");
     assert!(
-        hook.contains(&format!("/.glasir-graph'")) && hook.contains("[ -f '"),
+        hook.contains("/.glasir-graph'") && hook.contains("[ -f '"),
         "{hook}"
     );
     uninstall_hooks(&dir, false);
