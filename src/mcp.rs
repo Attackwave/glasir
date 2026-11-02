@@ -1867,9 +1867,11 @@ fn assess(served: &Served, diff: &Diff, dependents: usize) -> Value {
         }
     }
 
-    let level = if !untested.is_empty() || !missed.is_empty() {
+    // A caller with no test is evidence; a file history says usually changes
+    // too is a reminder, worth a look and not a blocked merge on its own.
+    let level = if !untested.is_empty() {
         "high"
-    } else if dependents > 0 {
+    } else if !missed.is_empty() || dependents > 0 {
         "medium"
     } else {
         "low"
