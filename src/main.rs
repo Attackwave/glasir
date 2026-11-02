@@ -7488,6 +7488,19 @@ fn demo_change_tools() {
         text.contains("src/report.rs#render") && text.contains("leaves out"),
         "{text}"
     );
+    // With the untested symbol out of the change, the co-change hint alone
+    // is medium: a reminder, not a blocked merge.
+    git(&["checkout", "--", "src/report.rs"]);
+    let (v, text) = call("detect_changes", json!({}));
+    assert_eq!(v["risk"]["level"], "medium", "{text}");
+    assert_eq!(v["risk"]["untested"], json!([]), "{text}");
+    assert_eq!(
+        v["risk"]["missed_partners"].as_array().unwrap().len(),
+        1,
+        "{text}"
+    );
+    assert_eq!(review_report(&served, "", 3).unwrap().1, "medium");
+    std::fs::write(dir.join("src/report.rs"), "edited").unwrap();
 
     // Line-level: a change is the definitions whose lines it touched, not the
     // whole file. Editing sub's body is sub; a comment outside every function

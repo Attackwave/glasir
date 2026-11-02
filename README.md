@@ -202,8 +202,9 @@ agent:
 - `detect_changes` — a git diff mapped to the definitions whose lines it
   touches (a document's sections likewise, new files included) and what
   depends on them, with a risk level
-  and its reasons: changed code that has callers and no test reaching it, and
-  files the history says usually change too that the change leaves out
+  and its reasons: `high` when changed code has callers and no test reaching
+  it, `medium` when it has dependents or when files the history says usually
+  change too are left out, `low` otherwise
 
 Three answer what to do *before* a commit, which is when an answer is
 cheapest to act on:
