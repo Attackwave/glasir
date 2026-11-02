@@ -32,7 +32,7 @@ jobs:
 
       # Keyed on the lockfile: a build from cold takes minutes, and the
       # self-checks and benchmark both need a release build.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: format
         run: cargo fmt --check
@@ -173,7 +173,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release
       # The self-checks, not just the build: the git hooks, the token file
       # permissions and the path handling are where a platform actually differs.
