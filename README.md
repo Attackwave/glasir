@@ -524,14 +524,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0          # the base commit has to be in the clone
-      - uses: Attackwave/glasir@v0.9.0
+      - uses: Attackwave/glasir@v0.10.0
         with:
           fail-on: high           # optional: block the merge at this risk
 ```
 
 The graph is built on the runner from the checked-out tree; no source leaves
 it. The action downloads the release named by its own tag and checks the
-archive against the published SHA-256.
+archive against the published SHA-256. A repository that pins actions to a
+commit writes `Attackwave/glasir@<commit of the tag> # v0.10.0`; the action
+then downloads that version's release.
 
 ## Licence
 
