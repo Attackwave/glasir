@@ -1382,11 +1382,11 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
     let page = include_str!("../assets/view.html")
         .replace(
             "__TITLE__",
-            &root.file_name().unwrap_or_default().to_string_lossy(),
+            &view::html_text(&root.file_name().unwrap_or_default().to_string_lossy()),
         )
         .replace(
             "__OVERVIEW__",
-            &view::overview_json(&served, layout).to_string(),
+            &view::script_json(&view::overview_json(&served, layout)),
         )
         .replace(
             "__BOUNDS__",
@@ -1396,6 +1396,7 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
             ),
         );
 
+    let listener = std::net::TcpListener::bind(&addr)?;
     println!("http://{addr}");
     println!(
         "  {} nodes, streamed by viewport ({} in {load_time:?})",
@@ -1406,7 +1407,7 @@ fn run_view(args: &cli::Args) -> std::io::Result<()> {
             "analysed"
         }
     );
-    http::serve_view(&addr, &page, |path, query| {
+    http::serve_view(listener, &page, |path, query| {
         // Which layout the page is asking about; an unknown name falls back to
         // the default rather than erroring mid-pan.
         let chosen = layouts
@@ -2678,7 +2679,7 @@ fn impact_of_report(args: &cli::Args, root: &std::path::Path) -> std::io::Result
         ),
         r => (vec!["diff", "--name-only", r, "HEAD"], format!("{r}..HEAD")),
     };
-    let repos = repos::repos(root);
+    let repos = repos::repos(root).map_err(std::io::Error::other)?;
     if repos.is_empty() {
         return Err(std::io::Error::other(format!(
             "no git repository at or under {}",
@@ -2689,11 +2690,7 @@ fn impact_of_report(args: &cli::Args, root: &std::path::Path) -> std::io::Result
     let mut resolved = 0;
     let mut last_error = String::new();
     for repo in &repos {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo.root)
-            .args(&range)
-            .output()?;
+        let out = repos::output(repos::git(&repo.root).args(&range))?;
         if !out.status.success() {
             last_error = String::from_utf8_lossy(&out.stderr).trim().to_string();
             continue;
@@ -3362,12 +3359,7 @@ fn redirected_hooks(root: &std::path::Path) -> Option<std::path::PathBuf> {
 
 /// A path git prints for this repository, made absolute.
 fn git_path(root: &std::path::Path, args: &[&str]) -> Option<std::path::PathBuf> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = repos::output(repos::git(root).args(args)).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -3393,7 +3385,11 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
     let mut notes = Vec::new();
     // A tree holding several repositories gets a hook in each, refreshing the
     // tree's graph rather than the repository's own.
-    for repo in repos::repos(root) {
+    let repos = match repos::repos(root) {
+        Ok(repos) => repos,
+        Err(e) => return vec![e],
+    };
+    for repo in repos {
         let graph = (!repo.prefix.is_empty()).then_some(root);
         for note in install_hooks_in(&repo.root, exe, graph, dry) {
             notes.push(format!("{}{note}", repo.prefix));
@@ -3471,6 +3467,7 @@ fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
     // Every repository under the tree, and also where core.hooksPath points:
     // an older version wrote there.
     let dirs: Vec<std::path::PathBuf> = repos::repos(root)
+        .unwrap_or_default()
         .iter()
         .flat_map(|r| {
             hooks_dir(&r.root)
@@ -10570,15 +10567,40 @@ fn demo_repos() {
     }
 
     let found: Vec<String> = repos::repos(&dir)
+        .unwrap()
         .iter()
         .map(|r| r.prefix.clone())
         .collect();
     assert_eq!(found, ["client/", "libs/shared/", "server/"]);
-    assert_eq!(repos::repos(&dir.join("server"))[0].prefix, "");
+    assert_eq!(repos::repos(&dir.join("server")).unwrap()[0].prefix, "");
     assert!(
-        repos::repos(&dir.join("server/src")).is_empty(),
+        repos::repos(&dir.join("server/src")).unwrap().is_empty(),
         "a plain directory holds none"
     );
+    // A repository whose own configuration names a command is refused, by
+    // name, and with it the whole tree: git would run it on the next diff.
+    git(&dir.join("client"), &["config", "core.fsmonitor", "true"]);
+    assert!(
+        repos::repos(&dir).is_ok(),
+        "git's own daemon is not a command"
+    );
+    git(
+        &dir.join("client"),
+        &["config", "core.fsmonitor", "/bin/true"],
+    );
+    let refused = repos::repos(&dir).unwrap_err();
+    assert!(refused.contains("core.fsmonitor"), "{refused}");
+    git(
+        &dir.join("client"),
+        &["config", "--unset", "core.fsmonitor"],
+    );
+    git(
+        &dir.join("client"),
+        &["config", "diff.external", "/bin/true"],
+    );
+    assert!(repos::repos(&dir).is_err(), "an external diff is a command");
+    git(&dir.join("client"), &["config", "--unset", "diff.external"]);
+    assert!(repos::repos(&dir).is_ok());
 
     // Uncommitted edits in two repositories read as one change.
     std::fs::write(

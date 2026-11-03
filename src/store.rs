@@ -1,10 +1,9 @@
 //! The on-disk graph format.
 //!
-//! This is the primary representation, not a cache of one: the bytes on disk
-//! are a compact binary representation, validated before any traversal uses
-//! them. The server snapshot is the normal production path; this lower-level
-//! import helper keeps owned bytes too, so external file replacement cannot
-//! invalidate live references.
+//! This is the primary representation, not a cache of one. The server
+//! snapshot is the normal production path and checks the arrays it reads
+//! (`BaseCsr::validate`); this lower-level import helper keeps owned bytes
+//! too, so external file replacement cannot invalidate live references.
 //!
 //! Any text format — JSON included — is an import path into this one, never a
 //! thing a normal start reads.

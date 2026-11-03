@@ -302,6 +302,20 @@ pub fn viewport_json(
 /// Small enough to ship up front at any repository size — a monorepo has
 /// thousands of subsystems, not millions — and it is what the page draws when
 /// zoomed out, so it must never depend on a viewport query.
+/// JSON for a `<script>` body: `<` is escaped so no name in it can end the
+/// element, which `serde_json` alone would let through.
+pub fn script_json(value: &Value) -> String {
+    value.to_string().replace('<', "\\u003c")
+}
+
+/// Text for an HTML element body or attribute.
+pub fn html_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 pub fn overview_json(served: &Served, layout: &Layout) -> Value {
     let mut names: Vec<String> = vec![String::new(); served.snap.width()];
     for (symbol, &node) in served.registry.entries() {
@@ -382,4 +396,20 @@ fn stem(file: &str, parts: usize) -> String {
         .rsplit_once('.')
         .filter(|(_, ext)| !ext.contains('/'))
         .map_or(joined.clone(), |(s, _)| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_cannot_end_the_script_or_the_title() {
+        let json = script_json(&json!({"file": "x</script><script>y.py"}));
+        assert!(!json.contains("</"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&json).unwrap()["file"],
+            "x</script><script>y.py"
+        );
+        assert_eq!(html_text("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
 }

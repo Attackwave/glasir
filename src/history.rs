@@ -20,7 +20,7 @@ pub fn commits(root: &std::path::Path, limit: usize) -> Result<Vec<Vec<String>>,
     // Several repositories under one tree: each history on its own, every
     // path prefixed with where its repository sits, so coupling never
     // crosses repositories — commits do not either.
-    let repos = crate::repos::repos(root);
+    let repos = crate::repos::repos(root)?;
     if repos.is_empty() {
         return Err(format!(
             "no git repository at or under {}: no history to read",
@@ -29,19 +29,18 @@ pub fn commits(root: &std::path::Path, limit: usize) -> Result<Vec<Vec<String>>,
     }
     let mut all = Vec::new();
     for repo in &repos {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo.root)
-            .args([
-                "log",
-                "--no-merges",
-                "--relative",
-                "--name-only",
-                "--format=%x1e",
-            ])
-            .arg(format!("-n{limit}"))
-            .output()
-            .map_err(|e| format!("git could not run: {e}"))?;
+        let out = crate::repos::output(
+            crate::repos::git(&repo.root)
+                .args([
+                    "log",
+                    "--no-merges",
+                    "--relative",
+                    "--name-only",
+                    "--format=%x1e",
+                ])
+                .arg(format!("-n{limit}")),
+        )
+        .map_err(|e| format!("git could not run: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "git could not read the history of {}: {}",
