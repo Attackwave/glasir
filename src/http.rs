@@ -1124,34 +1124,92 @@ fn stream_events<W: Write>(mut stream: W, cfg: &HttpConfig) -> std::io::Result<(
 /// `answer` is handed a path and its query string and returns JSON; anything it
 /// does not recognise falls through to the page.
 pub fn serve_view(
-    addr: &str,
+    listener: TcpListener,
     page: &str,
-    answer: impl Fn(&str, &str) -> Option<String>,
+    answer: impl Fn(&str, &str) -> Option<String> + Sync,
 ) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
-    for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-        let Ok(Some(req)) = read_request(&mut BufReader::new(&stream)) else {
-            continue;
-        };
-        // Same rebinding defence as the MCP endpoint: this serves a map of
-        // someone's source, so a foreign page must not be able to read it.
-        if !origin_allowed(req.header("origin")) {
-            let _ = respond(
-                &mut stream,
-                "403 Forbidden",
-                "text/plain",
-                "origin not allowed",
-            );
-            continue;
+    let live = Arc::new(AtomicUsize::new(0));
+    // The cap, the deadlines and the thread per connection of the MCP
+    // endpoint: one client that opens a socket and says nothing, or one
+    // request that takes long, must not hold the map for everyone.
+    std::thread::scope(|scope| {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+                let _ = respond(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    "text/plain",
+                    "too many connections",
+                );
+                continue;
+            }
+            live.fetch_add(1, Ordering::Relaxed);
+            let (live, answer) = (live.clone(), &answer);
+            scope.spawn(move || {
+                let _guard = LiveGuard(live);
+                let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                let Ok(Some(req)) = read_request(&mut BufReader::new(&stream)) else {
+                    return;
+                };
+                // Same rebinding defence as the MCP endpoint: this serves a map
+                // of someone's source, so a foreign page must not read it.
+                if !origin_allowed(req.header("origin")) {
+                    let _ = respond(
+                        &mut stream,
+                        "403 Forbidden",
+                        "text/plain",
+                        "origin not allowed",
+                    );
+                    return;
+                }
+                let (path, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
+                let _ = match answer(path, query) {
+                    Some(json) => respond(&mut stream, "200 OK", "application/json", &json),
+                    None => respond(&mut stream, "200 OK", "text/html; charset=utf-8", page),
+                };
+            });
         }
-        let (path, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
-        let _ = match answer(path, query) {
-            Some(json) => respond(&mut stream, "200 OK", "application/json", &json),
-            None => respond(&mut stream, "200 OK", "text/html; charset=utf-8", page),
-        };
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    /// One idle connection and one slow answer leave the map reachable.
+    #[test]
+    fn an_idle_client_does_not_hold_the_map() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            serve_view(listener, "<p>map</p>", |path, _| {
+                (path == "/slow").then(|| {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    "{}".to_string()
+                })
+            })
+        });
+        let _idle = std::net::TcpStream::connect(addr).unwrap();
+        let slow = std::net::TcpStream::connect(addr).unwrap();
+        (&slow)
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut stream = std::net::TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        assert!(reply.contains("<p>map</p>"), "{reply}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
-    Ok(())
 }
 
 /// Reads one `f32` from a `key=value&…` query string.

@@ -96,6 +96,42 @@ macro_rules! impl_csr_accessors {
 
 impl_csr_accessors!(BaseCsr);
 
+impl BaseCsr {
+    /// The layout invariant, for a `BaseCsr` that came from a file rather
+    /// than the builder: offsets ascend to the edge count, every parallel
+    /// array has one entry per edge, every target is a node.
+    pub fn validate(&self) -> Result<(), String> {
+        let (n, m) = (self.symbol.len(), self.col_indices.len());
+        let rows = self.row_offsets.len();
+        let parallel = [
+            self.timestamp.len(),
+            self.authority.len(),
+            self.edge_kind.len(),
+            self.confidence.len(),
+        ];
+        if rows != n + 1 && !(rows == 0 && n == 0) {
+            return Err(format!("{rows} row offsets for {n} nodes"));
+        }
+        if parallel.iter().any(|&len| len != m) {
+            return Err(format!("edge arrays {parallel:?} for {m} edges"));
+        }
+        if let (Some(&first), Some(&last)) = (self.row_offsets.first(), self.row_offsets.last())
+            && (first != 0
+                || last as usize != m
+                || self.row_offsets.windows(2).any(|w| w[0] > w[1]))
+        {
+            return Err(format!("row offsets do not ascend from 0 to {m}"));
+        }
+        if rows == 0 && m != 0 {
+            return Err(format!("{m} edges without row offsets"));
+        }
+        if let Some(t) = self.col_indices.iter().find(|&&t| t as usize >= n) {
+            return Err(format!("edge target {t} beyond {n} nodes"));
+        }
+        Ok(())
+    }
+}
+
 /// Sorts edges by source and fills the parallel arrays. Building through this
 /// type is the only way to get a `BaseCsr`, so the layout invariant holds by
 /// construction.
@@ -155,5 +191,45 @@ impl CsrBuilder {
         }
         csr.row_offsets.push(cursor as EdgeId);
         csr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn built() -> BaseCsr {
+        let mut b = CsrBuilder::new();
+        let a = b.add_node(0);
+        let c = b.add_node(1);
+        b.add_edge(
+            a,
+            Edge {
+                target: c,
+                timestamp: 0,
+                authority: 1.0,
+                edge_kind: 0,
+                confidence: Confidence::Inferred,
+            },
+        );
+        b.build()
+    }
+
+    #[test]
+    fn a_built_csr_validates_and_a_tampered_one_does_not() {
+        assert_eq!(built().validate(), Ok(()));
+        assert_eq!(BaseCsr::default().validate(), Ok(()));
+        let mut csr = built();
+        csr.row_offsets = vec![0, 5, 5];
+        assert!(csr.validate().is_err(), "offset past the edges");
+        let mut csr = built();
+        csr.timestamp.clear();
+        assert!(csr.validate().is_err(), "short parallel array");
+        let mut csr = built();
+        csr.col_indices[0] = 7;
+        assert!(csr.validate().is_err(), "target beyond the nodes");
+        let mut csr = built();
+        csr.row_offsets = vec![0, 1];
+        assert!(csr.validate().is_err(), "offsets for fewer nodes");
     }
 }

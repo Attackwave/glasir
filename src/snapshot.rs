@@ -186,6 +186,29 @@ pub fn read_partial(path: &Path, root: &Path) -> Option<(Snapshot, Vec<String>)>
     if snapshot.parser_rules != native_parsers::rules::active().identity() {
         return None;
     }
+    // The file is read from the tree it describes, so its arrays are checked
+    // like its version: the graph indexes them without further bounds checks.
+    let n = snapshot.csr.node_count();
+    let shape = snapshot.csr.validate().and_then(|()| {
+        if snapshot.names.len() != n || snapshot.community.len() != n {
+            return Err(format!(
+                "{} names and {} communities for {n} nodes",
+                snapshot.names.len(),
+                snapshot.community.len()
+            ));
+        }
+        if let Some(h) = snapshot.hubs.iter().find(|&&h| h as usize >= n) {
+            return Err(format!("hub {h} beyond {n} nodes"));
+        }
+        Ok(())
+    });
+    if let Err(e) = shape {
+        eprintln!(
+            "glasir: {} is not a consistent snapshot ({e}) — rebuilding",
+            path.display()
+        );
+        return None;
+    }
     let mut stale = Vec::new();
     for (rel, stored) in &snapshot.sources {
         let current = std::fs::metadata(root.join(rel))
@@ -236,4 +259,57 @@ pub fn source_times(root: &Path, files: &[std::path::PathBuf]) -> Vec<(String, u
     // Sorted so the stored form is stable for the same tree.
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stored snapshot is read from the tree it describes, so its arrays
+    /// are checked, not trusted.
+    #[test]
+    fn a_tampered_snapshot_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("glasir-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".glasir-graph");
+        let mut b = crate::csr::CsrBuilder::new();
+        let a = b.add_node(0);
+        let c = b.add_node(1);
+        b.add_edge(
+            a,
+            crate::csr::Edge {
+                target: c,
+                timestamp: 0,
+                authority: 1.0,
+                edge_kind: 0,
+                confidence: crate::csr::Confidence::Inferred,
+            },
+        );
+        let snapshot = Snapshot::new(
+            b.build(),
+            vec!["a.rs#a".into(), "a.rs#c".into()],
+            vec![0, 0],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        write(&snapshot, &path).unwrap();
+        assert!(
+            read(&path, &dir).is_some(),
+            "the snapshot as written is read"
+        );
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        stored["csr"]["row_offsets"] = serde_json::json!([0, 5, 5]);
+        std::fs::write(&path, stored.to_string()).unwrap();
+        assert!(read(&path, &dir).is_none(), "offsets past the edges");
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        stored["names"] = serde_json::json!(["a.rs#a"]);
+        std::fs::write(&path, stored.to_string()).unwrap();
+        assert!(read(&path, &dir).is_none(), "one name short");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

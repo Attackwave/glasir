@@ -44,7 +44,12 @@ could reach:
   Whoever can write to those binaries can already run code as the user, but the
   dependency belongs stated rather than discovered. A revision a client passes
   to `detect_changes` or `affected_tests` is refused when it starts with `-`,
-  so git can never read it as an option (fixed in 0.3.0).
+  so git can never read it as an option (fixed in 0.3.0). A repository is
+  refused, by name, when its own `.git/config` names a command git would run
+  on those operations (`core.fsmonitor` other than git's daemon,
+  `diff.external`, a diff driver's `command` or `textconv`, `filter.*`): a
+  served tree is not trusted to run anything. Every git child runs with a
+  deadline and a bound on the output read.
 
 ## Language rules
 
@@ -125,8 +130,10 @@ Stated rather than discovered during an evaluation:
 - **Token revocation is checked per request via the file's mtime.** On a
   filesystem with one-second timestamps, a revocation landing in the same second
   as the previous read can be missed until the file is touched again.
-- **A corrupt `.glasir-graph` is rejected and rebuilt.** Snapshot archives are
-  structurally validated before deserialization. The lower-level CSR import
+- **A corrupt `.glasir-graph` is rejected and rebuilt.** After deserialization
+  the graph arrays are checked against each other (offsets, parallel edge
+  arrays, targets, names, communities, hubs), so a file placed in a tree
+  cannot make the server index out of bounds. The lower-level CSR import
   path owns its bytes rather than holding an mmap, so an external truncate
   cannot invalidate references inside a running process.
 - **The audit log drops records rather than blocking**, and says so in the next

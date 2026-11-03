@@ -2018,7 +2018,7 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     // One repository, or several below the tree: each is diffed on its own
     // and its paths carry its prefix, so a change in the client and one in
     // the server read as one change over the graph that joins them.
-    let repos = crate::repos::repos(root);
+    let repos = crate::repos::repos(root)?;
     if repos.is_empty() {
         return Err(format!(
             "no git repository at or under {}: nothing to diff",
@@ -2026,11 +2026,7 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         ));
     }
     let git = |repo: &std::path::Path, args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .output()
+        crate::repos::output(crate::repos::git(repo).args(args))
     };
     let lines_of = |bytes: &[u8]| -> Vec<String> {
         String::from_utf8_lossy(bytes)

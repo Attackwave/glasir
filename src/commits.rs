@@ -13,7 +13,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::parse_ast::{Lang, LangExt};
 
@@ -30,28 +30,27 @@ pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec
     let lang = Lang::from_path(Path::new(file))
         .ok_or_else(|| format!("{file} is not a language this history reads"))?;
     // The repository the file is in, which may sit below the served tree.
-    let repos = crate::repos::repos(root);
+    let repos = crate::repos::repos(root)?;
     let (repo, local) = crate::repos::owner(&repos, file)
         .ok_or_else(|| format!("{file} is in no git repository under {}", root.display()))?;
     let (root, file) = (repo.root.as_path(), local.as_str());
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "log",
-            "--no-merges",
-            "--no-renames",
-            "--no-color",
-            "--relative",
-            "-U0",
-            "-p",
-            "--format=%x1e%H%x1f%cs%x1f%s%x1f%b%x1f",
-        ])
-        .arg(format!("-n{window}"))
-        .arg("--")
-        .arg(file)
-        .output()
-        .map_err(|e| format!("git could not run: {e}"))?;
+    let out = crate::repos::output(
+        crate::repos::git(root)
+            .args([
+                "log",
+                "--no-merges",
+                "--no-renames",
+                "--no-color",
+                "--relative",
+                "-U0",
+                "-p",
+                "--format=%x1e%H%x1f%cs%x1f%s%x1f%b%x1f",
+            ])
+            .arg(format!("-n{window}"))
+            .arg("--")
+            .arg(file),
+    )
+    .map_err(|e| format!("git could not run: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "git could not read the history: {}",
@@ -114,9 +113,7 @@ fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<Str
     if specs.is_empty() {
         return Vec::new();
     }
-    let Ok(mut child) = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let Ok(mut child) = crate::repos::git(root)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

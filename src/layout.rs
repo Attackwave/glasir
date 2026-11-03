@@ -52,19 +52,28 @@ impl Layout {
         let mut out = Vec::new();
         let (cx0, cy0) = ((x0 / CELL).floor() as i32, (y0 / CELL).floor() as i32);
         let (cx1, cy1) = ((x1 / CELL).ceil() as i32, (y1 / CELL).ceil() as i32);
-        // A viewport spanning the whole graph would touch every cell anyway, so
-        // there is no fast path to add here — the cap on returned nodes is what
-        // bounds the response.
-        for cx in cx0..=cx1 {
-            for cy in cy0..=cy1 {
-                let Some(cell) = self.grid.get(&(cx, cy)) else {
-                    continue;
-                };
-                for &n in cell {
-                    let (px, py) = (self.x[n as usize], self.y[n as usize]);
-                    if px >= x0 && px <= x1 && py >= y0 && py <= y1 {
-                        out.push(n);
-                    }
+        // The rectangle is the client's: one wider than the grid walks the
+        // occupied cells instead, so the work is bounded by the nodes.
+        let span = |a: i32, b: i32| (i64::from(b) - i64::from(a) + 1).max(0);
+        let keys: Vec<(i32, i32)> = if span(cx0, cx1) * span(cy0, cy1) > self.grid.len() as i64 {
+            self.grid
+                .keys()
+                .filter(|(cx, cy)| (cx0..=cx1).contains(cx) && (cy0..=cy1).contains(cy))
+                .copied()
+                .collect()
+        } else {
+            (cx0..=cx1)
+                .flat_map(|cx| (cy0..=cy1).map(move |cy| (cx, cy)))
+                .collect()
+        };
+        for key in keys {
+            let Some(cell) = self.grid.get(&key) else {
+                continue;
+            };
+            for &n in cell {
+                let (px, py) = (self.x[n as usize], self.y[n as usize]);
+                if px >= x0 && px <= x1 && py >= y0 && py <= y1 {
+                    out.push(n);
                 }
             }
         }
@@ -460,4 +469,22 @@ fn index(x: Vec<f32>, y: Vec<f32>) -> Layout {
             .push(i as NodeId);
     }
     Layout { x, y, grid, bounds }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rectangle_wider_than_the_grid_costs_the_grid() {
+        let layout = index(vec![0.0, 1000.0, -3000.0], vec![0.0, 1000.0, 2000.0]);
+        let started = std::time::Instant::now();
+        assert_eq!(layout.in_view(-1e9, -1e9, 1e9, 1e9), vec![0, 1, 2]);
+        assert_eq!(layout.in_view(-1e9, -1e9, 500.0, 500.0), vec![0]);
+        assert_eq!(
+            layout.in_view(f32::NAN, -1e9, 1e9, 1e9),
+            Vec::<NodeId>::new()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 }
