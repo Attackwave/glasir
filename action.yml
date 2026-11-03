@@ -98,9 +98,14 @@ runs:
         existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
           -q '.[] | select(.body | startswith("<!-- glasir-review -->")) | .id' | head -n 1)
         if [ -n "$existing" ]; then
-          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null
+          posted=$(gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null && echo yes || echo no)
         else
-          gh api "repos/$REPO/issues/$PR/comments" -F body=@"$REPORT" > /dev/null
+          posted=$(gh api "repos/$REPO/issues/$PR/comments" -F body=@"$REPORT" > /dev/null && echo yes || echo no)
+        fi
+        # A pull request from a fork runs with a read-only token: the report
+        # is in the job summary, and the gate below still applies.
+        if [ "$posted" != yes ]; then
+          echo "::notice::the token cannot comment on this pull request; the report is in the job summary"
         fi
     - name: Apply the gate
       if: steps.review.outputs.status != '0'
