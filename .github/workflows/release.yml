@@ -11,11 +11,10 @@ on:
   push:
     tags: ["v*"]
 
+# Each job holds only the rights its own steps use: the builds, which run the
+# dependency graph and the release tools, can neither publish nor attest.
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   build:
@@ -66,7 +65,7 @@ jobs:
           ./target/release/glasir benchmark . --check
           ./target/release/glasir langcheck bench/langs --check
           ./target/release/glasir guard .
-          cargo install cargo-audit --locked
+          cargo install cargo-audit@0.22.2 --locked
           cargo audit
 
       - name: musl toolchain
@@ -92,7 +91,7 @@ jobs:
           [ "$GOT" = "glasir $WANT" ]
 
       - name: install cargo-about
-        run: cargo install cargo-about --locked --features cli
+        run: cargo install cargo-about@0.9.3 --locked --features cli
 
       - name: package
         shell: bash
@@ -145,7 +144,7 @@ jobs:
         with:
           toolchain: stable
       - run: |
-          cargo install cargo-cyclonedx --locked
+          cargo install cargo-cyclonedx@0.5.9 --locked
           cargo cyclonedx --format json --all
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -166,6 +165,9 @@ jobs:
             platform: linux/arm64
             suffix: arm64
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -196,6 +198,10 @@ jobs:
   container:
     needs: [container-build]
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
       image: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.manifest.outputs.digest }}
@@ -290,6 +296,8 @@ jobs:
   publish:
     needs: [build, sbom, container, packages]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

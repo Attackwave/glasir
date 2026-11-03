@@ -38,7 +38,7 @@ jobs:
         run: cargo fmt --check
 
       - name: dependency vulnerabilities
-        run: cargo install cargo-audit --locked && cargo audit
+        run: cargo install cargo-audit@0.22.2 --locked && cargo audit
 
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -107,13 +107,13 @@ jobs:
           toolchain: stable
       - name: generate SBOM
         run: |
-          cargo install cargo-cyclonedx --locked
+          cargo install cargo-cyclonedx@0.5.9 --locked
           cargo cyclonedx --format json --all
       # A dependency under a licence about.toml does not accept fails here,
       # in the pull request, rather than at the release tag.
       - name: third-party licences
         run: |
-          cargo install cargo-about --locked --features cli
+          cargo install cargo-about@0.9.3 --locked --features cli
           cargo about generate --locked --fail about.hbs -o THIRD-PARTY-LICENSES.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

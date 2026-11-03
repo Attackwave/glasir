@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # nightly
         with:
           toolchain: nightly
-      - run: cargo install cargo-fuzz --locked
+      - run: cargo install cargo-fuzz@0.13.2 --locked
       - working-directory: parsers
         run: cargo fuzz run parse -- -max_total_time=1200 -timeout=10 -rss_limit_mb=4096
       - if: failure()
