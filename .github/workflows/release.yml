@@ -298,11 +298,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           pattern: "!*.dockerbuild"
+      # The notes are part of the release and travel through its pull request:
+      # a tag without its file does not publish.
+      - name: release notes
+        run: test -f ".github/releases/$GITHUB_REF_NAME.md"
+      # Provenance for the archives as for the image: an archive is then
+      # verifiable against this workflow and commit (`gh attestation verify`),
+      # not only against the checksum published beside it.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # A tag with a suffix (`v0.1.0-rc.6`) is a release candidate. Unmarked,
@@ -310,4 +325,4 @@ jobs:
           # latest" and Scoop's update check resolve to.
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: artifacts/**/*
-          generate_release_notes: true
+          body_path: .github/releases/${{ github.ref_name }}.md
