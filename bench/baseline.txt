@@ -26,6 +26,8 @@
 # now resolves to `f` in m's file (import confidence, where the bare name was
 # refused when defined twice). One answer at the 40-slot edge dropped out,
 # and one symbol with two callers in another file left its own subsystem.
+# partition 58 -> 62: every git call goes through `repos::git`/`repos::output`,
+# which binds the history and commit modules to the repository module.
 questions                93
 questions-identifier     89
 questions-docs           95
@@ -34,7 +36,7 @@ questions-docs           95
 # reads 50%.
 questions-docs-de        65
 structural               100
-partition                58
+partition                62
 deep                     92
 
 # A tolerance of three points catches material regressions while avoiding a

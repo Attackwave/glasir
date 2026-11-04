@@ -8,7 +8,7 @@ branding:
   color: gray-dark
 inputs:
   version:
-    description: Glasir release to run (a tag such as v0.9.0, or "latest").
+    description: Glasir release to run (a tag such as v0.11.0, or "latest"). Releases before 0.11.0 carry no provenance and are refused.
     default: latest
   base:
     description: Revision to compare HEAD against. Defaults to the pull request's base.
@@ -56,6 +56,8 @@ runs:
         mkdir -p "$dir"
         gh release download "$VERSION" --repo "$repo" --pattern "$name" --pattern "$name.sha256" --dir "$dir"
         (cd "$dir" && sha256sum --check --strict "$name.sha256")
+        # The archive must come from this repository's release workflow.
+        gh attestation verify "$dir/$name" --repo "$repo"
         tar -xzf "$dir/$name" -C "$dir"
         bin=$(find "$dir" -type f -name glasir | head -n 1)
         chmod +x "$bin"
