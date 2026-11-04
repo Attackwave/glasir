@@ -77,6 +77,7 @@ fn main() -> std::io::Result<()> {
     match args.command.as_str() {
         "install" => run_install(&args),
         "uninstall" => run_uninstall(&args),
+        "hook" => run_hook(),
         "status" => run_status(&args),
         "serve" => run_serve(&args),
         "view" => run_view(&args),
@@ -1485,7 +1486,7 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
 
     let mut wrote = 0;
     let mut next = Vec::new();
-    for target in selected {
+    for target in &selected {
         let Some(path) = target.path(root, user_scope) else {
             if !quiet {
                 println!(
@@ -1530,6 +1531,32 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     // leaves the tree dirty and git refuses the next branch switch.
     if !user_scope && !dry {
         ignore_generated_files(&abs, GENERATED);
+    }
+
+    // Claude Code's hook: the registration makes the tools available, the hook
+    // is what makes the assistant reach for them before a grep. Per tree, like
+    // the git hooks, and off with them.
+    let with_claude = selected.iter().any(|t| t.name == "claude");
+    if with_claude && !user_scope && !args.has("no-hook") {
+        let path = abs.join(CLAUDE_SETTINGS_LOCAL);
+        let created = !path.exists();
+        match install_assistant_hook(&path, &exe, dry) {
+            Ok(true) => {
+                if created && !dry {
+                    ignore_generated_files(&abs, &[CLAUDE_SETTINGS_LOCAL]);
+                }
+                if !quiet {
+                    println!(
+                        "{} claude hook: {}",
+                        if dry { "would write" } else { "wrote" },
+                        path.display()
+                    );
+                }
+            }
+            Ok(false) if quiet => {}
+            Ok(false) => println!("claude hook: already installed"),
+            Err(e) => eprintln!("claude hook: {e}"),
+        }
     }
 
     // The hooks are per-tree, so they are skipped for a user-scope install:
@@ -1623,6 +1650,206 @@ fn write_registration(
     Ok(true)
 }
 
+/// Claude Code's project-local settings, where the assistant hook goes.
+///
+/// The local file, not `.claude/settings.json`: the entry holds the absolute
+/// path of this binary, which is one machine's business, and Claude Code
+/// itself keeps the local file out of version control.
+const CLAUDE_SETTINGS_LOCAL: &str = ".claude/settings.local.json";
+
+/// The hook entry as Claude Code reads it: before a text search runs, the
+/// assistant is told that the graph answers what it is about to grep for.
+///
+/// One quoted command string rather than `command` plus `args`: a client that
+/// predates `args` would run the bare binary, and that is the self-check.
+fn assistant_hook_entry(exe: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "matcher": "Grep|Glob|Bash",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hook", shell_quote(&exe.to_string_lossy())),
+            "timeout": 5,
+        }],
+    })
+}
+
+/// Whether a `PreToolUse` entry is ours: a command that runs `hook` on a
+/// program named `glasir`, wherever an earlier install found it, or on this
+/// very binary, whatever it is called.
+fn is_assistant_hook(entry: &serde_json::Value, exe: &std::path::Path) -> bool {
+    let own = shell_quote(&exe.to_string_lossy());
+    entry["hooks"].as_array().is_some_and(|hooks| {
+        hooks.iter().any(|h| {
+            h["command"]
+                .as_str()
+                .and_then(|c| c.strip_suffix(" hook"))
+                .is_some_and(|program| {
+                    // The last path segment under either separator: a Windows
+                    // path read on Linux has no separators `Path` knows.
+                    let name = program
+                        .trim_matches(|c| c == '\'' || c == '"')
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or_default();
+                    let stem = std::path::Path::new(name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default();
+                    program == own || stem.eq_ignore_ascii_case("glasir")
+                })
+        })
+    })
+}
+
+/// Reads a settings file as a JSON object, or an empty one if absent.
+fn settings_object(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if existing.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    let doc: serde_json::Value = serde_json::from_str(&existing).map_err(|e| {
+        std::io::Error::other(format!(
+            "{} is not valid JSON ({e}); left alone",
+            path.display()
+        ))
+    })?;
+    if !doc.is_object() {
+        return Err(std::io::Error::other("settings root is not an object"));
+    }
+    Ok(doc)
+}
+
+/// Adds the hook to Claude Code's local settings, replacing an earlier one of
+/// ours and leaving every other hook and setting in place. False if the same
+/// entry was already there.
+fn install_assistant_hook(
+    path: &std::path::Path,
+    exe: &std::path::Path,
+    dry: bool,
+) -> std::io::Result<bool> {
+    let mut doc = settings_object(path)?;
+    let entry = assistant_hook_entry(exe);
+    let pre = &mut doc["hooks"]["PreToolUse"];
+    if pre.is_null() {
+        *pre = serde_json::json!([]);
+    }
+    let Some(list) = pre.as_array_mut() else {
+        return Err(std::io::Error::other("hooks.PreToolUse is not a list"));
+    };
+    if list.contains(&entry) {
+        return Ok(false);
+    }
+    list.retain(|e| !is_assistant_hook(e, exe));
+    list.push(entry);
+    if !dry {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, format!("{doc:#}\n"))?;
+    }
+    Ok(true)
+}
+
+/// Removes our hook entries and nothing else; a file left with no settings at
+/// all goes with them. False if there was nothing of ours.
+fn uninstall_assistant_hook(
+    path: &std::path::Path,
+    exe: &std::path::Path,
+    dry: bool,
+) -> std::io::Result<bool> {
+    let Ok(mut doc) = settings_object(path) else {
+        return Ok(false);
+    };
+    let Some(list) = doc
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|p| p.as_array_mut())
+    else {
+        return Ok(false);
+    };
+    let before = list.len();
+    list.retain(|e| !is_assistant_hook(e, exe));
+    if list.len() == before {
+        return Ok(false);
+    }
+    let emptied = list.is_empty();
+    if emptied && let Some(hooks) = doc["hooks"].as_object_mut() {
+        hooks.remove("PreToolUse");
+        if hooks.is_empty() {
+            doc.as_object_mut().map(|d| d.remove("hooks"));
+        }
+    }
+    if !dry {
+        if doc.as_object().is_some_and(|d| d.is_empty()) {
+            std::fs::remove_file(path)?;
+        } else {
+            std::fs::write(path, format!("{doc:#}\n"))?;
+        }
+    }
+    Ok(true)
+}
+
+/// What the assistant is told before a text search in an indexed tree.
+const HOOK_CONTEXT: &str = "Glasir serves this tree as a graph (MCP server `glasir`). \
+    For a name or a question, ask `query_graph`, `find_callers`, `impact` or \
+    `get_code_snippet` first: one call answers from resolved edges and names the \
+    files, where a text search misses callers through imports. Search text \
+    afterwards, to pin the lines of an edit.";
+
+/// `glasir hook`: Claude Code's `PreToolUse` hook. Reads the call from stdin,
+/// prints the context for a text search, stays silent otherwise, never blocks.
+fn run_hook() -> std::io::Result<()> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    if let Some(out) = hook_output(&input) {
+        println!("{out}");
+    }
+    Ok(())
+}
+
+/// The hook's answer for one call, or none when the call is not a text search
+/// or no analysed tree holds the working directory.
+fn hook_output(input: &str) -> Option<serde_json::Value> {
+    let call: serde_json::Value = serde_json::from_str(input).ok()?;
+    let searching = match call["tool_name"].as_str()? {
+        "Grep" | "Glob" => true,
+        "Bash" => call["tool_input"]["command"]
+            .as_str()
+            .is_some_and(is_search_command),
+        _ => false,
+    };
+    if !searching {
+        return None;
+    }
+    let cwd = match call["cwd"].as_str() {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::env::current_dir().ok()?,
+    };
+    cwd.ancestors()
+        .any(|dir| dir.join(".glasir-graph").is_file())
+        .then(|| {
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": HOOK_CONTEXT,
+                }
+            })
+        })
+}
+
+/// Whether a shell command line runs a text or file search.
+fn is_search_command(command: &str) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')'))
+        .filter_map(|word| std::path::Path::new(word).file_name()?.to_str())
+        .any(|word| {
+            matches!(
+                word,
+                "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "find" | "fd" | "fdfind"
+            )
+        })
+}
+
 /// Removes registrations this tool wrote, leaving everything else in place.
 fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
     let root = std::path::Path::new(&args.path);
@@ -1687,6 +1914,22 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
 
     if !user_scope {
         let abs = canonical(root).unwrap_or_else(|_| root.into());
+        let local = abs.join(CLAUDE_SETTINGS_LOCAL);
+        let exe = std::env::current_exe()?;
+        match uninstall_assistant_hook(&local, &exe, dry) {
+            Ok(true) => {
+                removed += 1;
+                if !quiet {
+                    println!(
+                        "{} claude hook: {}",
+                        if dry { "would clean" } else { "cleaned" },
+                        local.display()
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("claude hook: {e}"),
+        }
         let notes = uninstall_hooks(&abs, dry);
         for note in &notes {
             if !quiet {
@@ -4188,6 +4431,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_references();
     demo_defining_macros();
     demo_install();
+    demo_assistant_hook();
     demo_search();
     demo_snapshot();
     demo_http();
@@ -7666,6 +7910,84 @@ fn demo_change_tools() {
     println!("changes ok: tests to run, what changes with it, which rule breaks");
 }
 
+/// The assistant hook speaks only before a text search inside an analysed
+/// tree, and its entry is recognised from any binary location.
+fn demo_assistant_hook() {
+    let dir = std::env::temp_dir().join(format!("glasir-hook-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let call = |tool: &str, command: &str, cwd: &std::path::Path| {
+        serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool,
+            "tool_input": {"command": command, "pattern": "x"},
+            "cwd": cwd,
+        })
+        .to_string()
+    };
+
+    assert!(
+        hook_output(&call("Grep", "", &dir)).is_none(),
+        "no graph, nothing to point at"
+    );
+    std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
+    let out = hook_output(&call("Grep", "", &dir)).unwrap();
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    let context = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(context.contains("query_graph") && context.contains("find_callers"));
+    assert!(hook_output(&call("Glob", "", &dir.join("sub"))).is_some());
+    assert!(hook_output(&call("Read", "", &dir)).is_none());
+    assert!(hook_output(&call("Edit", "", &dir)).is_none());
+    for searching in [
+        "rg -n foo src",
+        "git grep foo",
+        "/usr/bin/grep -r x .",
+        "ls | grep y",
+    ] {
+        assert!(
+            hook_output(&call("Bash", searching, &dir)).is_some(),
+            "{searching}"
+        );
+    }
+    for other in ["cargo test", "echo finder", "ls -la", "git log --grep=x"] {
+        assert!(hook_output(&call("Bash", other, &dir)).is_none(), "{other}");
+    }
+    assert!(hook_output("not json").is_none());
+    assert!(hook_output("{}").is_none());
+
+    let entry = assistant_hook_entry(std::path::Path::new("/opt/a b/glasir"));
+    assert_eq!(entry["hooks"][0]["command"], "'/opt/a b/glasir' hook");
+    let me = std::env::current_exe().unwrap();
+    assert!(is_assistant_hook(&entry, &me));
+    assert!(is_assistant_hook(&assistant_hook_entry(&me), &me));
+    assert!(is_assistant_hook(
+        &serde_json::json!({
+            "matcher": "Grep",
+            "hooks": [{"type": "command", "command": "C:\\Tools\\glasir.exe hook"}]
+        }),
+        &me
+    ));
+    assert!(!is_assistant_hook(
+        &serde_json::json!({
+            "matcher": "Grep",
+            "hooks": [{"type": "command", "command": "glasir-lint hook"}]
+        }),
+        &me
+    ));
+    assert!(!is_assistant_hook(
+        &serde_json::json!({
+            "matcher": "Grep",
+            "hooks": [{"type": "command", "command": "glasir analyse"}]
+        }),
+        &me
+    ));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    println!("assistant hook ok: speaks before a text search in an analysed tree only");
+}
+
 fn demo_install() {
     let dir = std::env::temp_dir().join(format!("glasir-install-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -7722,7 +8044,32 @@ fn demo_install() {
 
     // A team's existing file is merged into and stays tracked.
     std::fs::write(dir.join(".mcp.json"), r#"{"mcpServers":{"other":{}}}"#).unwrap();
+    // Claude Code's local settings already hold a hook and a permission;
+    // ours joins them, once, and an earlier install's binary path is replaced.
+    let local = dir.join(CLAUDE_SETTINGS_LOCAL);
+    std::fs::create_dir_all(dir.join(".claude")).unwrap();
+    let theirs_local = serde_json::json!({
+        "permissions": {"allow": ["Bash(ls)"]},
+        "hooks": {"PreToolUse": [
+            {"matcher": "Write", "hooks": [{"type": "command", "command": "lint"}]},
+            {"matcher": "Grep", "hooks": [{"type": "command", "command": "'/old/glasir' hook"}]}
+        ]}
+    });
+    std::fs::write(&local, theirs_local.to_string()).unwrap();
     run_install(&args("install", &["--platform", "claude"])).unwrap();
+    run_install(&args("install", &["--platform", "claude"])).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 2, "{pre:?}");
+    assert_eq!(pre[0]["matcher"], "Write");
+    assert_eq!(pre[1]["matcher"], "Grep|Glob|Bash");
+    let command = pre[1]["hooks"][0]["command"].as_str().unwrap();
+    assert!(
+        command.ends_with(" hook") && !command.contains("/old/"),
+        "{command}"
+    );
+    assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
     let claude: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
     assert!(claude["mcpServers"]["other"].is_object());
@@ -7835,6 +8182,21 @@ fn demo_install() {
         serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
     assert!(claude["mcpServers"]["glasir"].is_null());
     assert!(claude["mcpServers"]["other"].is_object());
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 1, "uninstall left: {pre:?}");
+    assert_eq!(pre[0]["matcher"], "Write");
+    assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
+    // A file that held only our hook goes with it.
+    run_install(&args("install", &["--platform", "claude"])).unwrap();
+    std::fs::write(&local, "{\"hooks\":{\"PreToolUse\":[]}}").unwrap();
+    run_install(&args("install", &["--platform", "claude"])).unwrap();
+    run_uninstall(&args("uninstall", &[])).unwrap();
+    assert!(
+        !local.exists(),
+        "a settings file holding only our hook is removed"
+    );
     let text = std::fs::read_to_string(&codex).unwrap();
     assert_eq!(text.trim_end(), theirs.trim_end(), "uninstall left: {text}");
     let vscode: serde_json::Value =
