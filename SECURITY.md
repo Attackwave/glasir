@@ -27,8 +27,10 @@ could reach:
   for each assistant it detects (`.mcp.json`, `.codex/config.toml`,
   `.gemini/settings.json`, `.qwen/settings.json`, `.agents/mcp_config.json`, `.cursor/mcp.json`,
   `.vscode/mcp.json`, `opencode.json`, or the neutral `glasir-mcp.json`) holding the absolute
-  path to the binary and the tree, and `post-merge`, `post-checkout` and
-  `post-rewrite` hooks that run `glasir analyse`. Existing files are merged
+  path to the binary and the tree, `post-merge`, `post-checkout` and
+  `post-rewrite` hooks that run `glasir analyse`, and for Claude Code a
+  `PreToolUse` hook in `.claude/settings.local.json` that runs `glasir hook`
+  (reads the tool call from stdin, prints a note, never blocks). Existing files are merged
   into, never replaced; a registration file it creates is gitignored.
   `uninstall` removes exactly what it wrote.
 - **It makes no network connections of its own.** No telemetry, no model API, no

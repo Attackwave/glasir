@@ -68,7 +68,11 @@ project — and registers Glasir with each, in the project's own configuration:
 
 The server it registers runs with `--watch`, so the graph follows your edits
 while the assistant runs. It also installs git hooks that keep the graph
-current after a pull, checkout or rebase. A registration file it creates holds absolute paths to your machine,
+current after a pull, checkout or rebase. For Claude Code it adds a
+`PreToolUse` hook to `.claude/settings.local.json`: before a text search in an
+analysed tree, the assistant is told which tool answers from the graph
+instead, so it asks `find_callers` rather than grepping for a name.
+`--no-hook` skips both kinds. A registration file it creates holds absolute paths to your machine,
 so it is added to `.gitignore`; one your team already tracks is merged into,
 never replaced, and nothing in your home directory is touched. With no
 assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.

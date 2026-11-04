@@ -111,6 +111,8 @@ SETUP
                         (path: the current directory when left out)
   uninstall [path]      Remove those registrations and hooks
   status [path]         Show registration and graph status
+  hook                  Claude Code's PreToolUse hook, what install registers:
+                        reads the call on stdin, points a text search at the graph
 
 RUNNING
   serve [path]          Serve the graph over MCP on stdio (what an editor runs)
@@ -172,7 +174,7 @@ OPTIONS
                         kiro, amp, continue, cursor, vscode, opencode, mcp
   --user                Install for the user rather than the project
   --dry-run             Print what would be written, change nothing
-  --no-hook             install: skip the git hooks that keep the graph current
+  --no-hook             install: skip the git hooks and the assistant hook
   --purge               uninstall: also delete the stored graph
   --help                This text
   --version             The version, for checking against an advisory

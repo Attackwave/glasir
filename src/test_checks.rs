@@ -223,6 +223,11 @@ fn install() {
 }
 
 #[test]
+fn assistant_hook() {
+    crate::demo_assistant_hook();
+}
+
+#[test]
 fn markdown() {
     crate::demo_markdown();
 }
