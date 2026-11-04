@@ -29,8 +29,8 @@ could reach:
   `.vscode/mcp.json`, `opencode.json`, or the neutral `glasir-mcp.json`) holding the absolute
   path to the binary and the tree, `post-merge`, `post-checkout` and
   `post-rewrite` hooks that run `glasir analyse`, and for Claude Code a
-  `PreToolUse` hook in `.claude/settings.local.json` that runs `glasir hook`
-  (reads the tool call from stdin, prints a note, never blocks). Existing files are merged
+  `SessionStart` hook in `.claude/settings.local.json` that runs `glasir hook`
+  (reads the event from stdin, prints a note). Existing files are merged
   into, never replaced; a registration file it creates is gitignored.
   `uninstall` removes exactly what it wrote.
 - **It makes no network connections of its own.** No telemetry, no model API, no

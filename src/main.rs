@@ -1534,7 +1534,7 @@ fn run_install(args: &cli::Args) -> std::io::Result<()> {
     }
 
     // Claude Code's hook: the registration makes the tools available, the hook
-    // is what makes the assistant reach for them before a grep. Per tree, like
+    // is what makes the assistant load them. Per tree, like
     // the git hooks, and off with them.
     let with_claude = selected.iter().any(|t| t.name == "claude");
     if with_claude && !user_scope && !args.has("no-hook") {
@@ -1657,14 +1657,16 @@ fn write_registration(
 /// itself keeps the local file out of version control.
 const CLAUDE_SETTINGS_LOCAL: &str = ".claude/settings.local.json";
 
-/// The hook entry as Claude Code reads it: before a text search runs, the
-/// assistant is told that the graph answers what it is about to grep for.
+/// When the hook runs. At session start, so the note arrives before the first
+/// search rather than beside its result, and again after a compaction.
+const HOOK_EVENT: &str = "SessionStart";
+
+/// The hook entry as Claude Code reads it. No matcher: every kind of start.
 ///
 /// One quoted command string rather than `command` plus `args`: a client that
 /// predates `args` would run the bare binary, and that is the self-check.
 fn assistant_hook_entry(exe: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
-        "matcher": "Grep|Glob|Bash",
         "hooks": [{
             "type": "command",
             "command": format!("{} hook", shell_quote(&exe.to_string_lossy())),
@@ -1673,7 +1675,7 @@ fn assistant_hook_entry(exe: &std::path::Path) -> serde_json::Value {
     })
 }
 
-/// Whether a `PreToolUse` entry is ours: a command that runs `hook` on a
+/// Whether a hook entry is ours: a command that runs `hook` on a
 /// program named `glasir`, wherever an earlier install found it, or on this
 /// very binary, whatever it is called.
 fn is_assistant_hook(entry: &serde_json::Value, exe: &std::path::Path) -> bool {
@@ -1729,12 +1731,14 @@ fn install_assistant_hook(
 ) -> std::io::Result<bool> {
     let mut doc = settings_object(path)?;
     let entry = assistant_hook_entry(exe);
-    let pre = &mut doc["hooks"]["PreToolUse"];
-    if pre.is_null() {
-        *pre = serde_json::json!([]);
+    let slot = &mut doc["hooks"][HOOK_EVENT];
+    if slot.is_null() {
+        *slot = serde_json::json!([]);
     }
-    let Some(list) = pre.as_array_mut() else {
-        return Err(std::io::Error::other("hooks.PreToolUse is not a list"));
+    let Some(list) = slot.as_array_mut() else {
+        return Err(std::io::Error::other(format!(
+            "hooks.{HOOK_EVENT} is not a list"
+        )));
     };
     if list.contains(&entry) {
         return Ok(false);
@@ -1762,7 +1766,7 @@ fn uninstall_assistant_hook(
     };
     let Some(list) = doc
         .get_mut("hooks")
-        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|h| h.get_mut(HOOK_EVENT))
         .and_then(|p| p.as_array_mut())
     else {
         return Ok(false);
@@ -1774,7 +1778,7 @@ fn uninstall_assistant_hook(
     }
     let emptied = list.is_empty();
     if emptied && let Some(hooks) = doc["hooks"].as_object_mut() {
-        hooks.remove("PreToolUse");
+        hooks.remove(HOOK_EVENT);
         if hooks.is_empty() {
             doc.as_object_mut().map(|d| d.remove("hooks"));
         }
@@ -1789,15 +1793,18 @@ fn uninstall_assistant_hook(
     Ok(true)
 }
 
-/// What the assistant is told before a text search in an indexed tree.
-const HOOK_CONTEXT: &str = "Glasir serves this tree as a graph (MCP server `glasir`). \
-    For a name or a question, ask `query_graph`, `find_callers`, `impact` or \
-    `get_code_snippet` first: one call answers from resolved edges and names the \
-    files, where a text search misses callers through imports. Search text \
-    afterwards, to pin the lines of an edit.";
+/// What the assistant is told at the start of a session in an analysed tree.
+/// Full tool names and the load step: measured, the short names alone were
+/// ignored, because the tools are deferred until `ToolSearch` loads them.
+const HOOK_CONTEXT: &str = "This tree has a code graph that answers this faster than text \
+    search. Load it now with ToolSearch, query `select:mcp__glasir__query_graph,\
+    mcp__glasir__find_callers,mcp__glasir__impact,mcp__glasir__get_code_snippet` (skip if \
+    loaded), then pass your question to `mcp__glasir__query_graph`. It returns definitions \
+    with resolved callers; text search misses callers through imports. Search text \
+    afterwards, only to pin the lines of an edit.";
 
-/// `glasir hook`: Claude Code's `PreToolUse` hook. Reads the call from stdin,
-/// prints the context for a text search, stays silent otherwise, never blocks.
+/// `glasir hook`: Claude Code's `SessionStart` hook. Reads the event from
+/// stdin and prints the context for an analysed tree, nothing otherwise.
 fn run_hook() -> std::io::Result<()> {
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
@@ -1807,46 +1814,23 @@ fn run_hook() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The hook's answer for one call, or none when the call is not a text search
-/// or no analysed tree holds the working directory.
+/// The hook's answer for one event, or none when no analysed tree holds the
+/// working directory.
 fn hook_output(input: &str) -> Option<serde_json::Value> {
-    let call: serde_json::Value = serde_json::from_str(input).ok()?;
-    let searching = match call["tool_name"].as_str()? {
-        "Grep" | "Glob" => true,
-        "Bash" => call["tool_input"]["command"]
-            .as_str()
-            .is_some_and(is_search_command),
-        _ => false,
-    };
-    if !searching {
+    let event: serde_json::Value = serde_json::from_str(input).ok()?;
+    if event["hook_event_name"].as_str()? != HOOK_EVENT {
         return None;
     }
-    let cwd = match call["cwd"].as_str() {
-        Some(dir) => std::path::PathBuf::from(dir),
-        None => std::env::current_dir().ok()?,
-    };
+    let cwd = std::path::PathBuf::from(event["cwd"].as_str()?);
     cwd.ancestors()
         .any(|dir| dir.join(".glasir-graph").is_file())
         .then(|| {
             serde_json::json!({
                 "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
+                    "hookEventName": HOOK_EVENT,
                     "additionalContext": HOOK_CONTEXT,
                 }
             })
-        })
-}
-
-/// Whether a shell command line runs a text or file search.
-fn is_search_command(command: &str) -> bool {
-    command
-        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')'))
-        .filter_map(|word| std::path::Path::new(word).file_name()?.to_str())
-        .any(|word| {
-            matches!(
-                word,
-                "grep" | "egrep" | "fgrep" | "rg" | "ag" | "ack" | "find" | "fd" | "fdfind"
-            )
         })
 }
 
@@ -7910,50 +7894,28 @@ fn demo_change_tools() {
     println!("changes ok: tests to run, what changes with it, which rule breaks");
 }
 
-/// The assistant hook speaks only before a text search inside an analysed
-/// tree, and its entry is recognised from any binary location.
+/// The assistant hook speaks at session start inside an analysed tree only,
+/// and its entry is recognised from any binary location.
 fn demo_assistant_hook() {
     let dir = std::env::temp_dir().join(format!("glasir-hook-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
-    let call = |tool: &str, command: &str, cwd: &std::path::Path| {
-        serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": tool,
-            "tool_input": {"command": command, "pattern": "x"},
-            "cwd": cwd,
-        })
-        .to_string()
+    let event = |name: &str, cwd: &std::path::Path| {
+        serde_json::json!({"hook_event_name": name, "source": "startup", "cwd": cwd}).to_string()
     };
 
     assert!(
-        hook_output(&call("Grep", "", &dir)).is_none(),
+        hook_output(&event(HOOK_EVENT, &dir)).is_none(),
         "no graph, nothing to point at"
     );
     std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
-    let out = hook_output(&call("Grep", "", &dir)).unwrap();
-    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    let out = hook_output(&event(HOOK_EVENT, &dir.join("sub"))).unwrap();
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], HOOK_EVENT);
     let context = out["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    assert!(context.contains("query_graph") && context.contains("find_callers"));
-    assert!(hook_output(&call("Glob", "", &dir.join("sub"))).is_some());
-    assert!(hook_output(&call("Read", "", &dir)).is_none());
-    assert!(hook_output(&call("Edit", "", &dir)).is_none());
-    for searching in [
-        "rg -n foo src",
-        "git grep foo",
-        "/usr/bin/grep -r x .",
-        "ls | grep y",
-    ] {
-        assert!(
-            hook_output(&call("Bash", searching, &dir)).is_some(),
-            "{searching}"
-        );
-    }
-    for other in ["cargo test", "echo finder", "ls -la", "git log --grep=x"] {
-        assert!(hook_output(&call("Bash", other, &dir)).is_none(), "{other}");
-    }
+    assert!(context.contains("ToolSearch") && context.contains("mcp__glasir__query_graph"));
+    assert!(hook_output(&event("PreToolUse", &dir)).is_none());
     assert!(hook_output("not json").is_none());
     assert!(hook_output("{}").is_none());
 
@@ -7985,7 +7947,7 @@ fn demo_assistant_hook() {
     ));
 
     std::fs::remove_dir_all(&dir).unwrap();
-    println!("assistant hook ok: speaks before a text search in an analysed tree only");
+    println!("assistant hook ok: speaks at session start in an analysed tree only");
 }
 
 fn demo_install() {
@@ -8050,9 +8012,9 @@ fn demo_install() {
     std::fs::create_dir_all(dir.join(".claude")).unwrap();
     let theirs_local = serde_json::json!({
         "permissions": {"allow": ["Bash(ls)"]},
-        "hooks": {"PreToolUse": [
-            {"matcher": "Write", "hooks": [{"type": "command", "command": "lint"}]},
-            {"matcher": "Grep", "hooks": [{"type": "command", "command": "'/old/glasir' hook"}]}
+        "hooks": {"SessionStart": [
+            {"matcher": "startup", "hooks": [{"type": "command", "command": "lint"}]},
+            {"hooks": [{"type": "command", "command": "'/old/glasir' hook"}]}
         ]}
     });
     std::fs::write(&local, theirs_local.to_string()).unwrap();
@@ -8060,10 +8022,10 @@ fn demo_install() {
     run_install(&args("install", &["--platform", "claude"])).unwrap();
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
-    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    let pre = settings["hooks"][HOOK_EVENT].as_array().unwrap();
     assert_eq!(pre.len(), 2, "{pre:?}");
-    assert_eq!(pre[0]["matcher"], "Write");
-    assert_eq!(pre[1]["matcher"], "Grep|Glob|Bash");
+    assert_eq!(pre[0]["matcher"], "startup");
+    assert!(pre[1]["matcher"].is_null(), "every kind of start");
     let command = pre[1]["hooks"][0]["command"].as_str().unwrap();
     assert!(
         command.ends_with(" hook") && !command.contains("/old/"),
@@ -8184,13 +8146,13 @@ fn demo_install() {
     assert!(claude["mcpServers"]["other"].is_object());
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
-    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    let pre = settings["hooks"][HOOK_EVENT].as_array().unwrap();
     assert_eq!(pre.len(), 1, "uninstall left: {pre:?}");
-    assert_eq!(pre[0]["matcher"], "Write");
+    assert_eq!(pre[0]["matcher"], "startup");
     assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
     // A file that held only our hook goes with it.
     run_install(&args("install", &["--platform", "claude"])).unwrap();
-    std::fs::write(&local, "{\"hooks\":{\"PreToolUse\":[]}}").unwrap();
+    std::fs::write(&local, "{\"hooks\":{\"SessionStart\":[]}}").unwrap();
     run_install(&args("install", &["--platform", "claude"])).unwrap();
     run_uninstall(&args("uninstall", &[])).unwrap();
     assert!(
