@@ -111,8 +111,8 @@ SETUP
                         (path: the current directory when left out)
   uninstall [path]      Remove those registrations and hooks
   status [path]         Show registration and graph status
-  hook                  Claude Code's PreToolUse hook, what install registers:
-                        reads the call on stdin, points a text search at the graph
+  hook                  Claude Code's SessionStart hook, what install registers:
+                        reads the event on stdin, points the session at the graph
 
 RUNNING
   serve [path]          Serve the graph over MCP on stdio (what an editor runs)
