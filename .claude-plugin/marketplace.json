@@ -1,0 +1,11 @@
+{
+  "name": "glasir",
+  "owner": { "name": "Attackwave", "url": "https://github.com/Attackwave" },
+  "plugins": [
+    {
+      "name": "glasir",
+      "source": "./packaging/claude-plugin",
+      "description": "A queryable graph of the code in the current repository, served over MCP."
+    }
+  ]
+}

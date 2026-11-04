@@ -1,0 +1,25 @@
+{
+  "name": "glasir",
+  "displayName": "Glasir",
+  "description": "A queryable graph of the code in the current repository, served over MCP. Needs the glasir binary on PATH.",
+  "author": { "name": "Attackwave", "url": "https://github.com/Attackwave" },
+  "homepage": "https://github.com/Attackwave/glasir",
+  "repository": "https://github.com/Attackwave/glasir",
+  "license": "Apache-2.0",
+  "keywords": ["code-graph", "mcp", "code-intelligence", "impact-analysis"],
+  "mcpServers": {
+    "glasir": {
+      "command": "glasir",
+      "args": ["serve", "${CLAUDE_PROJECT_DIR}", "--watch", "--plugin"]
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "glasir hook --plugin", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

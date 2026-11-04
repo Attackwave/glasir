@@ -83,6 +83,19 @@ want the server approved, Codex and Gemini CLI read project settings only in a
 folder you have trusted, and Antigravity asks before its first use of an MCP
 tool. `install` prints the step for each one it wrote.
 
+In Claude Code the plugin does the same without a step per repository, once
+`glasir` is on your `PATH`:
+
+```text
+/plugin marketplace add Attackwave/glasir
+/plugin install glasir@glasir
+```
+
+It serves whichever git repository a session starts in, and starts nothing
+elsewhere. Its generated files go into `.git/info/exclude`, so nothing tracked
+changes. Use the plugin or `glasir install` in a tree, not both: each brings
+its own copy of the server.
+
 Restart the assistant and ask it something about the code: *"what breaks if I
 change `parse_config`?"*, *"how does a request reach the database?"*. The
 answers come from `impact`, `query_graph`, `shortest_path` and twelve more tools

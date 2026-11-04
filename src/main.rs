@@ -77,7 +77,7 @@ fn main() -> std::io::Result<()> {
     match args.command.as_str() {
         "install" => run_install(&args),
         "uninstall" => run_uninstall(&args),
-        "hook" => run_hook(),
+        "hook" => run_hook(&args),
         "status" => run_status(&args),
         "serve" => run_serve(&args),
         "view" => run_view(&args),
@@ -1793,45 +1793,85 @@ fn uninstall_assistant_hook(
     Ok(true)
 }
 
-/// What the assistant is told at the start of a session in an analysed tree.
-/// Full tool names and the load step: measured, the short names alone were
-/// ignored, because the tools are deferred until `ToolSearch` loads them.
-const HOOK_CONTEXT: &str = "This tree has a code graph that answers this faster than text \
-    search. Load it now with ToolSearch, query `select:mcp__glasir__query_graph,\
-    mcp__glasir__find_callers,mcp__glasir__impact,mcp__glasir__get_code_snippet` (skip if \
-    loaded), then pass your question to `mcp__glasir__query_graph`. It returns definitions \
-    with resolved callers; text search misses callers through imports. Search text \
-    afterwards, only to pin the lines of an edit.";
+/// How Claude Code names the tools of a server from `.mcp.json`.
+const TOOL_PREFIX: &str = "mcp__glasir__";
+/// How it names them when a plugin brings the server.
+const PLUGIN_TOOL_PREFIX: &str = "mcp__plugin_glasir_glasir__";
+
+/// What the assistant is told at the start of a session. Full tool names and
+/// the load step: measured, the short names alone were ignored, because the
+/// tools are deferred until `ToolSearch` loads them.
+fn hook_context(plugin: bool) -> String {
+    let p = if plugin {
+        PLUGIN_TOOL_PREFIX
+    } else {
+        TOOL_PREFIX
+    };
+    format!(
+        "This tree has a code graph that answers this faster than text search. Load it now \
+         with ToolSearch, query `select:{p}query_graph,{p}find_callers,{p}impact,\
+         {p}get_code_snippet` (skip if loaded), then pass your question to `{p}query_graph`. \
+         It returns definitions with resolved callers; text search misses callers through \
+         imports. Search text afterwards, only to pin the lines of an edit."
+    )
+}
 
 /// `glasir hook`: Claude Code's `SessionStart` hook. Reads the event from
-/// stdin and prints the context for an analysed tree, nothing otherwise.
-fn run_hook() -> std::io::Result<()> {
+/// stdin and prints the context for a tree with a graph, nothing otherwise.
+fn run_hook(args: &cli::Args) -> std::io::Result<()> {
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    if let Some(out) = hook_output(&input) {
+    if let Some(out) = hook_output(&input, args.has("plugin")) {
         println!("{out}");
     }
     Ok(())
 }
 
-/// The hook's answer for one event, or none when no analysed tree holds the
-/// working directory.
-fn hook_output(input: &str) -> Option<serde_json::Value> {
+/// The hook's answer for one event. A registered tree has a stored graph. A
+/// plugin's server may still be building the first one as the session starts,
+/// so there a repository is enough: `serve --plugin` serves exactly those.
+fn hook_output(input: &str, plugin: bool) -> Option<serde_json::Value> {
     let event: serde_json::Value = serde_json::from_str(input).ok()?;
     if event["hook_event_name"].as_str()? != HOOK_EVENT {
         return None;
     }
     let cwd = std::path::PathBuf::from(event["cwd"].as_str()?);
-    cwd.ancestors()
-        .any(|dir| dir.join(".glasir-graph").is_file())
-        .then(|| {
-            serde_json::json!({
-                "hookSpecificOutput": {
-                    "hookEventName": HOOK_EVENT,
-                    "additionalContext": HOOK_CONTEXT,
-                }
-            })
+    let graph = if plugin {
+        in_git_repo(&cwd)
+    } else {
+        cwd.ancestors()
+            .any(|dir| dir.join(".glasir-graph").is_file())
+    };
+    graph.then(|| {
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": HOOK_EVENT,
+                "additionalContext": hook_context(plugin),
+            }
         })
+    })
+}
+
+fn in_git_repo(dir: &std::path::Path) -> bool {
+    git_path(dir, &["rev-parse", "--git-dir"]).is_some()
+}
+
+/// Serving for a plugin, which starts in every project: a directory that is
+/// no repository is refused rather than indexed, since that may be a home
+/// directory. Nobody ran `install`, so the files a server writes are kept out
+/// of `git status` through the local exclude, which changes nothing tracked.
+fn prepare_plugin_tree(root: &std::path::Path) -> std::io::Result<()> {
+    let Some(exclude) = git_path(root, &["rev-parse", "--git-path", "info/exclude"]) else {
+        return Err(std::io::Error::other(format!(
+            "{} is not a git repository, nothing to serve",
+            root.display()
+        )));
+    };
+    if let Some(parent) = exclude.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    add_ignore_lines(&exclude, GENERATED);
+    Ok(())
 }
 
 /// Removes registrations this tool wrote, leaving everything else in place.
@@ -2460,6 +2500,9 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     use std::sync::Arc;
 
     let root = &canonical(std::path::Path::new(&args.path))?;
+    if args.has("plugin") {
+        prepare_plugin_tree(root)?;
+    }
     let state = Arc::new(published::Published::from_pointee(served_state(root)?));
     {
         let s = state.load();
@@ -3739,8 +3782,12 @@ fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
 /// no usable secret, only hashes, but committing who has access to what is an
 /// operational leak, and the audit log holds the questions people asked.
 fn ignore_generated_files(root: &std::path::Path, names: &[&str]) {
-    let path = root.join(".gitignore");
-    let mut current = std::fs::read_to_string(&path).unwrap_or_default();
+    add_ignore_lines(&root.join(".gitignore"), names);
+}
+
+/// Adds the names an ignore file does not hold yet.
+fn add_ignore_lines(path: &std::path::Path, names: &[&str]) {
+    let mut current = std::fs::read_to_string(path).unwrap_or_default();
     for name in names {
         if current.lines().any(|l| l.trim() == *name) {
             continue;
@@ -3752,7 +3799,7 @@ fn ignore_generated_files(root: &std::path::Path, names: &[&str]) {
         };
         current = format!("{current}{sep}{name}\n");
     }
-    let _ = std::fs::write(&path, current);
+    let _ = std::fs::write(path, current);
 }
 
 /// Everything an analysis or a served tree writes beside the sources.
@@ -7894,8 +7941,8 @@ fn demo_change_tools() {
     println!("changes ok: tests to run, what changes with it, which rule breaks");
 }
 
-/// The assistant hook speaks at session start inside an analysed tree only,
-/// and its entry is recognised from any binary location.
+/// The assistant hook speaks at session start where a graph is served, and
+/// its entry is recognised from any binary location.
 fn demo_assistant_hook() {
     let dir = std::env::temp_dir().join(format!("glasir-hook-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -7905,19 +7952,54 @@ fn demo_assistant_hook() {
     };
 
     assert!(
-        hook_output(&event(HOOK_EVENT, &dir)).is_none(),
+        hook_output(&event(HOOK_EVENT, &dir), false).is_none(),
         "no graph, nothing to point at"
     );
     std::fs::write(dir.join(".glasir-graph"), b"x").unwrap();
-    let out = hook_output(&event(HOOK_EVENT, &dir.join("sub"))).unwrap();
+    let out = hook_output(&event(HOOK_EVENT, &dir.join("sub")), false).unwrap();
     assert_eq!(out["hookSpecificOutput"]["hookEventName"], HOOK_EVENT);
     let context = out["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
     assert!(context.contains("ToolSearch") && context.contains("mcp__glasir__query_graph"));
-    assert!(hook_output(&event("PreToolUse", &dir)).is_none());
-    assert!(hook_output("not json").is_none());
-    assert!(hook_output("{}").is_none());
+
+    // A plugin: no stored graph needed, a repository is, and its tools are
+    // named after the plugin. The local exclude is written once; a directory
+    // that is no repository is refused.
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(
+        hook_output(&event(HOOK_EVENT, &repo), true).is_none(),
+        "no repository, nothing is served"
+    );
+    assert!(prepare_plugin_tree(&repo).is_err());
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{args:?}");
+        String::from_utf8_lossy(&status.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    let out = hook_output(&event(HOOK_EVENT, &repo), true).unwrap();
+    let context = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(context.contains("mcp__plugin_glasir_glasir__query_graph"));
+    assert!(!context.contains("mcp__glasir__"), "{context}");
+    prepare_plugin_tree(&repo).unwrap();
+    prepare_plugin_tree(&repo).unwrap();
+    std::fs::write(repo.join(".glasir-graph"), b"x").unwrap();
+    assert_eq!(git(&["status", "--porcelain"]), "");
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches(".glasir-graph").count(), 1, "{exclude}");
+    assert!(!repo.join(".gitignore").exists(), "nothing tracked changes");
+
+    assert!(hook_output(&event("PreToolUse", &dir), false).is_none());
+    assert!(hook_output("not json", false).is_none());
+    assert!(hook_output("{}", false).is_none());
 
     let entry = assistant_hook_entry(std::path::Path::new("/opt/a b/glasir"));
     assert_eq!(entry["hooks"][0]["command"], "'/opt/a b/glasir' hook");
@@ -7947,7 +8029,7 @@ fn demo_assistant_hook() {
     ));
 
     std::fs::remove_dir_all(&dir).unwrap();
-    println!("assistant hook ok: speaks at session start in an analysed tree only");
+    println!("assistant hook ok: speaks at session start where a graph is served");
 }
 
 fn demo_install() {

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Attackwave/glasir",
+  "title": "Glasir",
+  "description": "A queryable graph of a codebase: impact, callers, tests to run, history. No model, no network.",
+  "repository": {
+    "url": "https://github.com/Attackwave/glasir",
+    "source": "github"
+  },
+  "version": "0.11.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/attackwave/glasir:v0.11.0",
+      "runtimeHint": "docker",
+      "transport": { "type": "stdio" },
+      "runtimeArguments": [
+        { "type": "positional", "value": "-i" },
+        {
+          "type": "named",
+          "name": "-v",
+          "value": "{tree}:/tree:ro",
+          "description": "The repository to serve, mounted read-only",
+          "isRequired": true,
+          "variables": {
+            "tree": {
+              "description": "Absolute path of the repository to serve",
+              "isRequired": true
+            }
+          }
+        }
+      ],
+      "packageArguments": [
+        { "type": "positional", "value": "serve" },
+        { "type": "positional", "value": "/tree" }
+      ]
+    }
+  ]
+}
