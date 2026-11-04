@@ -12,4 +12,5 @@ RUN useradd --system --uid 65532 --no-create-home --shell /usr/sbin/nologin glas
 COPY --from=build /src/target/release/glasir /usr/local/bin/glasir
 COPY --chown=65532:65532 . /repo
 USER 65532:65532
+LABEL io.modelcontextprotocol.server.name="io.github.Attackwave/glasir"
 ENTRYPOINT ["/usr/local/bin/glasir"]

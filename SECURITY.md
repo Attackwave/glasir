@@ -33,6 +33,11 @@ could reach:
   (reads the event from stdin, prints a note). Existing files are merged
   into, never replaced; a registration file it creates is gitignored.
   `uninstall` removes exactly what it wrote.
+- **The Claude Code plugin runs in every project you open.** It starts
+  `glasir serve --plugin` on the session's directory, which refuses a directory
+  outside a git repository, and adds the generated file names to that
+  repository's `.git/info/exclude`. A session started at the root of a
+  repository indexes that repository.
 - **It makes no network connections of its own.** No telemetry, no model API, no
   update check. The only sockets are the ones you ask it to listen on.
 - **No model anywhere in the index or query path**, so no code is sent anywhere

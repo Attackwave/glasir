@@ -127,6 +127,8 @@ RUNNING
     --max-index-age <seconds>
                       Return 503 from /ready when the loaded graph is older
     --watch             Re-index in the background as the tree changes
+    --plugin            Started by the Claude Code plugin: serve a git repository
+                        only, keep its files out of status via the local exclude
     --public-url <url>  The name clients reach this server under, behind a proxy
     --tls-cert <file>   PEM certificate chain; serves HTTPS when given with a key
     --tls-key <file>    PEM private key for --tls-cert
