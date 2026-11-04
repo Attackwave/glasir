@@ -29,7 +29,8 @@ scoop install glasir                                       # Windows
 
 Or download the archive for your platform from
 [Releases](https://github.com/Attackwave/glasir/releases), check it against
-the `.sha256` beside it, and put `glasir` on your `PATH`:
+the `.sha256` beside it or its build provenance (`gh attestation verify
+<archive> --repo Attackwave/glasir`), and put `glasir` on your `PATH`:
 
 | Platform | Archive |
 |---|---|
@@ -438,8 +439,8 @@ and guarantees are documented in `docs/architecture.md`.
 
 Tagged releases publish signed, multi-architecture (`linux/amd64`,
 `linux/arm64`) Core images to GHCR. Release assets include a CycloneDX SBOM;
-the release workflow also creates build provenance and a keyless Cosign
-signature for the published image manifest. Deploy by digest, not a mutable
+the release workflow also creates build provenance for every archive and for
+the published image manifest, and a keyless Cosign signature for the latter. Deploy by digest, not a mutable
 tag. CI also rebuilds the production Dockerfile and verifies its non-root
 runtime on every change.
 
@@ -524,15 +525,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0          # the base commit has to be in the clone
-      - uses: Attackwave/glasir@v0.10.0
+      - uses: Attackwave/glasir@v0.11.0
         with:
           fail-on: high           # optional: block the merge at this risk
 ```
 
 The graph is built on the runner from the checked-out tree; no source leaves
 it. The action downloads the release named by its own tag and checks the
-archive against the published SHA-256. A repository that pins actions to a
-commit writes `Attackwave/glasir@<commit of the tag> # v0.10.0`; the action
+archive against the published SHA-256 and its build provenance (releases
+before 0.11.0 carry none and are refused). A repository that pins actions to
+a commit writes `Attackwave/glasir@<commit of the tag> # v0.11.0`; the action
 then downloads that version's release.
 
 ## Licence

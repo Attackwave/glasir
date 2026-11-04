@@ -11,8 +11,9 @@ Expect an acknowledgement within a week. There is no bounty programme.
 
 Fixes land on the latest release. Before 1.0 there are no backports: upgrade to
 the newest `0.x` to receive a fix. Each release names its version
-(`glasir --version`), ships a SHA-256 per archive and a CycloneDX SBOM, and the
-container image is signed with Cosign and carries build provenance.
+(`glasir --version`), ships a SHA-256 and build provenance per archive and a
+CycloneDX SBOM, and the container image is signed with Cosign and carries build
+provenance.
 
 ## What Glasir touches
 

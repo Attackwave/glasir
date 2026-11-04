@@ -11372,6 +11372,8 @@ fn demo_cohesion_scale() {
 /// Timing is not asserted here, since a loaded machine would make that flaky.
 /// What is asserted is the shape: doubling the corpus must roughly double the
 /// work, not quadruple it. A quadratic build fails that by a wide margin.
+/// Each size is the best of three runs: the small build takes milliseconds,
+/// and one scheduling pause in it read as 9x on a shared runner.
 fn demo_index_scale() {
     use std::time::Instant;
 
@@ -11393,8 +11395,18 @@ fn demo_index_scale() {
         (t.elapsed(), index)
     };
 
-    let (small, _) = build(4_000);
-    let (large, index) = build(16_000);
+    let best = |n: usize| {
+        let (mut time, mut index) = build(n);
+        for _ in 0..2 {
+            let (t, i) = build(n);
+            if t < time {
+                (time, index) = (t, i);
+            }
+        }
+        (time, index)
+    };
+    let (small, _) = best(4_000);
+    let (large, index) = best(16_000);
 
     // Four times the corpus. Linear would be ~4x the time; quadratic ~16x.
     // Eight is a generous ceiling that still fails a quadratic build — the
