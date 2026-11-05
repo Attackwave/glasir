@@ -1623,7 +1623,10 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
     let node = served.resolve_one(symbol)?;
-    let levels = reverse_levels(served, &[node], depth, floor);
+    let mut levels = reverse_levels(served, &[node], depth, floor);
+    if levels.is_empty() {
+        levels = reverse_levels(served, &with_members(served, node), depth, floor);
+    }
     let (offset, limit) = page(args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
@@ -1672,6 +1675,29 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     });
     next_offset(&mut value, offset, limit, total);
     Ok(value)
+}
+
+/// A definition and the definitions inside it: a module's users call its
+/// functions and never name the module. Only for a definition nothing names:
+/// seeding every class with its methods pushed its real users past the page.
+fn with_members(served: &Served, node: NodeId) -> Vec<NodeId> {
+    let mut seeds = vec![node];
+    let name = served.name(node);
+    let (Some((file, _)), Some(outer)) = (name.split_once('#'), served.registry.span(node)) else {
+        return seeds;
+    };
+    for (symbol, &n) in served.registry.entries() {
+        if n != node
+            && symbol.split_once('#').is_some_and(|(f, _)| f == file)
+            && served
+                .registry
+                .span(n)
+                .is_some_and(|s| s.0 >= outer.0 && s.1 <= outer.1)
+        {
+            seeds.push(n);
+        }
+    }
+    seeds
 }
 
 /// `offset` and `limit` of a paged list; the limit is clamped like every other.

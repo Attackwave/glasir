@@ -1,12 +1,27 @@
 //! Language-specific syntax; lexical and call rules come from the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, TokenKind};
+use crate::lexer::{CommentStyle, Lexer, Token, TokenKind};
 use crate::scope::ScopeStack;
+
+/// `do: x` and `end: 3` are keyword keys.
+fn is_key(tokens: &[Token<'_>], i: usize) -> bool {
+    tokens
+        .get(i + 1)
+        .is_some_and(|t| t.kind == TokenKind::Symbol(':') && t.start == tokens[i].end)
+}
+
+/// `:end` is an atom and `range.end` a field.
+fn is_atom_or_field(tokens: &[Token<'_>], i: usize) -> bool {
+    i > 0
+        && matches!(tokens[i - 1].kind, TokenKind::Symbol(':' | '.'))
+        && tokens[i - 1].end == tokens[i].start
+}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.sigils = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -86,16 +101,27 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         }
                     }
                 }
-                while i < tokens.len() && tokens[i].kind != TokenKind::Newline {
-                    i += 1;
+                // A type names no code; any other attribute's value is code,
+                // and `@files Enum.map(all, fn f ->` opens a block.
+                if matches!(
+                    tokens.get(i).map(|t| &t.kind),
+                    Some(TokenKind::Ident(
+                        "spec" | "type" | "typep" | "opaque" | "callback" | "macrocallback"
+                    ))
+                ) {
+                    while i < tokens.len() && tokens[i].kind != TokenKind::Newline {
+                        i += 1;
+                    }
                 }
                 continue;
             }
             TokenKind::Ident(ident) => match *ident {
-                "do" => {
+                "do" if is_key(&tokens, i) => scope.body_is_one_statement(),
+                "do" | "fn" if !is_atom_or_field(&tokens, i) => {
                     scope.on_open_delimiter();
                 }
-                "end" => {
+                "end" if !is_key(&tokens, i) && !is_atom_or_field(&tokens, i) => {
+                    scope.close_statements(tok.start as usize, &mut facts);
                     scope.on_close_delimiter(tok.end as usize, &mut facts);
                 }
                 "defmodule" | "defprotocol" | "defimpl" => {
@@ -130,7 +156,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         continue;
                     }
                 }
-                "def" | "defp" | "defmacro" | "defguard" | "defdelegate" => {
+                "def" | "defp" | "defmacro" | "defmacrop" | "defguard" | "defguardp"
+                | "defdelegate" => {
                     let start_byte = tok.start;
                     let mut j = i + 1;
                     while j < tokens.len() && tokens[j].kind == TokenKind::Newline {
@@ -139,6 +166,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     if j < tokens.len() {
                         if let TokenKind::Ident(fn_name) = tokens[j].kind {
                             scope.open_definition(fn_name, start_byte as usize, true, &mut facts);
+                            // Neither form takes a `do` block.
+                            if matches!(*ident, "defguard" | "defguardp" | "defdelegate") {
+                                scope.body_is_one_statement();
+                            }
                             scope.on_word(fn_name);
                             i = j + 1;
                             continue;
