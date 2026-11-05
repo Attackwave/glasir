@@ -570,7 +570,7 @@ pub fn parse_java(src: &str) -> FileFacts {
                                 ok = true;
                                 break;
                             }
-                            TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                            TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                             _ => k += 1,
                         }
                     }
@@ -848,7 +848,7 @@ pub fn parse_csharp(src: &str) -> FileFacts {
                                     ok = true;
                                     break;
                                 }
-                                TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                                TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                                 _ => k += 1,
                             }
                         }

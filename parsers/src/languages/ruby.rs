@@ -35,6 +35,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut lexer = Lexer::new(src, style);
     lexer.regexes = true;
     lexer.ruby_literals = true;
+    lexer.multi_line_quotes = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -69,7 +70,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 expression_start = true;
             }
             TokenKind::Symbol('}') => scope.on_close_delimiter(tok.end as usize, &mut facts),
-            TokenKind::Symbol('=') | TokenKind::Symbol('(') | TokenKind::Symbol(',') => {
+            TokenKind::Symbol('=' | '(' | ',') | TokenKind::DoubleSymbol("||" | "&&") => {
                 expression_start = true;
                 scope.had_receiver = false;
             }

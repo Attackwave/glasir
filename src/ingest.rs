@@ -649,7 +649,7 @@ fn prepare_facts(
     let lang = Lang::from_path(path);
     let mut modules: HashMap<&str, String> = HashMap::new();
     let mut names: HashMap<&str, (String, &str)> = HashMap::new();
-    let mut bases: Vec<&str> = Vec::new();
+    let mut bases: Vec<(&str, u32)> = Vec::new();
     if let Some(lang) = lang {
         for import in &facts.imports {
             match import {
@@ -663,13 +663,42 @@ fn prepare_facts(
                         names.entry(local).or_insert((t, name));
                     }
                 }
-                crate::imports::Import::Base(module) => bases.push(module),
+                crate::imports::Import::Base { module, at } => bases.push((module, *at)),
             }
         }
     }
-    bases.sort_unstable();
-    bases.dedup();
-    let inherited = (!bases.is_empty()).then(|| format!("@{}", bases.join("+")));
+    // Who declares each base: the innermost definition around the declaration.
+    let owners: Vec<(&str, (u32, u32))> = bases
+        .iter()
+        .map(|&(module, at)| {
+            let around = facts
+                .ranges
+                .iter()
+                .map(|(_, span)| *span)
+                .filter(|s| s.0 <= at && at <= s.1)
+                .min_by_key(|s| s.1 - s.0);
+            (module, around.unwrap_or((0, u32::MAX)))
+        })
+        .collect();
+    let mut spans_of: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
+    if !owners.is_empty() {
+        for (name, span) in &facts.ranges {
+            spans_of.entry(name).or_default().push(*span);
+        }
+    }
+    // A caller's bases. Several definitions may share its name, and then all
+    // their bases count: tier 3 links only a name exactly one of them defines.
+    let inherited_by = |caller: &str| -> Option<String> {
+        let spans = spans_of.get(caller)?;
+        let mut modules: Vec<&str> = owners
+            .iter()
+            .filter(|(_, o)| spans.iter().any(|s| o.0 <= s.0 && s.1 <= o.1))
+            .map(|&(module, _)| module)
+            .collect();
+        modules.sort_unstable();
+        modules.dedup();
+        (!modules.is_empty()).then(|| format!("@{}", modules.join("+")))
+    };
 
     let mut edges: Vec<(NodeId, Edge)> = Vec::with_capacity(facts.calls.len());
     for (i, (caller, callee, has_receiver)) in facts.calls.iter().enumerate() {
@@ -679,6 +708,7 @@ fn prepare_facts(
         // which file: tier 3 then links it there instead of refusing a name
         // several files define.
         let module = facts.call_modules.get(i).and_then(Option::as_deref);
+        let inherited = inherited_by(caller);
         let in_base = matches!(module, Some("super" | "base" | "parent")) && inherited.is_some();
         let imported = if in_base {
             inherited

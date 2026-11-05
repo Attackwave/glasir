@@ -6930,6 +6930,17 @@ fn demo_workflows() {
 /// file: every name below is defined twice, so without that the call is
 /// ambiguous and links nowhere.
 fn demo_imports() {
+    // An opener on every line must not read to the end of the file each time.
+    let started = std::time::Instant::now();
+    let flood = "class a,\n".repeat(20_000);
+    use parse_ast::Lang;
+    for lang in [Lang::Php, Lang::Dart, Lang::Ruby, Lang::Elixir] {
+        crate::imports::read(lang, &flood);
+        crate::imports::read(lang, &flood.replace("class a,", "import a ["));
+        crate::imports::read(lang, &flood.replace("class a,", "include a,"));
+    }
+    assert!(started.elapsed().as_secs() < 20, "{:?}", started.elapsed());
+
     let dir = std::env::temp_dir().join(format!("glasir-imports-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
     for (file, text) in [
@@ -7060,6 +7071,63 @@ fn demo_imports() {
         (
             "in/twin.php",
             "<?php\nclass PayTwin {\n  public static function mine($x) { return $x; }\n}\n",
+        ),
+        // Bases belong to their class, not to the file.
+        (
+            "in/pair.php",
+            "<?php\nclass First extends PayBase {\n  public function run_first($x) { return $this->fetch($x); }\n}\nclass Second extends PayOther {\n  public function run_second($x) { return $this->fetch($x); }\n}\n",
+        ),
+        (
+            "in/only.ex",
+            "defmodule Shop.Only do\n  import Shop.Plan, only: [build: 1]\n  def go(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/except.ex",
+            "defmodule Shop.Except do\n  import Shop.Route, except: [build: 1]\n  def go(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/wide.php",
+            "<?php\nclass Wide\n    extends PayBase\n    implements Thing {\n  public function run_wide($x) { return $this->fetch($x); }\n}\n",
+        ),
+        (
+            "in/wide.ex",
+            "defmodule Shop.Wide do\n  import Shop.Plan, only: [\n    build: 1\n  ]\n  def go_wide(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/group.ex",
+            "defmodule Shop.Group do\n  import Shop.{Plan}\n  def go_group(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/wide.rb",
+            "class WideSold\n  include Unknown,\n    Priced\n  def bill_wide\n    price()\n  end\nend\n",
+        ),
+        (
+            "in/wide_base.dart",
+            "class WideBase {\n  void pull() {}\n}\n",
+        ),
+        (
+            "in/wide_other.dart",
+            "class WideOther {\n  void pull() {}\n}\n",
+        ),
+        (
+            "in/stop.dart",
+            "class Stopped extends WideBase {\n  // extends WideOther\n  void go_stop() {\n    pull();\n  }\n}\n",
+        ),
+        (
+            "in/wide.dart",
+            "class Wide<T extends WideOther<int>>\n    extends WideBase {\n  void go_wide() {\n    pull();\n  }\n}\n",
+        ),
+        (
+            "in/left_base.rb",
+            "class LeftBase\n  def shared\n    1\n  end\nend\n",
+        ),
+        (
+            "in/right_other.rb",
+            "class RightOther\n  def shared\n    2\n  end\nend\n",
+        ),
+        (
+            "in/nest.rb",
+            "module Wrap\n  class Left < LeftBase\n    def go_left\n      shared()\n    end\n  end\n  class Right\n    def go_right\n      shared()\n    end\n  end\nend\n",
         ),
         (
             "in/priced.rb",
@@ -7228,6 +7296,26 @@ fn demo_imports() {
         ("in/child.php#run", "in/other.php#fetch", false),
         ("in/child.php#own", "in/child.php#mine", true),
         ("in/child.php#own", "in/twin.php#mine", false),
+        ("in/nest.rb#go_left", "in/left_base.rb#shared", true),
+        ("in/nest.rb#go_right", "in/left_base.rb#shared", false),
+        ("in/pair.php#run_first", "in/base.php#fetch", true),
+        ("in/pair.php#run_first", "in/other.php#fetch", false),
+        ("in/pair.php#run_second", "in/other.php#fetch", true),
+        ("in/pair.php#run_second", "in/base.php#fetch", false),
+        ("in/only.ex#go", "in/plan.ex#build", true),
+        ("in/only.ex#go", "in/route.ex#build", false),
+        ("in/except.ex#go", "in/route.ex#build", false),
+        ("in/wide.php#run_wide", "in/base.php#fetch", true),
+        ("in/wide.php#run_wide", "in/other.php#fetch", false),
+        ("in/wide.ex#go_wide", "in/plan.ex#build", true),
+        ("in/wide.ex#go_wide", "in/route.ex#build", false),
+        ("in/group.ex#go_group", "in/plan.ex#build", true),
+        ("in/group.ex#go_group", "in/route.ex#build", false),
+        ("in/wide.rb#bill_wide", "in/priced.rb#price", true),
+        ("in/wide.rb#bill_wide", "in/cheap.rb#price", false),
+        ("in/stop.dart#go_stop", "in/wide_base.dart#pull", true),
+        ("in/wide.dart#go_wide", "in/wide_base.dart#pull", true),
+        ("in/wide.dart#go_wide", "in/wide_other.dart#pull", false),
         ("in/sold.rb#bill", "in/priced.rb#price", true),
         ("in/sold.rb#bill", "in/cheap.rb#price", false),
         ("in/both.php#go", "in/extra.php#helper", true),

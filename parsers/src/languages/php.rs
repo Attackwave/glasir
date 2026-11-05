@@ -7,6 +7,8 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.multi_line_quotes = true;
+    lexer.hash_attributes = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

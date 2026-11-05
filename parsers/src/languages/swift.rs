@@ -27,6 +27,7 @@ fn computed_property<'a>(tokens: &[Token<'a>], i: usize) -> Option<&'a str> {
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.nested_comments = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

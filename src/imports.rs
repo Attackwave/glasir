@@ -26,8 +26,9 @@ pub enum Import {
         name: String,
     },
     /// `class A extends B`, a mixin, Elixir's `import B`: a name the file does
-    /// not define may come from the module `B`.
-    Base(String),
+    /// not define may come from the module `B`, for the definition around the
+    /// byte `at`.
+    Base { module: String, at: u32 },
 }
 
 /// The import statements of one file.
@@ -46,29 +47,98 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
     }
 }
 
+/// Where `slice`, a part of `src`, begins.
+fn offset(src: &str, slice: &str) -> u32 {
+    (slice.as_ptr() as usize).saturating_sub(src.as_ptr() as usize) as u32
+}
+
 /// The last segment of a class named in code: `\\A\\B`, `A::B`, `B<T>` are `B`.
-fn base(written: &str) -> Option<Import> {
+fn base(src: &str, written: &str) -> Option<Import> {
     let name = written.trim().split('<').next()?.trim();
     let name = name.rsplit(['\\', ':']).next()?;
     let valid = name.starts_with(|c: char| c.is_uppercase())
         && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    valid.then(|| Import::Base(name.to_string()))
+    valid.then(|| Import::Base {
+        module: name.to_string(),
+        at: offset(src, written),
+    })
+}
+
+/// How far a statement or a class head is followed: a file with an opener on
+/// every line must not make each of them read to its end.
+const STATEMENT_LINES: usize = 64;
+
+/// `first`, a line of `src`, with the lines that continue it: after a trailing
+/// comma or inside an open `[`.
+fn statement<'a>(src: &'a str, first: &'a str) -> &'a str {
+    let start = offset(src, first) as usize;
+    let mut end = start;
+    let mut brackets = 0i64;
+    for line in src
+        .get(start..)
+        .unwrap_or("")
+        .split_inclusive('\n')
+        .take(STATEMENT_LINES)
+    {
+        end += line.len();
+        brackets += line.matches('[').count() as i64 - line.matches(']').count() as i64;
+        if brackets <= 0 && !line.trim_end().ends_with(',') {
+            return src.get(start..end).map_or(first, str::trim_end);
+        }
+    }
+    first
+}
+
+/// The bases a class head names, from the `class` at `head` to its `{` or `;`:
+/// what follows a word of `open` until a word of `close`. A bound inside
+/// `<…>`, as in `A<T extends B>`, is not one.
+fn head_bases(src: &str, head: &str, open: &[&str], close: &[&str]) -> Vec<Import> {
+    let start = offset(src, head) as usize;
+    let rest = src.get(start..).unwrap_or("");
+    let lines = rest.split_inclusive('\n').take(STATEMENT_LINES);
+    let rest = &rest[..lines.map(str::len).sum()];
+    let rest = &rest[..rest.find(['{', ';']).unwrap_or(rest.len())];
+    let mut out = Vec::new();
+    let mut angles = 0i32;
+    let mut reading = false;
+    for word in rest.split_whitespace() {
+        if angles == 0 {
+            if open.contains(&word) {
+                reading = true;
+                continue;
+            }
+            if close.contains(&word) {
+                reading = false;
+            }
+            if reading {
+                out.extend(base(src, word.trim_end_matches(',')));
+            }
+        }
+        angles += word.matches('<').count() as i32 - word.matches('>').count() as i32;
+    }
+    out
 }
 
 /// `class A extends B`, and `use C, D;` inside a class body.
 fn php(src: &str) -> Vec<Import> {
     let mut out = Vec::new();
     for line in src.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix("use ") {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("use ") {
             if line.starts_with(char::is_whitespace) {
-                let names = rest.split([';', '{']).next().unwrap_or("");
-                out.extend(names.split(',').filter_map(base));
+                let names = statement(src, rest).split([';', '{']).next().unwrap_or("");
+                out.extend(names.split(',').filter_map(|n| base(src, n)));
             }
-        } else if let Some((_, rest)) = line
-            .split_once(" extends ")
-            .filter(|(head, _)| head.contains("class "))
+        } else if !trimmed.starts_with(['*', '/', '#'])
+            && trimmed.split_whitespace().any(|w| w == "class")
         {
-            out.extend(base(rest.split_whitespace().next().unwrap_or("")));
+            let from = trimmed.find("class").unwrap_or(0);
+            out.extend(head_bases(
+                src,
+                &trimmed[from..],
+                &["extends"],
+                &["implements"],
+            ));
         }
     }
     out
@@ -82,11 +152,12 @@ fn ruby(src: &str) -> Vec<Import> {
             .strip_prefix("class ")
             .and_then(|rest| rest.split_once(" < "))
         {
-            out.extend(base(parent.split_whitespace().next().unwrap_or("")));
+            out.extend(base(src, parent.split_whitespace().next().unwrap_or("")));
         }
         for keyword in ["include ", "extend ", "prepend "] {
             if let Some(names) = line.strip_prefix(keyword) {
-                out.extend(names.split(',').filter_map(base));
+                let names = statement(src, names);
+                out.extend(names.split(',').filter_map(|n| base(src, n)));
             }
         }
     }
@@ -97,16 +168,19 @@ fn ruby(src: &str) -> Vec<Import> {
 fn dart(src: &str) -> Vec<Import> {
     let mut out = Vec::new();
     for line in src.lines().map(str::trim) {
-        if !(line.contains("class ") || line.starts_with("mixin ")) {
+        if line.starts_with(['*', '/']) {
             continue;
         }
-        let head = line.split(['{', ';']).next().unwrap_or("");
-        let head = head.split(" implements ").next().unwrap_or("");
-        for keyword in [" extends ", " with ", " on "] {
-            if let Some((_, rest)) = head.split_once(keyword) {
-                let rest = rest.split(" with ").next().unwrap_or("");
-                out.extend(rest.split(',').filter_map(base));
-            }
+        let head = line
+            .find("class ")
+            .or(line.starts_with("mixin ").then_some(0));
+        if let Some(head) = head {
+            out.extend(head_bases(
+                src,
+                &line[head..],
+                &["extends", "with", "on"],
+                &["implements"],
+            ));
         }
     }
     out
@@ -133,6 +207,7 @@ fn elixir(src: &str) -> Vec<Import> {
     let mut lines = src.lines();
     let mut in_heredoc = false;
     let mut bases = Vec::new();
+    let mut names_imported = Vec::new();
     while let Some(line) = lines.next() {
         // A `@doc` example shows an alias its module does not have.
         if line.matches("\"\"\"").count() % 2 == 1 {
@@ -143,12 +218,42 @@ fn elixir(src: &str) -> Vec<Import> {
             continue;
         }
         if let Some(rest) = line.trim().strip_prefix("import ") {
-            let spec = rest.split(',').next().unwrap_or("").trim();
-            if spec
+            let rest = statement(src, rest);
+            if let Some((prefix, names)) = rest.split_once(".{") {
+                let names = names.split('}').next().unwrap_or("");
+                for name in names.split(',').map(str::trim) {
+                    bases.push(Import::Base {
+                        module: format!("{}.{name}", prefix.trim()),
+                        at: offset(src, name),
+                    });
+                }
+                continue;
+            }
+            let (spec, options) = rest.split_once(',').unwrap_or((rest, ""));
+            let spec = spec.trim();
+            let plain = spec
                 .chars()
-                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
-            {
-                bases.push(Import::Base(spec.to_string()));
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_');
+            let only = options.split_once("only: [").map(|(_, names)| names);
+            match only {
+                Some(names) if plain => {
+                    let names = names.split(']').next().unwrap_or("");
+                    for name in names.split(',').filter_map(|n| n.split(':').next()) {
+                        let name = name.trim().to_string();
+                        names_imported.push(Import::Name {
+                            local: name.clone(),
+                            spec: spec.to_string(),
+                            name,
+                        });
+                    }
+                }
+                // Options are the reader's limit: what they exclude, or what
+                // the next line says, is not known here.
+                None if plain && !rest.contains(',') => bases.push(Import::Base {
+                    module: spec.to_string(),
+                    at: offset(src, spec),
+                }),
+                _ => {}
             }
             continue;
         }
@@ -176,6 +281,7 @@ fn elixir(src: &str) -> Vec<Import> {
         push(spec, &alias);
     }
     out.append(&mut bases);
+    out.append(&mut names_imported);
     out
 }
 

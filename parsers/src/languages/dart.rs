@@ -27,6 +27,8 @@ fn after_type_arguments(tokens: &[Token<'_>], i: usize) -> Option<usize> {
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.nested_comments = true;
+    lexer.interpolation = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -142,7 +144,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     ok = true;
                                     break;
                                 }
-                                TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                                TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                                 _ => k += 1,
                             }
                         }
@@ -223,7 +225,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             }
                         }
                     }
-                    "library" | "part" => {
+                    // Both are plain names too: `element.library.uri`.
+                    "library" | "part"
+                        if scope.depth == 0
+                            && matches!(
+                                tokens.get(i + 1).map(|t| &t.kind),
+                                Some(TokenKind::Ident(_))
+                            ) =>
+                    {
                         let start_byte = tok.start;
                         let mut j = i + 1;
                         if j < tokens.len() && matches!(tokens[j].kind, TokenKind::Ident("of")) {

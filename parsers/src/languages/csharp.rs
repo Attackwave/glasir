@@ -135,7 +135,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     ok = true;
                                     break;
                                 }
-                                TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                                TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                                 _ => k += 1,
                             }
                         }
