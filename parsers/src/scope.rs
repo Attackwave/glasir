@@ -336,9 +336,16 @@ impl ScopeStack {
             .last()
             .map(|(n, _)| n.clone())
             .unwrap_or_else(|| "<module>".to_string());
+        let owner = self
+            .open
+            .iter()
+            .rev()
+            .find(|o| o.name == caller)
+            .map(|o| o.start_byte as u32);
         facts
             .calls
             .push((caller, callee.to_string(), self.had_receiver));
+        facts.call_owners.push(owner);
         facts.call_modules.push(self.module_receiver.take());
         self.had_receiver = false;
         self.module_receiver = None;

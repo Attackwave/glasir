@@ -8,7 +8,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
     lexer.multi_line_quotes = true;
-    lexer.hash_attributes = true;
+    lexer.php = true;
+    lexer.starts_in_page();
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

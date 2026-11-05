@@ -668,8 +668,11 @@ fn prepare_facts(
         }
     }
     // Who declares each base: the innermost definition around the declaration.
+    // No real file comes near this many, and each one costs a walk of `ranges`.
+    const MOST_BASES: usize = 4096;
     let owners: Vec<(&str, (u32, u32))> = bases
         .iter()
+        .take(MOST_BASES)
         .map(|&(module, at)| {
             let around = facts
                 .ranges
@@ -686,19 +689,26 @@ fn prepare_facts(
             spans_of.entry(name).or_default().push(*span);
         }
     }
-    // A caller's bases. Several definitions may share its name, and then all
-    // their bases count: tier 3 links only a name exactly one of them defines.
-    let inherited_by = |caller: &str| -> Option<String> {
+    // A caller's bases, for the definition making the call. Scanners that do
+    // not say which one leave every definition of the name in play: tier 3
+    // links only a name exactly one of them defines.
+    let inherited_by = |caller: &str, owner: Option<u32>| -> Option<String> {
         let spans = spans_of.get(caller)?;
         let mut modules: Vec<&str> = owners
             .iter()
-            .filter(|(_, o)| spans.iter().any(|s| o.0 <= s.0 && s.1 <= o.1))
+            .filter(|(_, o)| {
+                spans
+                    .iter()
+                    .filter(|s| owner.is_none_or(|start| s.0 == start))
+                    .any(|s| o.0 <= s.0 && s.1 <= o.1)
+            })
             .map(|&(module, _)| module)
             .collect();
         modules.sort_unstable();
         modules.dedup();
         (!modules.is_empty()).then(|| format!("@{}", modules.join("+")))
     };
+    let mut inherited_of: HashMap<(&str, Option<u32>), Option<String>> = HashMap::new();
 
     let mut edges: Vec<(NodeId, Edge)> = Vec::with_capacity(facts.calls.len());
     for (i, (caller, callee, has_receiver)) in facts.calls.iter().enumerate() {
@@ -708,7 +718,11 @@ fn prepare_facts(
         // which file: tier 3 then links it there instead of refusing a name
         // several files define.
         let module = facts.call_modules.get(i).and_then(Option::as_deref);
-        let inherited = inherited_by(caller);
+        let owner = facts.call_owners.get(i).copied().flatten();
+        let inherited = inherited_of
+            .entry((caller, owner))
+            .or_insert_with(|| inherited_by(caller, owner))
+            .clone();
         let in_base = matches!(module, Some("super" | "base" | "parent")) && inherited.is_some();
         let imported = if in_base {
             inherited

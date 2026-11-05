@@ -116,8 +116,12 @@ pub struct Lexer<'a, 's> {
     pub ruby_literals: bool,
     /// `'…'` may hold line breaks: PHP and Ruby.
     pub multi_line_quotes: bool,
-    /// `#[Attr]` is code here, though `#` starts a comment.
-    pub hash_attributes: bool,
+    /// PHP: `#[Attr]` is code though `#` starts a comment, `<<<TEXT` holds
+    /// lines of text, and what lies outside `<?php … ?>` is the page.
+    pub php: bool,
+    in_page: bool,
+    /// `"""…\"""`: a backslash in a triple-quoted string escapes nothing.
+    pub raw_triple_quotes: bool,
     /// `"${f("x")}"`: the quotes inside `${…}` end nothing.
     pub interpolation: bool,
     interpolation_depth: u32,
@@ -137,7 +141,9 @@ impl<'a, 's> Lexer<'a, 's> {
             regexes: false,
             ruby_literals: false,
             multi_line_quotes: false,
-            hash_attributes: false,
+            php: false,
+            in_page: false,
+            raw_triple_quotes: false,
             interpolation: false,
             interpolation_depth: 0,
             heredocs: Vec::new(),
@@ -208,6 +214,7 @@ impl<'a, 's> Lexer<'a, 's> {
     }
 
     fn next_token_raw(&mut self) -> Token<'a> {
+        self.skip_page();
         self.skip_whitespace_except_newline();
 
         if self.pos >= self.bytes.len() {
@@ -262,6 +269,21 @@ impl<'a, 's> Lexer<'a, 's> {
             }
         }
 
+        if self.php {
+            if self.starts_with("?>") {
+                self.pos += 2;
+                self.in_page = true;
+                return Token {
+                    kind: TokenKind::Symbol(';'),
+                    start: start as u32,
+                    end: self.pos as u32,
+                };
+            }
+            if let Some(token) = self.lex_php_heredoc(start) {
+                return token;
+            }
+        }
+
         // `$'` and `` $` `` are variables: their quote opens nothing.
         if self.ruby_literals
             && self.bytes[self.pos] == b'$'
@@ -292,7 +314,7 @@ impl<'a, 's> Lexer<'a, 's> {
 
         // Check for line comments
         for &line_pfx in self.comment_style.line_comment_prefix {
-            if self.starts_with(line_pfx) && !(self.hash_attributes && self.starts_with("#[")) {
+            if self.starts_with(line_pfx) && !(self.php && self.starts_with("#[")) {
                 while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                     self.pos += 1;
                 }
@@ -656,15 +678,35 @@ impl<'a, 's> Lexer<'a, 's> {
         }
     }
 
+    /// The tokens of the file, up to where its brackets nest past
+    /// `DEEPEST_BRACKETS`. A scanner looks ahead to a closing bracket, so that
+    /// depth bounds every such scan: `a(` repeated would cost the square of
+    /// the file's length.
     pub fn collect_all_tokens(&mut self) -> Vec<Token<'a>> {
+        const DEEPEST_BRACKETS: u32 = 1024;
         let mut tokens = Vec::new();
+        let mut depth = 0u32;
         loop {
             let tok = self.next_token();
-            if tok.kind == TokenKind::Eof {
-                tokens.push(tok);
+            match tok.kind {
+                TokenKind::Symbol('(' | '[' | '{') => depth += 1,
+                TokenKind::Symbol(')' | ']' | '}') => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth > DEEPEST_BRACKETS {
+                let end = tok.start;
+                tokens.push(Token {
+                    kind: TokenKind::Eof,
+                    start: end,
+                    end,
+                });
                 break;
             }
+            let last = tok.kind == TokenKind::Eof;
             tokens.push(tok);
+            if last {
+                break;
+            }
         }
         tokens
     }
@@ -789,6 +831,11 @@ impl<'a, 's> Lexer<'a, 's> {
         if matches!(self.bytes.get(start + 1), Some(b'/' | b'*')) || !self.value_may_start(start) {
             return None;
         }
+        // `<a b={c} />` closes a tag.
+        let before = self.src.get(..start).unwrap_or("").trim_end();
+        if self.bytes.get(start + 1) == Some(&b'>') && before.ends_with('}') {
+            return None;
+        }
         // `= /` at a line's end opens an extended regexp, never a division.
         let lines = self.ruby_literals && self.bytes.get(start + 1) == Some(&b'\n');
         let mut i = start + 1;
@@ -870,6 +917,60 @@ impl<'a, 's> Lexer<'a, 's> {
         })
     }
 
+    /// Whether the file mixes a page with code: then lexing starts in the page.
+    pub fn starts_in_page(&mut self) {
+        self.in_page = self.php && self.src.contains("<?");
+    }
+
+    /// Past the page at `pos`, to the code after its next `<?php` or `<?=`.
+    fn skip_page(&mut self) {
+        while self.in_page {
+            let Some(open) = self.rest().find("<?") else {
+                self.pos = self.bytes.len();
+                return;
+            };
+            self.pos += open + 2;
+            if self.bytes[self.pos..].starts_with(b"php") {
+                self.pos += 3;
+                self.in_page = false;
+            } else if self.bytes[self.pos..].starts_with(b"=") {
+                self.pos += 1;
+                self.in_page = false;
+            }
+        }
+    }
+
+    /// `<<<TEXT`, `<<<'TEXT'`: its lines run to the one that starts with the
+    /// tag, or to the end of the file.
+    fn lex_php_heredoc(&mut self, start: usize) -> Option<Token<'a>> {
+        let rest = self.rest().strip_prefix("<<<")?.trim_start_matches(' ');
+        let rest = rest.strip_prefix(['\'', '"']).unwrap_or(rest);
+        let tag = &rest[..rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len())];
+        if tag.is_empty() {
+            return None;
+        }
+        let mut end = self.bytes.len();
+        for line in self.rest().split_inclusive('\n').skip(1) {
+            let at = line.as_ptr() as usize - self.src.as_ptr() as usize;
+            let text = line.trim_start();
+            let closes = text
+                .strip_prefix(tag)
+                .is_some_and(|after| !after.starts_with(|c: char| c.is_alphanumeric() || c == '_'));
+            if closes {
+                end = at + (line.len() - text.len()) + tag.len();
+                break;
+            }
+        }
+        self.pos = end;
+        Some(Token {
+            kind: TokenKind::StringLit(self.slice(start, end)),
+            start: start as u32,
+            end: end as u32,
+        })
+    }
+
     /// The string whose three quotes open at `pos`.
     fn triple_quoted(&mut self, start: usize, interpolates: bool) -> Token<'a> {
         // Compared as bytes, never as `&str`: slicing a string at an
@@ -899,7 +1000,7 @@ impl<'a, 's> Lexer<'a, 's> {
             if interpolates && self.skip_interpolation() {
                 continue;
             }
-            if self.bytes[self.pos] == b'\\' {
+            if self.bytes[self.pos] == b'\\' && !self.raw_triple_quotes {
                 if self.pos + 1 < self.bytes.len() {
                     self.pos += 2;
                 } else {
@@ -1186,6 +1287,11 @@ pub fn keep_first_branches(tokens: &mut Vec<Token<'_>>) {
                                 let first = c.first.unwrap_or_default();
                                 outer.net[0] += first[0];
                                 outer.net[1] += first[1];
+                                // The smaller list moves: nesting must not
+                                // copy the same marks once per level.
+                                if outer.in_branch.len() < c.kept.len() {
+                                    std::mem::swap(&mut outer.in_branch, &mut c.kept);
+                                }
                                 outer.in_branch.append(&mut c.kept);
                             }
                         }
@@ -1227,10 +1333,36 @@ pub fn keep_first_branches(tokens: &mut Vec<Token<'_>>) {
     });
 }
 
+/// How many tokens a scan for anything but a closing bracket reads: `a<` on
+/// every line must not read to the end of the file each time.
+pub const LOOKAHEAD: usize = 1024;
+
+/// Where the line holding a byte starts, for bytes asked in ascending order.
+#[derive(Default)]
+pub struct LineStart {
+    scanned: usize,
+    start: usize,
+}
+
+impl LineStart {
+    pub fn of(&mut self, src: &str, at: usize) -> usize {
+        let bytes = src.as_bytes();
+        let upto = at.min(bytes.len());
+        if let Some(gap) = bytes.get(self.scanned..upto) {
+            if let Some(p) = gap.iter().rposition(|&b| b == b'\n') {
+                self.start = self.scanned + p + 1;
+            }
+            self.scanned = upto;
+        }
+        self.start
+    }
+}
+
 /// The token after a `<` closing at `k` or later, one level in.
 pub fn after_angles(tokens: &[Token<'_>], mut k: usize) -> usize {
     let mut depth = 1;
-    while depth > 0 && k < tokens.len() {
+    let last = tokens.len().min(k.saturating_add(LOOKAHEAD));
+    while depth > 0 && k < last {
         match tokens[k].kind {
             TokenKind::Symbol('<') => depth += 1,
             TokenKind::Symbol('>') => depth -= 1,

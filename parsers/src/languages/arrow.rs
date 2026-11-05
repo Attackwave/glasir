@@ -20,6 +20,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut left: Option<(String, u32, u32)> = None;
     let mut i = 0;
 
+    let mut defined = std::collections::HashSet::new();
     while i < tokens.len() {
         match &tokens[i].kind {
             TokenKind::Newline => {
@@ -34,7 +35,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     i += 1;
                     continue;
                 }
-                if !facts.defines.contains(&(*ident).to_string()) {
+                if defined.insert(*ident) {
                     facts.add_definition(*ident, (tokens[i].start, tokens[i].end), None);
                 }
                 left = Some(((*ident).to_string(), tokens[i].start, tokens[i].end));
@@ -67,7 +68,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     (left.clone(), tokens.get(j).map(|t| &t.kind))
                 {
                     if calls.allows(to) {
-                        if !facts.defines.contains(&(*to).to_string()) {
+                        if defined.insert(*to) {
                             facts.add_definition(*to, (tokens[j].start, tokens[j].end), None);
                         }
                         facts.add_call(from, (*to).to_string(), false);

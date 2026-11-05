@@ -6931,15 +6931,26 @@ fn demo_workflows() {
 /// ambiguous and links nowhere.
 fn demo_imports() {
     // An opener on every line must not read to the end of the file each time.
-    let started = std::time::Instant::now();
-    let flood = "class a,\n".repeat(20_000);
     use parse_ast::Lang;
-    for lang in [Lang::Php, Lang::Dart, Lang::Ruby, Lang::Elixir] {
-        crate::imports::read(lang, &flood);
-        crate::imports::read(lang, &flood.replace("class a,", "import a ["));
-        crate::imports::read(lang, &flood.replace("class a,", "include a,"));
-    }
-    assert!(started.elapsed().as_secs() < 20, "{:?}", started.elapsed());
+    let names = |lang, src: &str| {
+        let found = crate::imports::read(lang, src);
+        found.len()
+    };
+    let line = |n: usize| format!("class A\n{}extends B {{\n", "\n".repeat(n));
+    assert_eq!(names(Lang::Php, &line(50)), 1);
+    assert_eq!(names(Lang::Php, &line(70)), 0);
+    let list = |n: usize| {
+        format!(
+            "class A\n  include C,\n{}    D\nend\n",
+            "    E,\n".repeat(n)
+        )
+    };
+    assert_eq!(names(Lang::Ruby, &list(50)), 52);
+    assert_eq!(
+        names(Lang::Ruby, &list(70)),
+        1,
+        "past the bound only the first line"
+    );
 
     let dir = std::env::temp_dir().join(format!("glasir-imports-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -7108,6 +7119,10 @@ fn demo_imports() {
         (
             "in/wide_other.dart",
             "class WideOther {\n  void pull() {}\n}\n",
+        ),
+        (
+            "in/same.php",
+            "<?php\nclass TwinA extends PayBase {\n  public function twin($x) { return $this->fetch($x); }\n}\nclass TwinB extends PayOther {\n  public function twin($x) { return $this->fetch($x); }\n}\n",
         ),
         (
             "in/stop.dart",
@@ -7313,6 +7328,8 @@ fn demo_imports() {
         ("in/group.ex#go_group", "in/route.ex#build", false),
         ("in/wide.rb#bill_wide", "in/priced.rb#price", true),
         ("in/wide.rb#bill_wide", "in/cheap.rb#price", false),
+        ("in/same.php#twin", "in/base.php#fetch", true),
+        ("in/same.php#twin", "in/other.php#fetch", true),
         ("in/stop.dart#go_stop", "in/wide_base.dart#pull", true),
         ("in/wide.dart#go_wide", "in/wide_base.dart#pull", true),
         ("in/wide.dart#go_wide", "in/wide_other.dart#pull", false),

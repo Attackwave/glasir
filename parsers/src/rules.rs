@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/41";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/42";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -1011,6 +1011,140 @@ mod tests {
             facts.defines
         );
         assert!(!facts.defines.iter().any(|d| d == "String"));
+    }
+
+    #[test]
+    fn a_php_page_and_its_text_are_not_code() {
+        let rules = RuleSet::load(None).unwrap();
+        for src in [
+            "<p>don't {</p>\n<?php\nfunction m() {\n  run();\n}\n?>\n<p>it's }</p>\n",
+            "<?php\nfunction m() {\n  x(<<<EOT\n  it's {\n  EOT);\n  run();\n}\n",
+            "<?php\nfunction m() {\n  x(<<<'A_B'\nA_BC {\nA_B\n);\n  run();\n}\n",
+            "<?php if ($a): ?><b>'</b><?= f() ?><i>'{</i><?php endif;\nfunction m() {\n  run();\n}\n",
+        ] {
+            let facts = rules.parse(Language::Php, src);
+            assert!(!facts.had_errors, "{src}");
+            assert!(
+                facts.calls.iter().any(|c| c.0 == "m" && c.1 == "run"),
+                "{src} {:?}",
+                facts.calls
+            );
+        }
+        let facts = rules.parse(Language::Php, "function m() {\n  run();\n}\n");
+        assert!(facts.calls.iter().any(|c| c.0 == "m"));
+        let page = rules.parse(Language::Php, "<?xml version=\"1\"?>\nfunction no() {}\n");
+        assert!(page.defines.is_empty(), "{:?}", page.defines);
+    }
+
+    #[test]
+    fn a_kotlin_raw_string_ends_after_a_backslash() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "fun m() {\n  x(\"\"\"C:\\\"\"\")\n  run()\n}\n";
+        let facts = rules.parse(Language::Kotlin, src);
+        assert!(facts.calls.iter().any(|c| c.0 == "m" && c.1 == "run"));
+        let python = rules.parse(
+            Language::Python,
+            "x = \"\"\"a\\\"\"\"\ndef f(): pass\n\"\"\"\n",
+        );
+        assert!(python.defines.is_empty(), "{:?}", python.defines);
+    }
+
+    #[test]
+    fn scans_stop_at_their_bounds() {
+        use crate::lexer::{after_angles, keep_first_branches, LineStart, Token, TokenKind};
+        let rules = RuleSet::load(None).unwrap();
+        // Past the deepest nesting the file ends for every scanner.
+        let src = format!(
+            "void a() {{\n  run();\n}}\n{}\nvoid b() {{\n}}\n",
+            "x(".repeat(1100)
+        );
+        let facts = rules.parse(Language::C, &src);
+        assert!(facts.defines.iter().any(|d| d == "a"));
+        assert!(!facts.defines.iter().any(|d| d == "b"));
+        let fine = format!(
+            "{}1{}\nvoid b() {{\n}}\n",
+            "(".repeat(1000),
+            ")".repeat(1000)
+        );
+        assert!(rules
+            .parse(Language::C, &fine)
+            .defines
+            .iter()
+            .any(|d| d == "b"));
+
+        let angle = |i| Token {
+            kind: TokenKind::Symbol('<'),
+            start: i,
+            end: i + 1,
+        };
+        let many: Vec<Token<'_>> = (0..5000).map(angle).collect();
+        assert_eq!(after_angles(&many, 10), 10 + crate::lexer::LOOKAHEAD);
+
+        let mut lines = LineStart::default();
+        let text = "ab\ncd\n\nef";
+        for at in 0..=text.len() {
+            let want = text[..at].rfind('\n').map_or(0, |n| n + 1);
+            assert_eq!(lines.of(text, at), want, "{at}");
+        }
+
+        // Nesting costs each mark one move, not one per level.
+        let src = format!(
+            "{}{}",
+            "#if\n{}\n".repeat(300_000),
+            "#endif\n".repeat(300_000)
+        );
+        let mut tokens = rules.tokens(Language::C, &src);
+        let started = std::time::Instant::now();
+        keep_first_branches(&mut tokens);
+        assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_jsx_tag_end_is_no_regexp() {
+        let rules = RuleSet::load(None).unwrap();
+        let language = Language::from_extension("tsx").unwrap();
+        let src = "const m = () => {\n  x(<p>{a ? <B c={d} /> : e}</p>);\n  run();\n};\n";
+        let facts = rules.parse(language, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+    }
+
+    #[test]
+    fn floods_cost_their_length() {
+        let rules = RuleSet::load(None).unwrap();
+        for (extensions, pattern) in [
+            (&["c", "cpp", "ts", "java", "dart", "cs"][..], "a.b("),
+            (&["kt", "ts", "dart", "cs"], "a<"),
+            (&["ts"], "a."),
+            (&["hs"], "get a "),
+            (&["cs", "cpp"], "const a "),
+            (&["py", "gd", "nim"], "a "),
+            (&["ml"], "let "),
+            (&["css"], "alias a.{"),
+            (&["css"], "."),
+            (&["html", "xml"], "<a"),
+            (&["html", "xml"], "<!--"),
+        ] {
+            for extension in extensions {
+                let language = Language::from_extension(extension).unwrap();
+                // The largest file the indexer reads.
+                let src = pattern.repeat((1 << 20) / pattern.len());
+                let started = std::time::Instant::now();
+                rules.parse(language, &src);
+                let took = started.elapsed();
+                assert!(took.as_secs() < 15, "{extension} {pattern:?} {took:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_css_rule_spans_its_block() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = ".a { .b { c: d } }\n.e { }\n.f { ";
+        let facts = rules.parse(Language::Css, src);
+        let end = |name: &str| facts.ranges.iter().find(|r| r.0 == name).map(|r| r.1 .1);
+        assert_eq!(end(".a"), Some(18));
+        assert_eq!(end(".b"), Some(16));
+        assert_eq!(end(".f"), Some(src.len() as u32 - 3));
     }
 
     #[test]

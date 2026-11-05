@@ -20,6 +20,9 @@ pub struct FileFacts {
     /// callee is the bare name every consumer already reads, and `charge ->
     /// process` must stay `process` however the call site spelled it.
     pub call_modules: Vec<Option<String>>,
+    /// Where the definition making each call starts, parallel to `calls`:
+    /// two classes of one file may share a method name.
+    pub call_owners: Vec<Option<u32>>,
     /// Error flag for malformed source.
     pub had_errors: bool,
     /// Macros this file defines whose body defines their first argument —
@@ -124,5 +127,6 @@ impl FileFacts {
         self.calls
             .push((caller.into(), callee.into(), has_receiver));
         self.call_modules.push(None);
+        self.call_owners.push(None);
     }
 }

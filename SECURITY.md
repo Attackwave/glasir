@@ -132,6 +132,10 @@ certificate are checked independently.
 
 Stated rather than discovered during an evaluation:
 
+- **Indexing cost per file is bounded, not free.** Files over 1 MiB are skipped,
+  and a file is read only up to where its brackets nest 1024 deep, so
+  definitions past that point are missing. A crafted file of that size can still
+  take seconds.
 - **No RBAC and no multi-tenancy.** A valid token reaches every tool and the
   whole tree; one process serves one tree.
 - **Token revocation is checked per request via the file's mtime.** On a
