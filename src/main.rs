@@ -6953,6 +6953,23 @@ fn demo_imports() {
             "app.ts",
             "import * as x from './lib/x';\nimport {\n  run as go,\n} from './lib/y';\n\nexport function start() {\n  x.run();\n  go();\n}\n",
         ),
+        // CommonJS: `twin.js` defines both names, so only the imports decide.
+        (
+            "cjs/utils.js",
+            "exports.trust = function () {};\nexports.etag = function () {};\n",
+        ),
+        (
+            "cjs/view.js",
+            "function View() {}\nmodule.exports = View;\n",
+        ),
+        (
+            "cjs/twin.js",
+            "function trust() {}\nfunction go() {}\nfunction etag() {}\nfunction View() {}\n",
+        ),
+        (
+            "cjs/app.js",
+            "var go = require('./utils').trust;\nvar View = require('./view')\n  , etag = require('./utils').etag;\n\nfunction set() {\n  go();\n  etag();\n  new View();\n}\n",
+        ),
         // Erlang names no import: a module is its file, wherever it lives.
         // `twin` is two files of one name, so a call into it stays refused.
         ("erl/lists.erl", "-module(lists).\nmap(F, L) -> F(L).\n"),
@@ -7039,6 +7056,13 @@ fn demo_imports() {
         ("main.go#main", "other/o.go#Do", false),
         ("app.ts#start", "lib/x.ts#run", true),
         ("app.ts#start", "lib/y.ts#run", true),
+        ("cjs/app.js#set", "cjs/utils.js#trust", true),
+        ("cjs/app.js#set", "cjs/view.js#View", true),
+        ("cjs/app.js#set", "cjs/utils.js#etag", true),
+        ("cjs/app.js#set", "cjs/twin.js#go", false),
+        ("cjs/app.js#set", "cjs/twin.js#etag", false),
+        ("cjs/app.js#set", "cjs/twin.js#trust", false),
+        ("cjs/app.js#set", "cjs/twin.js#View", false),
         ("erl/use.erl#go", "erl/lists.erl#map", true),
         ("erl/use.erl#go", "erl/other.erl#map", false),
         ("erl/use.erl#pair", "erl/a/twin.erl#f", false),

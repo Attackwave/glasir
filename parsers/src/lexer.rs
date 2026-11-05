@@ -816,6 +816,27 @@ impl<'a, 's> Lexer<'a, 's> {
     }
 }
 
+/// Whether the `#define` name at token `name` is a function-like macro with
+/// nothing after its parameters: the stub a build option leaves in place of
+/// the real function, and no definition of that name.
+pub fn is_empty_macro(tokens: &[Token<'_>], name: usize) -> bool {
+    let (Some(n), Some(open)) = (tokens.get(name), tokens.get(name + 1)) else {
+        return false;
+    };
+    if open.kind != TokenKind::Symbol('(') || open.start != n.end {
+        return false;
+    }
+    let mut k = name + 2;
+    while let Some(t) = tokens.get(k) {
+        match t.kind {
+            TokenKind::Symbol(')') => break,
+            TokenKind::Newline => return false,
+            _ => k += 1,
+        }
+    }
+    directive_end(tokens, name) == tokens.get(k).map_or(0, |t| t.end)
+}
+
 /// The end byte of the logical line a preprocessor directive starting at
 /// token `from` occupies: up to the first line break not escaped by `\`.
 pub fn directive_end(tokens: &[Token<'_>], from: usize) -> u32 {

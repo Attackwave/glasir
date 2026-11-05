@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/35";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/36";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -671,6 +671,61 @@ mod tests {
             .collect();
         sources.insert(name.to_owned(), transform(&sources[name]));
         RuleSet::from_sources(sources).unwrap()
+    }
+
+    #[test]
+    fn a_member_assigned_function_defines_and_a_relative_require_does_not() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "var u = require('./u');\n\
+                   var p = require('p');\n\
+                   exports.a = function (x) { b(); };\n\
+                   Foo.prototype.c = async (y) => { d(); };\n\
+                   res.e = function named() { f(); };\n\
+                   module.exports = function () {};\n\
+                   const last = 1;\n\
+                   kick();\n";
+        let facts = rules.parse(Language::JavaScript, src);
+        let defined = |n: &str| facts.defines.iter().any(|d| d == n);
+        for name in ["p", "a", "c", "e"] {
+            assert!(defined(name), "{name}: {:?}", facts.defines);
+        }
+        for name in ["u", "named", "exports"] {
+            assert!(!defined(name), "{name}: {:?}", facts.defines);
+        }
+        let caller = |callee: &str| {
+            facts
+                .calls
+                .iter()
+                .find(|c| c.1 == callee)
+                .map(|c| c.0.as_str())
+        };
+        assert_eq!(caller("b"), Some("a"));
+        assert_eq!(caller("d"), Some("c"));
+        assert_eq!(caller("f"), Some("e"));
+        // A semicolon ends a file-level statement, so `kick` is nobody's call.
+        assert_eq!(caller("kick"), Some("<module>"));
+    }
+
+    #[test]
+    fn an_empty_function_like_macro_is_no_definition() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "#define stub(a, b)\n\
+                   #define flag\n\
+                   #define spaced (1)\n\
+                   #define real(a) go(a)\n\
+                   #define long_one(a) \\\n  go(a)\n\
+                   int after(void) { return 0; }\n";
+        for language in [Language::C, Language::Cpp] {
+            let facts = rules.parse(language, src);
+            assert!(!facts.defines.iter().any(|d| d == "stub"), "{language:?}");
+            for name in ["flag", "spaced", "real", "long_one", "after"] {
+                assert!(
+                    facts.defines.iter().any(|d| d == name),
+                    "{language:?} {name}: {:?}",
+                    facts.defines
+                );
+            }
+        }
     }
 
     #[test]

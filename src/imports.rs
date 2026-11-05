@@ -380,12 +380,22 @@ fn javascript_statement(stmt: &str, out: &mut Vec<Import>) {
     } else if let Some(at) = stmt.find("require(") {
         // `const x = require('./y')`, `const { a, b: c } = require('./y')`.
         let lhs = stmt[..at].trim().trim_end_matches('=').trim();
-        let lhs = ["const ", "let ", "var "]
+        let lhs = ["const ", "let ", "var ", ", "]
             .iter()
             .find_map(|k| lhs.strip_prefix(k))
             .unwrap_or("");
-        let braces = lhs.replace(':', " as ");
-        (braces, quoted(&stmt[at..]))
+        let spec = quoted(&stmt[at..]);
+        if let (Some(spec), Some(name)) = (spec, require_member(&stmt[at..])) {
+            if !lhs.is_empty() && !lhs.contains(['{', ' ']) {
+                out.push(Import::Name {
+                    local: lhs.to_string(),
+                    spec: spec.to_string(),
+                    name: name.to_string(),
+                });
+            }
+            return;
+        }
+        (lhs.replace(':', " as "), spec)
     } else {
         return;
     };
@@ -418,9 +428,26 @@ fn javascript_statement(stmt: &str, out: &mut Vec<Import>) {
         // module when it exports an object of functions.
         out.push(Import::Module {
             alias: clause.to_string(),
+            spec: spec.clone(),
+        });
+        // The module's own export is usually called what it is bound to.
+        out.push(Import::Name {
+            local: clause.to_string(),
             spec,
+            name: clause.to_string(),
         });
     }
+}
+
+/// The `name` of `require('./y').name`, when the statement ends there.
+fn require_member(call: &str) -> Option<&str> {
+    let (_, rest) = call.split_once(')')?;
+    let rest = rest.strip_prefix('.')?;
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .unwrap_or(rest.len());
+    let tail = rest[end..].trim_start();
+    (end > 0 && (tail.is_empty() || tail.starts_with([';', ',']))).then(|| &rest[..end])
 }
 
 /// Where `spec`, imported from the root-relative `file`, lives in the tree:

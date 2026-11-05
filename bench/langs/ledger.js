@@ -24,3 +24,12 @@ function charge(owner, amount) {
 // matching one used to close the constant it belongs to — every call in the
 // body was then attributed to the file.
 const describeEntry = ({ owner, amount }) => formatEntry(owner, amount);
+
+// Assigned to a member, a function is named by the member.
+exports.settle = function (owner) {
+    return commitEntry(owner, 0);
+};
+
+Ledger.prototype.close = async (owner) => {
+    await refuse(owner, 0);
+};
