@@ -1,13 +1,43 @@
 //! Language-specific syntax; lexical and call rules come from the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, TokenKind};
+use crate::lexer::{after_angles, CommentStyle, Lexer, Token, TokenKind};
 use crate::scope::ScopeStack;
+
+/// The name in `[<T>] [Receiver<A>.]name`, and the token after it.
+fn declared_name<'a>(tokens: &[Token<'a>], mut j: usize) -> (Option<&'a str>, usize) {
+    if tokens
+        .get(j)
+        .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+    {
+        j = after_angles(tokens, j + 1);
+    }
+    let mut name = None;
+    while let Some(TokenKind::Ident(word)) = tokens.get(j).map(|t| &t.kind) {
+        name = Some(*word);
+        j += 1;
+        if tokens
+            .get(j)
+            .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+        {
+            j = after_angles(tokens, j + 1);
+        }
+        if tokens
+            .get(j)
+            .is_none_or(|t| t.kind != TokenKind::Symbol('.'))
+        {
+            break;
+        }
+        j += 1;
+    }
+    (name, j)
+}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
     lexer.nested_comments = true;
+    lexer.interpolation = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -238,59 +268,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     }
                     "fun" => {
                         let start_byte = tok.start;
-                        // fun [<T>] [Receiver.]fnName(...)
-                        let mut j = i + 1;
-                        // Skip type parameters <...> if any
-                        if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('<') {
-                            let mut depth = 1;
-                            j += 1;
-                            while j < tokens.len() && depth > 0 {
-                                if tokens[j].kind == TokenKind::Symbol('<') {
-                                    depth += 1;
-                                } else if tokens[j].kind == TokenKind::Symbol('>') {
-                                    depth -= 1;
-                                }
-                                j += 1;
-                            }
-                        }
-                        // Now we might have Receiver.funcName or just funcName
-                        let mut last_ident = None;
-                        while j < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[j].kind {
-                                last_ident = Some(name);
-                                if j + 1 < tokens.len()
-                                    && (tokens[j + 1].kind == TokenKind::Symbol('.')
-                                        || tokens[j + 1].kind == TokenKind::Symbol('<'))
-                                {
-                                    if tokens[j + 1].kind == TokenKind::Symbol('<') {
-                                        let mut depth = 1;
-                                        j += 2;
-                                        while j < tokens.len() && depth > 0 {
-                                            if tokens[j].kind == TokenKind::Symbol('<') {
-                                                depth += 1;
-                                            } else if tokens[j].kind == TokenKind::Symbol('>') {
-                                                depth -= 1;
-                                            }
-                                            j += 1;
-                                        }
-                                        if j < tokens.len()
-                                            && tokens[j].kind == TokenKind::Symbol('.')
-                                        {
-                                            j += 1;
-                                            continue;
-                                        }
-                                        break;
-                                    } else {
-                                        j += 2;
-                                        continue;
-                                    }
-                                }
-                                j += 1;
-                                break;
-                            } else {
-                                break;
-                            }
-                        }
+                        let (last_ident, j) = declared_name(&tokens, i + 1);
                         if let Some(fn_name) = last_ident {
                             scope.open_definition_with_body_docs(
                                 fn_name,
@@ -319,35 +297,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             continue;
                         }
                         let start_byte = tok.start;
-                        let mut j = i + 1;
-                        // Skip type params <...> if any
-                        if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('<') {
-                            let mut depth = 1;
-                            j += 1;
-                            while j < tokens.len() && depth > 0 {
-                                if tokens[j].kind == TokenKind::Symbol('<') {
-                                    depth += 1;
-                                } else if tokens[j].kind == TokenKind::Symbol('>') {
-                                    depth -= 1;
-                                }
-                                j += 1;
-                            }
-                        }
-                        let mut last_ident = None;
-                        while j < tokens.len() {
-                            if let TokenKind::Ident(name) = tokens[j].kind {
-                                last_ident = Some(name);
-                                if j + 1 < tokens.len() && tokens[j].kind == TokenKind::Symbol('.')
-                                {
-                                    j += 2;
-                                    continue;
-                                }
-                                j += 1;
-                                break;
-                            } else {
-                                break;
-                            }
-                        }
+                        let (last_ident, j) = declared_name(&tokens, i + 1);
                         if let Some(prop_name) = last_ident {
                             scope.open_definition_with_body_docs(
                                 prop_name,

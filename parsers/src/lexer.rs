@@ -87,12 +87,12 @@ pub fn is_key(tokens: &[Token<'_>], i: usize) -> bool {
         .is_some_and(|t| t.kind == TokenKind::Symbol(':') && t.start == tokens[i].end)
 }
 
-/// `:end` and `range.end`: the word at `i` is a symbol or a member.
+/// `:end`, `range.end`, `@case`: the word at `i` is a symbol or a member.
 pub fn is_atom_or_member(tokens: &[Token<'_>], i: usize) -> bool {
     i > 0
         && matches!(
             tokens[i - 1].kind,
-            TokenKind::Symbol(':' | '.') | TokenKind::DoubleSymbol("&.")
+            TokenKind::Symbol(':' | '.' | '@') | TokenKind::DoubleSymbol("&.")
         )
         && tokens[i - 1].end == tokens[i].start
 }
@@ -114,6 +114,13 @@ pub struct Lexer<'a, 's> {
     pub regexes: bool,
     /// Ruby: `<<~TEXT` holds lines of text, and `run /x/` passes a regexp.
     pub ruby_literals: bool,
+    /// `'…'` may hold line breaks: PHP and Ruby.
+    pub multi_line_quotes: bool,
+    /// `#[Attr]` is code here, though `#` starts a comment.
+    pub hash_attributes: bool,
+    /// `"${f("x")}"`: the quotes inside `${…}` end nothing.
+    pub interpolation: bool,
+    interpolation_depth: u32,
     heredocs: Vec<String>,
 }
 
@@ -129,6 +136,10 @@ impl<'a, 's> Lexer<'a, 's> {
             cpp_raw: false,
             regexes: false,
             ruby_literals: false,
+            multi_line_quotes: false,
+            hash_attributes: false,
+            interpolation: false,
+            interpolation_depth: 0,
             heredocs: Vec::new(),
         }
     }
@@ -251,6 +262,19 @@ impl<'a, 's> Lexer<'a, 's> {
             }
         }
 
+        // `$'` and `` $` `` are variables: their quote opens nothing.
+        if self.ruby_literals
+            && self.bytes[self.pos] == b'$'
+            && matches!(self.bytes.get(self.pos + 1), Some(b'\'' | b'"' | b'`'))
+        {
+            self.pos += 2;
+            return Token {
+                kind: TokenKind::Symbol('$'),
+                start: start as u32,
+                end: self.pos as u32,
+            };
+        }
+
         // Check for doc comments
         for &doc_pfx in self.comment_style.doc_comment_prefix {
             if self.starts_with(doc_pfx) {
@@ -268,7 +292,7 @@ impl<'a, 's> Lexer<'a, 's> {
 
         // Check for line comments
         for &line_pfx in self.comment_style.line_comment_prefix {
-            if self.starts_with(line_pfx) {
+            if self.starts_with(line_pfx) && !(self.hash_attributes && self.starts_with("#[")) {
                 while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
                     self.pos += 1;
                 }
@@ -350,49 +374,7 @@ impl<'a, 's> Lexer<'a, 's> {
 
         // Check for standard triple quotes: """ or '''
         if self.starts_with("\"\"\"") || self.starts_with("'''") {
-            // Compared as bytes, never as `&str`: slicing a string at an
-            // arbitrary offset panics when the boundary falls inside a
-            // multi-byte character, and one em dash in a triple-quoted string
-            // is enough to bring the process down.
-            let quote: [u8; 3] = [
-                self.bytes[self.pos],
-                self.bytes[self.pos + 1],
-                self.bytes[self.pos + 2],
-            ];
-            self.pos += 3;
-            // Unterminated, it runs to the end of the file. Stopping where the
-            // loop stops — two bytes short — left the next token starting
-            // inside a character, and the Python scanner sliced there.
-            let mut closed = false;
-            while self.pos + 2 < self.bytes.len() {
-                if self.bytes[self.pos..self.pos + 3] == quote {
-                    self.pos += 3;
-                    // `"""a""""`: a quote before the closing three is text.
-                    while self.bytes.get(self.pos) == Some(&quote[0]) {
-                        self.pos += 1;
-                    }
-                    closed = true;
-                    break;
-                }
-                if self.bytes[self.pos] == b'\\' {
-                    if self.pos + 1 < self.bytes.len() {
-                        self.pos += 2;
-                    } else {
-                        self.pos += 1;
-                    }
-                } else {
-                    self.pos += 1;
-                }
-            }
-            if !closed {
-                self.pos = self.bytes.len();
-            }
-            let end = self.pos.min(self.bytes.len());
-            return Token {
-                kind: TokenKind::StringLit(self.slice(start, end)),
-                start: start as u32,
-                end: end as u32,
-            };
+            return self.triple_quoted(start, true);
         }
 
         let b = self.bytes[self.pos];
@@ -448,6 +430,9 @@ impl<'a, 's> Lexer<'a, 's> {
             let quote = b;
             self.pos += 1;
             while self.pos < self.bytes.len() {
+                if self.skip_interpolation() {
+                    continue;
+                }
                 let cur = self.bytes[self.pos];
                 if cur == b'\\' {
                     if self.pos + 1 < self.bytes.len()
@@ -464,7 +449,7 @@ impl<'a, 's> Lexer<'a, 's> {
                 } else if cur == quote {
                     self.pos += 1;
                     break;
-                } else if cur == b'\n' && quote == b'\'' {
+                } else if cur == b'\n' && quote == b'\'' && !self.multi_line_quotes {
                     break; // Unclosed char literal on single line
                 } else {
                     self.pos += 1;
@@ -804,11 +789,13 @@ impl<'a, 's> Lexer<'a, 's> {
         if matches!(self.bytes.get(start + 1), Some(b'/' | b'*')) || !self.value_may_start(start) {
             return None;
         }
+        // `= /` at a line's end opens an extended regexp, never a division.
+        let lines = self.ruby_literals && self.bytes.get(start + 1) == Some(&b'\n');
         let mut i = start + 1;
         let mut class = false;
         while let Some(&b) = self.bytes.get(i) {
             match b {
-                b'\n' => return None,
+                b'\n' if !lines => return None,
                 b'\\' => i += 1,
                 b'[' => class = true,
                 b']' => class = false,
@@ -881,6 +868,81 @@ impl<'a, 's> Lexer<'a, 's> {
             start: start as u32,
             end: end as u32,
         })
+    }
+
+    /// The string whose three quotes open at `pos`.
+    fn triple_quoted(&mut self, start: usize, interpolates: bool) -> Token<'a> {
+        // Compared as bytes, never as `&str`: slicing a string at an
+        // arbitrary offset panics when the boundary falls inside a
+        // multi-byte character, and one em dash in a triple-quoted string
+        // is enough to bring the process down.
+        let quote: [u8; 3] = [
+            self.bytes[self.pos],
+            self.bytes[self.pos + 1],
+            self.bytes[self.pos + 2],
+        ];
+        self.pos += 3;
+        // Unterminated, it runs to the end of the file. Stopping where the
+        // loop stops — two bytes short — left the next token starting
+        // inside a character, and the Python scanner sliced there.
+        let mut closed = false;
+        while self.pos + 2 < self.bytes.len() {
+            if self.bytes[self.pos..self.pos + 3] == quote {
+                self.pos += 3;
+                // `"""a""""`: a quote before the closing three is text.
+                while self.bytes.get(self.pos) == Some(&quote[0]) {
+                    self.pos += 1;
+                }
+                closed = true;
+                break;
+            }
+            if interpolates && self.skip_interpolation() {
+                continue;
+            }
+            if self.bytes[self.pos] == b'\\' {
+                if self.pos + 1 < self.bytes.len() {
+                    self.pos += 2;
+                } else {
+                    self.pos += 1;
+                }
+            } else {
+                self.pos += 1;
+            }
+        }
+        if !closed {
+            self.pos = self.bytes.len();
+        }
+        let end = self.pos.min(self.bytes.len());
+        Token {
+            kind: TokenKind::StringLit(self.slice(start, end)),
+            start: start as u32,
+            end: end as u32,
+        }
+    }
+
+    /// Past the `${…}` at `pos`, read as code so that its strings and braces
+    /// count. Nesting past the bound stays text: a file must not choose how
+    /// deep this recursion goes.
+    fn skip_interpolation(&mut self) -> bool {
+        const DEEPEST: u32 = 16;
+        if !self.interpolation
+            || self.interpolation_depth == DEEPEST
+            || !self.bytes[self.pos..].starts_with(b"${")
+        {
+            return false;
+        }
+        self.pos += 2;
+        self.interpolation_depth += 1;
+        let mut depth = 1;
+        while depth > 0 && self.pos < self.bytes.len() {
+            match self.next_token().kind {
+                TokenKind::Symbol('{') => depth += 1,
+                TokenKind::Symbol('}') => depth -= 1,
+                _ => {}
+            }
+        }
+        self.interpolation_depth -= 1;
+        true
     }
 
     fn try_lex_prefixed_or_raw_string(&mut self, start: usize) -> Option<Token<'a>> {
@@ -1010,35 +1072,8 @@ impl<'a, 's> Lexer<'a, 's> {
         for &pfx in &prefixes {
             if let Some(after) = remaining.strip_prefix(pfx) {
                 if after.starts_with("\"\"\"") || after.starts_with("'''") {
-                    let q = after.as_bytes();
-                    let quote: [u8; 3] = [q[0], q[1], q[2]];
-                    self.pos += pfx.len() + 3;
-                    while self.pos + 2 < bytes.len() {
-                        if self.bytes[self.pos..self.pos + 3] == quote {
-                            self.pos += 3;
-                            let end = self.pos.min(bytes.len());
-                            return Some(Token {
-                                kind: TokenKind::StringLit(self.slice(start, end)),
-                                start: start as u32,
-                                end: end as u32,
-                            });
-                        }
-                        if bytes[self.pos] == b'\\' {
-                            if self.pos + 1 < bytes.len() {
-                                self.pos += 2;
-                            } else {
-                                self.pos += 1;
-                            }
-                        } else {
-                            self.pos += 1;
-                        }
-                    }
-                    let end = self.pos.min(bytes.len());
-                    return Some(Token {
-                        kind: TokenKind::StringLit(self.slice(start, end)),
-                        start: start as u32,
-                        end: end as u32,
-                    });
+                    self.pos += pfx.len();
+                    return Some(self.triple_quoted(start, false));
                 } else if after.starts_with('"') || after.starts_with('\'') {
                     let quote_byte = after.as_bytes()[0];
                     self.pos += pfx.len() + 1;
@@ -1058,7 +1093,7 @@ impl<'a, 's> Lexer<'a, 's> {
                                 start: start as u32,
                                 end: end as u32,
                             });
-                        } else if cur == b'\n' && quote_byte == b'\'' {
+                        } else if cur == b'\n' && quote_byte == b'\'' && !self.multi_line_quotes {
                             break;
                         } else {
                             self.pos += 1;
@@ -1097,6 +1132,114 @@ pub fn is_empty_macro(tokens: &[Token<'_>], name: usize) -> bool {
         }
     }
     directive_end(tokens, name) == tokens.get(k).map_or(0, |t| t.end)
+}
+
+/// `#if a` `if (x) {` `#else` `if (y) {` `#endif` opens one block, not two:
+/// drops the brackets of a later branch that adds up like the first one.
+/// Other shapes stay, since no reading of them holds for every build.
+pub fn keep_first_branches(tokens: &mut Vec<Token<'_>>) {
+    #[derive(Default)]
+    struct Conditional {
+        first: Option<[i32; 2]>,
+        net: [i32; 2],
+        in_branch: Vec<usize>,
+        kept: Vec<usize>,
+    }
+    impl Conditional {
+        fn end_branch(&mut self, dropped: &mut [bool]) {
+            match self.first {
+                None => {
+                    self.first = Some(self.net);
+                    self.kept.append(&mut self.in_branch);
+                }
+                Some(first) if first == self.net && first != [0, 0] => {
+                    for k in self.in_branch.drain(..) {
+                        dropped[k] = true;
+                    }
+                }
+                Some(_) => self.kept.append(&mut self.in_branch),
+            }
+            self.net = [0, 0];
+        }
+    }
+
+    let mut dropped = vec![false; tokens.len()];
+    let mut open: Vec<Conditional> = Vec::new();
+    let mut line_start = true;
+    let mut k = 0;
+    while k < tokens.len() {
+        match tokens[k].kind {
+            TokenKind::Symbol('#') if line_start => {
+                match tokens.get(k + 1).map(|t| &t.kind) {
+                    Some(TokenKind::Ident("if" | "ifdef" | "ifndef")) => {
+                        open.push(Conditional::default());
+                    }
+                    Some(TokenKind::Ident("else" | "elif" | "elifdef" | "elifndef")) => {
+                        if let Some(c) = open.last_mut() {
+                            c.end_branch(&mut dropped);
+                        }
+                    }
+                    Some(TokenKind::Ident("endif")) => {
+                        if let Some(mut c) = open.pop() {
+                            c.end_branch(&mut dropped);
+                            if let Some(outer) = open.last_mut() {
+                                let first = c.first.unwrap_or_default();
+                                outer.net[0] += first[0];
+                                outer.net[1] += first[1];
+                                outer.in_branch.append(&mut c.kept);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                // A directive's own brackets and a macro body count nowhere.
+                while k < tokens.len()
+                    && (tokens[k].kind != TokenKind::Newline
+                        || tokens[k - 1].kind == TokenKind::Symbol('\\'))
+                {
+                    k += 1;
+                }
+                continue;
+            }
+            TokenKind::Newline => line_start = true,
+            TokenKind::LineComment(_) | TokenKind::BlockComment(_) | TokenKind::DocComment(_) => {}
+            ref kind => {
+                line_start = false;
+                let change = match kind {
+                    TokenKind::Symbol('{') => Some((0, 1)),
+                    TokenKind::Symbol('}') => Some((0, -1)),
+                    TokenKind::Symbol('(') => Some((1, 1)),
+                    TokenKind::Symbol(')') => Some((1, -1)),
+                    _ => None,
+                };
+                if let (Some((which, by)), Some(c)) = (change, open.last_mut()) {
+                    c.net[which] += by;
+                    c.in_branch.push(k);
+                }
+            }
+        }
+        k += 1;
+    }
+    let mut k = 0;
+    tokens.retain(|_| {
+        k += 1;
+        !dropped[k - 1]
+    });
+}
+
+/// The token after a `<` closing at `k` or later, one level in.
+pub fn after_angles(tokens: &[Token<'_>], mut k: usize) -> usize {
+    let mut depth = 1;
+    while depth > 0 && k < tokens.len() {
+        match tokens[k].kind {
+            TokenKind::Symbol('<') => depth += 1,
+            TokenKind::Symbol('>') => depth -= 1,
+            TokenKind::DoubleSymbol(">>") => depth -= 2,
+            _ => {}
+        }
+        k += 1;
+    }
+    k
 }
 
 /// The end byte of the logical line a preprocessor directive starting at

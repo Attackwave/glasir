@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/40";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/41";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -893,6 +893,136 @@ mod tests {
                 "{language:?} {src}"
             );
         }
+    }
+
+    #[test]
+    fn blocks_survive_what_only_looks_like_a_delimiter() {
+        let rules = RuleSet::load(None).unwrap();
+        for (language, src) in [
+            (
+                Language::Dart,
+                "class A {\n  bool m(x) {\n    if (x.library.uri == u) {\n      a();\n    }\n    for (final part in parts) {\n      a();\n    }\n    run();\n  }\n}\n",
+            ),
+            (
+                Language::Dart,
+                "String m() {\n  x('${a.replaceAll('},', '},\\n')}');\n  run();\n}\n",
+            ),
+            (
+                Language::Dart,
+                "String m(p) {\n  x('${switch (p) {\n    1 => 'one',\n  }} b');\n  run();\n}\n",
+            ),
+            (
+                Language::Kotlin,
+                "fun m() {\n  x(\"(a ${n.map { it ?: \"\\\"$D\\\"\" }})\")\n  run()\n}\n",
+            ),
+            (
+                Language::Kotlin,
+                "fun m() {\n  x($$\"\"\"${a\"\"\")\n  run()\n}\n",
+            ),
+            (
+                Language::Kotlin,
+                "private fun List<Set<Int>>.m(): Int {\n  run()\n  return 1\n}\n",
+            ),
+            (
+                Language::C,
+                "#define P(x) { #x, x }\nint m() {\n  run();\n}\n",
+            ),
+            (
+                Language::Cpp,
+                "#define J(a) int a##b() { \\\n  return 1; }\nint m() {\n  run();\n}\n",
+            ),
+            (
+                Language::C,
+                "int m() {\n#if A\n  if (a) {\n#else\n  if (b) {\n#endif\n    c();\n  }\n  run();\n}\n",
+            ),
+            (
+                Language::C,
+                "int m() {\n  if (a &&\n#if A\n  b)\n#elif B\n  c)\n#else\n  d)\n#endif\n  {\n    run();\n  }\n}\n",
+            ),
+            (
+                Language::C,
+                "int m() {\n#if A\n#if B\n  if (a) {\n#else\n  if (b) {\n#endif\n#else\n  if (c) {\n#endif\n    d();\n  }\n  run();\n}\n",
+            ),
+            (
+                Language::Dart,
+                "Uri library(x) {\n  a();\n}\nvoid m() {\n  run();\n}\n",
+            ),
+            (
+                Language::C,
+                "int m() {\n#if A\n  if (a) {\n#else\n#if B\n  if (b) {\n#endif\n#endif\n    d();\n  }\n  run();\n}\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x('a\n  end\n  b')\n  run()\nend\n",
+            ),
+            (
+                Language::Php,
+                "<?php\n#[Bind(static function () {\n  return false;\n})]\nfunction m() {\n  run();\n}\n",
+            ),
+            (Language::Php, "<?php\n# {\nfunction m() {\n  run();\n}\n"),
+            (
+                Language::Php,
+                "<?php\nfunction m() {\n  x('{{\n  }}}');\n  run();\n}\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  @case = 1\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x = -$`\n  y = 'a'\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x = /\n    (['\"]) # quote\n  /x\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x || if a\n    b()\n  end\n  run()\nend\n",
+            ),
+        ] {
+            let facts = rules.parse(language, src);
+            assert!(!facts.had_errors, "{language:?} {src}");
+            assert!(
+                facts.calls.iter().any(|c| c.0 == "m" && c.1 == "run"),
+                "{language:?} {src} {:?}",
+                facts.calls
+            );
+        }
+    }
+
+    #[test]
+    fn plain_names_declare_nothing() {
+        let rules = RuleSet::load(None).unwrap();
+        let facts = rules.parse(
+            Language::Dart,
+            "library shop.core;\nclass A {\n  bool m(x) => x.library.uri;\n}\n",
+        );
+        assert!(facts.defines.iter().any(|d| d == "shop.core"));
+        assert!(
+            !facts.defines.iter().any(|d| d == "uri"),
+            "{:?}",
+            facts.defines
+        );
+        let facts = rules.parse(Language::Kotlin, "val String.size2: Int\n  get() = 1\n");
+        assert!(
+            facts.defines.iter().any(|d| d == "size2"),
+            "{:?}",
+            facts.defines
+        );
+        assert!(!facts.defines.iter().any(|d| d == "String"));
+    }
+
+    #[test]
+    fn hostile_strings_end_the_scan_cleanly() {
+        let rules = RuleSet::load(None).unwrap();
+        rules.parse(Language::Dart, &format!("x('{}", "${'".repeat(200_000)));
+        rules.parse(Language::Kotlin, &format!("x(\"{}", "${\"".repeat(200_000)));
+        for src in ["x = f\"\"\"é", "x = f\"\"\"aé", "x = f\"\"\"aaé"] {
+            rules.parse(Language::Python, src);
+        }
+        rules.parse(Language::C, "#else\n#endif\n#if A\n#else\n");
+        rules.parse(Language::Cpp, "#");
     }
 
     #[test]

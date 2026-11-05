@@ -7,7 +7,8 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
-    let tokens = lexer.collect_all_tokens();
+    let mut tokens = lexer.collect_all_tokens();
+    crate::lexer::keep_first_branches(&mut tokens);
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
@@ -33,7 +34,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
-            TokenKind::Symbol('#') => {
+            // In a macro body, `#x` and `a##b` are operators.
+            TokenKind::Symbol('#') if define_end.is_none() => {
                 i += 1;
                 if i < tokens.len() && matches!(tokens[i].kind, TokenKind::Ident("define")) {
                     let start_byte = tok.start;
