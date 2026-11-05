@@ -173,6 +173,27 @@ impl ScopeStack {
         self.had_receiver = false;
     }
 
+    /// The definition just opened has no block of its own: it ends where the
+    /// next one at its level begins, or with the block around it.
+    pub fn body_is_one_statement(&mut self) {
+        let depth = self.depth;
+        if let Some(last) = self.open.last_mut().filter(|o| o.depth == depth) {
+            last.statement_scoped = true;
+        }
+    }
+
+    /// Ends the statement-scoped definitions of the block now closing.
+    pub fn close_statements(&mut self, current_byte: usize, facts: &mut FileFacts) {
+        let depth = self.depth;
+        if self
+            .open
+            .last()
+            .is_some_and(|o| o.statement_scoped && o.depth >= depth)
+        {
+            self.close_definitions_at_or_above(depth, current_byte, facts);
+        }
+    }
+
     /// Moves the definition just opened to the depth of its body. For an
     /// indentation language the body is one level in from the keyword; both
     /// stacks move, or the range closes on the dedent while calls after it

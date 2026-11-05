@@ -6993,6 +6993,27 @@ fn demo_imports() {
             "ex/pay.ex",
             "defmodule Shop.Pay do\n  alias Shop.Cart, as: C\n  def full(c), do: Shop.Cart.total(c)\n  def short(c), do: C.total(c)\nend\n",
         ),
+        (
+            "box/crate_box.py",
+            "class Crate:\n    def seal_lid(self):\n        pass\n",
+        ),
+        (
+            "box/make.py",
+            "from crate_box import Crate\ndef make():\n    return Crate()\n",
+        ),
+        ("box/close.py", "def close(b):\n    b.seal_lid()\n"),
+        (
+            "ex/tax.ex",
+            "defmodule Shop.Billing.Tax do\n  def rate(x), do: x\nend\n",
+        ),
+        (
+            "ex/invoice.ex",
+            "defmodule Shop.Invoice do\n  def rate(x), do: x\nend\n",
+        ),
+        (
+            "ex/use.ex",
+            "defmodule Shop.Use do\n  alias Shop.{Cart,\n    Order}\n  alias Shop.Billing, warn: false\n  def both(c) do\n    Cart.total(c)\n    Order.total(c)\n  end\n  def tax(c), do: Billing.Tax.rate(c)\nend\n",
+        ),
         // Rust: a module is a file. `changes` is defined twice, so the bare
         // name is refused; the module qualifier decides, beside the caller,
         // under the crate's src/, or as a mod.rs. `crate::` is dropped.
@@ -7070,6 +7091,10 @@ fn demo_imports() {
         ("ex/pay.ex#full", "ex/cart.ex#total", true),
         ("ex/pay.ex#short", "ex/cart.ex#total", true),
         ("ex/pay.ex#full", "ex/order.ex#total", false),
+        ("ex/use.ex#both", "ex/cart.ex#total", true),
+        ("ex/use.ex#both", "ex/order.ex#total", true),
+        ("ex/use.ex#tax", "ex/tax.ex#rate", true),
+        ("ex/use.ex#tax", "ex/invoice.ex#rate", false),
         ("jv/Dock.java#moor", "jv/Hull.java#seal", true),
         ("jv/Dock.java#moor", "jv/Lid.java#seal", true),
         ("jv/Dock.java#two", "jv/Lid.java#seal", false),
@@ -7098,6 +7123,26 @@ fn demo_imports() {
     ] {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
+    let state = served_state(&dir).unwrap();
+    let impact = |symbol: &str| -> String {
+        let r = mcp::handle_for_test(
+            &state.as_served(),
+            &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "impact", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap();
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // Nothing names the module, so its functions answer for it; a class with
+    // a user of its own keeps that answer.
+    let module = impact("ex/cart.ex#Shop.Cart");
+    assert!(module.contains("ex/pay.ex#full"), "{module}");
+    let class = impact("box/crate_box.py#Crate");
+    assert!(class.contains("box/make.py#make"), "{class}");
+    assert!(!class.contains("box/close.py#close"), "{class}");
     std::fs::remove_dir_all(&dir).unwrap();
     println!("imports ok: a call through an import reaches the definition it names");
 }

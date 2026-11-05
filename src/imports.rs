@@ -40,17 +40,11 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
     }
 }
 
-/// `alias Shop.Cart` makes `Cart` mean `Shop.Cart`; `, as: C` names it `C`.
+/// `alias Shop.Cart` makes `Cart` mean `Shop.Cart`, `, as: C` names it `C`,
+/// and `alias Shop.{Cart, Order}` reads as one alias each, over several lines.
 fn elixir(src: &str) -> Vec<Import> {
     let mut out = Vec::new();
-    for line in src.lines() {
-        let Some(rest) = line.trim().strip_prefix("alias ") else {
-            continue;
-        };
-        let (spec, alias) = match rest.split_once(", as:") {
-            Some((spec, alias)) => (spec.trim(), alias.trim()),
-            None => (rest.trim(), rest.trim().rsplit('.').next().unwrap_or("")),
-        };
+    let mut push = |spec: &str, alias: &str| {
         if !spec.is_empty()
             && !alias.is_empty()
             && spec
@@ -62,6 +56,32 @@ fn elixir(src: &str) -> Vec<Import> {
                 spec: spec.to_string(),
             });
         }
+    };
+    let last = |spec: &'_ str| spec.rsplit('.').next().unwrap_or("").to_string();
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.trim().strip_prefix("alias ") else {
+            continue;
+        };
+        if let Some((base, names)) = rest.split_once(".{") {
+            let mut names = names.to_string();
+            while !names.contains('}') {
+                let Some(next) = lines.next() else { break };
+                names.push_str(next);
+            }
+            let names = names.split('}').next().unwrap_or("");
+            for name in names.split(',').map(str::trim) {
+                push(&format!("{}.{name}", base.trim()), &last(name));
+            }
+            continue;
+        }
+        let (spec, options) = rest.split_once(',').unwrap_or((rest, ""));
+        let spec = spec.trim();
+        let alias = match options.split_once("as:") {
+            Some((_, alias)) => alias.split(',').next().unwrap_or("").trim().to_string(),
+            None => last(spec),
+        };
+        push(spec, &alias);
     }
     out
 }

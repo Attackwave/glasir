@@ -679,9 +679,18 @@ fn prepare_facts(
                 .get(i)
                 .and_then(Option::as_deref)
                 .and_then(|m| {
-                    modules.get(m).cloned().or_else(|| {
-                        lang.and_then(|l| crate::imports::module_target(l, &file, m, root))
-                    })
+                    modules
+                        .get(m)
+                        .cloned()
+                        .or_else(|| {
+                            // `alias Shop.Billing` then `Billing.Tax.rate()`.
+                            let (head, tail) = m.split_once('.')?;
+                            let base = modules.get(head)?;
+                            base.starts_with('@').then(|| format!("{base}.{tail}"))
+                        })
+                        .or_else(|| {
+                            lang.and_then(|l| crate::imports::module_target(l, &file, m, root))
+                        })
                 })
                 .map(|t| crate::imports::scoped(callee, &t))
         } else if !registry.contains(&local) {

@@ -14,7 +14,18 @@ defmodule Bench.Ledger do
 
   defp refuse(owner, _amount) do
     warn(owner)
+    Enum.each([owner], fn name -> notify(name) end)
+    if overdrawn?(owner) in @limit do
+      close!(owner)
+    end
     0
+  end
+
+  defp overdrawn?(owner), do: lookup(owner)
+
+  defp close!(owner) do
+    ~S|end of the account do|
+    archive(owner)
   end
 
   defp commit_entry(owner, amount) do

@@ -85,6 +85,9 @@ pub struct Lexer<'a, 's> {
     bytes: &'a [u8],
     pos: usize,
     comment_style: CommentStyle<'s>,
+    /// `~S|…|` and `?"` are literals: read as code, a sigil's `do` or a quote
+    /// behind `?` unbalances the block scan of the whole file.
+    pub sigils: bool,
 }
 
 impl<'a, 's> Lexer<'a, 's> {
@@ -94,6 +97,7 @@ impl<'a, 's> Lexer<'a, 's> {
             bytes: src.as_bytes(),
             pos: 0,
             comment_style,
+            sigils: false,
         }
     }
 
@@ -281,6 +285,12 @@ impl<'a, 's> Lexer<'a, 's> {
                     start: start as u32,
                     end: end as u32,
                 };
+            }
+        }
+
+        if self.sigils {
+            if let Some(tok) = self.lex_sigil(start) {
+                return tok;
             }
         }
 
@@ -619,6 +629,58 @@ impl<'a, 's> Lexer<'a, 's> {
             tokens.push(tok);
         }
         tokens
+    }
+
+    /// A sigil runs to its first unescaped closing delimiter, a heredoc one to
+    /// its `"""`; an unterminated one to the end of the file.
+    fn lex_sigil(&mut self, start: usize) -> Option<Token<'a>> {
+        let byte = |i: usize| self.bytes.get(i).copied().unwrap_or(0);
+        let mut end = match self.bytes[start] {
+            b'?' if matches!(byte(start + 1), b'"' | b'\'' | b'(' | b'[' | b'{' | b'\\') => {
+                start + 2 + usize::from(byte(start + 1) == b'\\')
+            }
+            b'~' if start == 0 || self.bytes[start - 1] != b'=' => {
+                let mut i = start + 1;
+                while byte(i).is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let close = match byte(i) {
+                    _ if i == start + 1 => return None,
+                    b'(' => b')',
+                    b'[' => b']',
+                    b'{' => b'}',
+                    b'<' => b'>',
+                    d @ (b'/' | b'|' | b'"' | b'\'') => d,
+                    _ => return None,
+                };
+                let quote = [close; 3];
+                let heredoc = self.bytes[i..].starts_with(&quote);
+                i += if heredoc { 3 } else { 1 };
+                while i < self.bytes.len() {
+                    if heredoc && self.bytes[i..].starts_with(&quote) {
+                        i += 3;
+                        break;
+                    }
+                    if !heredoc && self.bytes[i] == close {
+                        i += 1;
+                        break;
+                    }
+                    i += if self.bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                while byte(i).is_ascii_alphabetic() {
+                    i += 1;
+                }
+                i
+            }
+            _ => return None,
+        };
+        end = end.min(self.bytes.len());
+        self.pos = end;
+        Some(Token {
+            kind: TokenKind::StringLit(self.slice(start, end)),
+            start: start as u32,
+            end: end as u32,
+        })
     }
 
     fn try_lex_prefixed_or_raw_string(&mut self, start: usize) -> Option<Token<'a>> {

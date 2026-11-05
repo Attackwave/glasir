@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/36";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/37";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -704,6 +704,58 @@ mod tests {
         assert_eq!(caller("f"), Some("e"));
         // A semicolon ends a file-level statement, so `kick` is nobody's call.
         assert_eq!(caller("kick"), Some("<module>"));
+    }
+
+    #[test]
+    fn elixir_blocks_end_where_their_keywords_say() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "defmodule M do\n\
+                   @tag Enum.map(all, fn x ->\n  shape(x)\nend)\n\
+                   @spec a?(t) :: t\n\
+                   def a?(x) do\n  each(x, fn y -> y end)\n  after_fn()\n  b!(x)\nend\n\
+                   def b!(x), do: one(x)\n\
+                   def c(x), do: x\n\
+                   defguardp is_d(x) when x > 0\n\
+                   defdelegate e(x), to: M.Other\n\
+                   defmacrop f(x) do\n  unless x in @tag do\n    in_unless()\n  end\n  after_unless()\nend\n\
+                   def g(x) do\n  %{start: 1, end: 2}\n  [do: 1]\n  x.end\n  at(:end)\n  after_keys()\nend\n\
+                   def h(x) do\n  ~S|a do b|\n  ~r/don't/i\n  ~s\"\"\"\n  say \"x do\n  \"\"\"\n  [?\", ?(]\n  after_sigils()\nend\n\
+                   defmodule N do\n  def z(x), do: x\nend\n\
+                   after_n()\n\
+                   end\n";
+        let facts = rules.parse(Language::Elixir, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        let caller = |callee: &str| {
+            facts
+                .calls
+                .iter()
+                .find(|c| c.1 == callee)
+                .map(|c| c.0.as_str())
+        };
+        for name in ["a?", "b!", "c", "is_d", "e", "f", "g", "h"] {
+            assert!(facts.defines.iter().any(|d| d == name), "{name}");
+        }
+        assert_eq!(caller("shape"), Some("M"));
+        assert_eq!(caller("after_fn"), Some("a?"));
+        assert_eq!(caller("b!"), Some("a?"));
+        assert_eq!(caller("one"), Some("b!"));
+        assert_eq!(caller("in_unless"), Some("f"));
+        assert_eq!(caller("after_unless"), Some("f"));
+        assert_eq!(caller("after_keys"), Some("g"));
+        assert_eq!(caller("after_sigils"), Some("h"));
+        assert_eq!(caller("after_n"), Some("M"));
+        // A definition without a block ends where the next one begins.
+        let start_of = |name: &str| src.find(name).unwrap() as u32;
+        let end_of = |name: &str| {
+            facts
+                .ranges
+                .iter()
+                .find(|r| r.0 == name)
+                .map(|r| r.1 .1)
+                .unwrap()
+        };
+        assert!(end_of("b!") <= start_of("def c"));
+        assert!(end_of("e") <= start_of("defmacrop f"));
     }
 
     #[test]
