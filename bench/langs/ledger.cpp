@@ -32,3 +32,6 @@ private:
 };
 
 }
+
+// A build option leaves this stub behind: the name is not defined here.
+#define flush_ledger(owner)

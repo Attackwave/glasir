@@ -52,6 +52,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
+            TokenKind::Symbol(';') if scope.depth == 0 => {
+                scope.on_statement_end(tok.end as usize, &mut facts);
+                i += 1;
+                continue;
+            }
             TokenKind::Symbol('.') | TokenKind::DoubleSymbol("?.") => {
                 scope.on_receiver();
                 i += 1;
@@ -72,6 +77,27 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 ) {
                     i += 1;
                     continue;
+                }
+
+                if scope.depth == 0 {
+                    if let Some(member) = assigned_function(&tokens, i) {
+                        let start_byte = tok.start as usize;
+                        if member.is_arrow {
+                            scope.open_statement_definition(member.name, start_byte, &mut facts);
+                        } else {
+                            header_end = signature_end(&tokens, member.next);
+                            scope.open_definition_with_body_docs(
+                                member.name,
+                                start_byte,
+                                true,
+                                true,
+                                &mut facts,
+                            );
+                        }
+                        scope.on_word(member.name);
+                        i = member.next;
+                        continue;
+                    }
                 }
 
                 match *ident {
@@ -111,7 +137,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             }
                         }
                     }
-                    "const" | "let" | "var" if scope.depth == 0 => {
+                    "const" | "let" | "var"
+                        if scope.depth == 0 && !binds_require(&tokens, i + 1) =>
+                    {
                         let start_byte = tok.start;
                         if i + 1 < tokens.len() {
                             if let TokenKind::Ident(name) = tokens[i + 1].kind {
@@ -211,6 +239,89 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+/// `name = require('./y')`: an import, which `imports` reads. As a definition
+/// it shadowed the imported name in its own file. A package keeps the
+/// definition: it stops by-name linking to a same-named symbol of this tree.
+fn binds_require(tokens: &[crate::lexer::Token<'_>], name: usize) -> bool {
+    matches!(tokens.get(name).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+        && tokens.get(name + 1).map(|t| &t.kind) == Some(&TokenKind::Symbol('='))
+        && tokens.get(name + 2).map(|t| &t.kind) == Some(&TokenKind::Ident("require"))
+        && tokens.get(name + 3).map(|t| &t.kind) == Some(&TokenKind::Symbol('('))
+        && matches!(tokens.get(name + 4).map(|t| &t.kind), Some(TokenKind::StringLit(s))
+            if s.trim_start_matches(['\'', '"', '`']).starts_with('.'))
+}
+
+/// A function assigned to a member at file level.
+struct AssignedFunction<'a> {
+    name: &'a str,
+    is_arrow: bool,
+    /// The first token after what was read: the parameter list.
+    next: usize,
+}
+
+/// `a.b = function`, `a.b.c = async (x) =>`: the definition is `b` or `c`.
+/// `module.exports = ...` names no member.
+fn assigned_function<'a>(
+    tokens: &[crate::lexer::Token<'a>],
+    start: usize,
+) -> Option<AssignedFunction<'a>> {
+    let mut name = None;
+    let mut k = start + 1;
+    while tokens.get(k)?.kind == TokenKind::Symbol('.') {
+        let TokenKind::Ident(member) = tokens.get(k + 1)?.kind else {
+            return None;
+        };
+        name = Some(member);
+        k += 2;
+    }
+    let name = name.filter(|n| *n != "exports")?;
+    if tokens.get(k)?.kind != TokenKind::Symbol('=') {
+        return None;
+    }
+    k = skip_newlines(tokens, k + 1);
+    if tokens.get(k)?.kind == TokenKind::Ident("async") {
+        k += 1;
+    }
+    if tokens.get(k)?.kind == TokenKind::Ident("function") {
+        k += 1;
+        if tokens.get(k)?.kind == TokenKind::Symbol('*') {
+            k += 1;
+        }
+        if matches!(tokens.get(k)?.kind, TokenKind::Ident(_)) {
+            k += 1;
+        }
+        return Some(AssignedFunction {
+            name,
+            is_arrow: false,
+            next: k,
+        });
+    }
+    let next = k;
+    if matches!(tokens.get(k)?.kind, TokenKind::Ident(_)) {
+        k += 1;
+    } else if tokens.get(k)?.kind == TokenKind::Symbol('(') {
+        let mut depth = 0;
+        loop {
+            match tokens.get(k)?.kind {
+                TokenKind::Symbol('(') => depth += 1,
+                TokenKind::Symbol(')') => depth -= 1,
+                _ => {}
+            }
+            k += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    } else {
+        return None;
+    }
+    (tokens.get(k)?.kind == TokenKind::DoubleSymbol("=>")).then_some(AssignedFunction {
+        name,
+        is_arrow: true,
+        next,
+    })
 }
 
 /// The index of a function's body `{` (or of whatever ends a body-less

@@ -39,6 +39,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     let start_byte = tok.start;
                     if i + 1 < tokens.len() {
                         if let TokenKind::Ident(macro_name) = tokens[i + 1].kind {
+                            if crate::lexer::is_empty_macro(&tokens, i + 1) {
+                                i += 1;
+                                while i < tokens.len() && tokens[i].kind != TokenKind::Newline {
+                                    i += 1;
+                                }
+                                continue;
+                            }
                             // A macro ends with its line, and a call in its
                             // body is the macro's.
                             scope.open_statement_definition(
