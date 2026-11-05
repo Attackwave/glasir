@@ -306,7 +306,9 @@ impl ScopeStack {
     pub fn on_receiver(&mut self) {
         let is_self = matches!(
             self.last_word.as_deref(),
-            Some("self" | "Self" | "this" | "$this" | "cls" | "super" | "base" | "parent")
+            Some(
+                "self" | "Self" | "this" | "$this" | "cls" | "static" | "super" | "base" | "parent"
+            )
         );
         self.had_receiver = !is_self;
         // A lower-case receiver before `::` is a *module*, and in Rust a module
@@ -316,7 +318,8 @@ impl ScopeStack {
         // file the receiver names, while `Instant::now()` and its 84 siblings
         // are upper case and stay receivers.
         self.module_receiver = match self.last_word.as_deref() {
-            Some(w) if !is_self && w.starts_with(|c: char| c.is_lowercase()) => Some(w.to_string()),
+            Some(w @ ("super" | "base" | "parent")) => Some(w.to_string()),
+            Some(w) if !is_self => Some(w.to_string()),
             _ => None,
         };
     }

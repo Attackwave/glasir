@@ -9,6 +9,7 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.regexes = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -30,8 +31,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 i += 1;
                 continue;
             }
+            // `@Component({ … })` spans lines, so only the name is skipped.
             TokenKind::Symbol('@') => {
-                while i < tokens.len() && tokens[i].kind != TokenKind::Newline {
+                i += 1;
+                while matches!(
+                    tokens.get(i).map(|t| &t.kind),
+                    Some(TokenKind::Ident(_) | TokenKind::Symbol('.'))
+                ) {
                     i += 1;
                 }
                 continue;

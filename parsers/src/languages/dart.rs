@@ -1,8 +1,28 @@
 //! Language-specific syntax; lexical and call rules come from the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, TokenKind};
+use crate::lexer::{CommentStyle, Lexer, Token, TokenKind};
 use crate::scope::ScopeStack;
+
+/// The token after the type arguments opening at `i`, if `<` there opens any:
+/// `foo<T extends Object>(` and `foo<Set<int>>(` but not `a < b`.
+fn after_type_arguments(tokens: &[Token<'_>], i: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut k = i;
+    loop {
+        match tokens.get(k)?.kind {
+            TokenKind::Symbol('<') => depth += 1,
+            TokenKind::Symbol('>') => depth -= 1,
+            TokenKind::DoubleSymbol(">>") => depth -= 2,
+            TokenKind::Ident(_) | TokenKind::Newline | TokenKind::Symbol(',' | '.' | '?') => {}
+            _ => return None,
+        }
+        k += 1;
+        if depth <= 0 {
+            return (depth == 0).then_some(k);
+        }
+    }
+}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
@@ -59,7 +79,15 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Symbol(';') => {
-                scope.on_statement_end(tok.end as usize, &mut facts);
+                // `=> () { a(); }();`: the closure's statements end nothing.
+                let depth = scope.depth;
+                if !scope
+                    .open
+                    .last()
+                    .is_some_and(|o| o.statement_scoped && o.depth < depth)
+                {
+                    scope.on_statement_end(tok.end as usize, &mut facts);
+                }
                 i += 1;
                 continue;
             }
@@ -129,6 +157,36 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 i = k + 1;
                                 continue;
                             }
+                        }
+                    }
+                    // `String get name => …` and `String get name { … }`.
+                    "get"
+                        if matches!(
+                            tokens.get(i + 1).map(|t| &t.kind),
+                            Some(TokenKind::Ident(_))
+                        ) && matches!(
+                            tokens.get(i + 2).map(|t| &t.kind),
+                            Some(
+                                TokenKind::Symbol('{')
+                                    | TokenKind::DoubleSymbol("=>")
+                                    | TokenKind::Ident("async" | "sync")
+                            )
+                        ) =>
+                    {
+                        if let TokenKind::Ident(name) = tokens[i + 1].kind {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                tok.start as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
+                            if tokens[i + 2].kind == TokenKind::DoubleSymbol("=>") {
+                                scope.body_is_one_statement();
+                            }
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
                         }
                     }
                     "class" | "mixin" | "extension" | "enum" => {
@@ -202,6 +260,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             j += 1;
                         }
                         let mut is_fn_def = false;
+                        let mut body = i + 1;
+                        if tokens
+                            .get(j)
+                            .is_some_and(|t| t.kind == TokenKind::Symbol('<'))
+                        {
+                            j = after_type_arguments(&tokens, j).unwrap_or(j);
+                        }
                         if j < tokens.len() && tokens[j].kind == TokenKind::Symbol('(') {
                             let mut k = j + 1;
                             let mut paren_depth = 1;
@@ -229,13 +294,24 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     || tokens[k].kind == TokenKind::DoubleSymbol("=>"))
                             {
                                 is_fn_def = true;
+                                body = k;
                             }
                         }
 
                         if is_fn_def
                             && !matches!(
                                 *ident,
-                                "if" | "while" | "for" | "switch" | "catch" | "assert"
+                                "if" | "while"
+                                    | "for"
+                                    | "switch"
+                                    | "catch"
+                                    | "assert"
+                                    | "return"
+                                    | "await"
+                                    | "yield"
+                                    | "throw"
+                                    | "super"
+                                    | "this"
                             )
                         {
                             let start_byte = tok.start;
@@ -246,8 +322,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 true,
                                 &mut facts,
                             );
+                            if tokens[body].kind == TokenKind::DoubleSymbol("=>") {
+                                scope.body_is_one_statement();
+                            }
                             scope.on_word(ident);
-                            i += 1;
+                            // Past the parameters: the braces of named ones
+                            // would close the definition just opened.
+                            i = body;
                             continue;
                         }
 
@@ -260,22 +341,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             if tokens[j].kind == TokenKind::Symbol('(') {
                                 is_call = true;
                             } else if tokens[j].kind == TokenKind::Symbol('<') {
-                                let mut depth = 1;
-                                let mut k = j + 1;
-                                while k < tokens.len() && depth > 0 {
-                                    if tokens[k].kind == TokenKind::Symbol('<') {
-                                        depth += 1;
-                                    } else if tokens[k].kind == TokenKind::Symbol('>') {
-                                        depth -= 1;
-                                    }
-                                    k += 1;
-                                }
-                                while k < tokens.len() && tokens[k].kind == TokenKind::Newline {
-                                    k += 1;
-                                }
-                                if k < tokens.len() && tokens[k].kind == TokenKind::Symbol('(') {
-                                    is_call = true;
-                                }
+                                is_call = after_type_arguments(&tokens, j).is_some_and(|k| {
+                                    tokens[k..]
+                                        .iter()
+                                        .find(|t| t.kind != TokenKind::Newline)
+                                        .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                                });
                             }
                         }
 

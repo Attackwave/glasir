@@ -80,6 +80,23 @@ impl Default for CommentStyle<'_> {
     }
 }
 
+/// `do: x` and `end: 3`: the word at `i` is a key, no keyword.
+pub fn is_key(tokens: &[Token<'_>], i: usize) -> bool {
+    tokens
+        .get(i + 1)
+        .is_some_and(|t| t.kind == TokenKind::Symbol(':') && t.start == tokens[i].end)
+}
+
+/// `:end` and `range.end`: the word at `i` is a symbol or a member.
+pub fn is_atom_or_member(tokens: &[Token<'_>], i: usize) -> bool {
+    i > 0
+        && matches!(
+            tokens[i - 1].kind,
+            TokenKind::Symbol(':' | '.') | TokenKind::DoubleSymbol("&.")
+        )
+        && tokens[i - 1].end == tokens[i].start
+}
+
 pub struct Lexer<'a, 's> {
     src: &'a str,
     bytes: &'a [u8],
@@ -88,6 +105,11 @@ pub struct Lexer<'a, 's> {
     /// `~S|…|` and `?"` are literals: read as code, a sigil's `do` or a quote
     /// behind `?` unbalances the block scan of the whole file.
     pub sigils: bool,
+    /// `/class Foo/` is a literal where a value may start.
+    pub regexes: bool,
+    /// Ruby: `<<~TEXT` holds lines of text, and `run /x/` passes a regexp.
+    pub ruby_literals: bool,
+    heredocs: Vec<String>,
 }
 
 impl<'a, 's> Lexer<'a, 's> {
@@ -98,6 +120,9 @@ impl<'a, 's> Lexer<'a, 's> {
             pos: 0,
             comment_style,
             sigils: false,
+            regexes: false,
+            ruby_literals: false,
+            heredocs: Vec::new(),
         }
     }
 
@@ -180,6 +205,7 @@ impl<'a, 's> Lexer<'a, 's> {
         // Check for newlines
         if self.bytes[self.pos] == b'\n' {
             self.pos += 1;
+            self.skip_heredocs();
             return Token {
                 kind: TokenKind::Newline,
                 start: start as u32,
@@ -290,6 +316,19 @@ impl<'a, 's> Lexer<'a, 's> {
 
         if self.sigils {
             if let Some(tok) = self.lex_sigil(start) {
+                return tok;
+            }
+        }
+        if self.ruby_literals {
+            self.note_heredoc(start);
+        }
+        if self.ruby_literals && self.bytes[start] == b'%' {
+            if let Some(tok) = self.lex_percent(start) {
+                return tok;
+            }
+        }
+        if self.regexes && self.bytes[start] == b'/' {
+            if let Some(tok) = self.lex_regex(start) {
                 return tok;
             }
         }
@@ -629,6 +668,153 @@ impl<'a, 's> Lexer<'a, 's> {
             tokens.push(tok);
         }
         tokens
+    }
+
+    /// `<<~TEXT`, `<<-TEXT`, `<<TEXT`, the tag perhaps quoted: its body follows
+    /// the line, and `class << self` has no tag beside the `<<`.
+    fn note_heredoc(&mut self, start: usize) {
+        let Some(rest) = self.src.get(start..).and_then(|r| r.strip_prefix("<<")) else {
+            return;
+        };
+        let dashed = rest.strip_prefix(['~', '-']);
+        let tag = dashed.unwrap_or(rest).trim_start_matches(['"', '\'']);
+        let end = tag
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(tag.len());
+        let tag = &tag[..end];
+        if !tag.is_empty() && (dashed.is_some() || tag.starts_with(|c: char| c.is_uppercase())) {
+            self.heredocs.push(tag.to_string());
+        }
+    }
+
+    /// At the start of a line: past the bodies of the heredocs opened above.
+    fn skip_heredocs(&mut self) {
+        for tag in std::mem::take(&mut self.heredocs) {
+            while self.pos < self.bytes.len() {
+                let line = self.src.get(self.pos..).unwrap_or("");
+                let line = line.split('\n').next().unwrap_or("");
+                self.pos += line.len() + 1;
+                if line.trim() == tag {
+                    break;
+                }
+            }
+        }
+        self.pos = self.pos.min(self.bytes.len());
+    }
+
+    /// Whether a literal, not an operator, can begin at `start`.
+    fn value_may_start(&self, start: usize) -> bool {
+        let Some(before) = self.src.get(..start) else {
+            return false;
+        };
+        let next = self.bytes.get(start + 1).copied().unwrap_or(b' ');
+        let trimmed = before.trim_end_matches([' ', '\t']);
+        let word = trimmed
+            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("");
+        match trimmed.as_bytes().last() {
+            None | Some(b'\n' | b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|') => true,
+            Some(b'?' | b'{' | b'}' | b';' | b'~') => true,
+            Some(b'>') => trimmed.ends_with("=>"),
+            _ => {
+                matches!(
+                    word,
+                    "return"
+                        | "if"
+                        | "unless"
+                        | "elsif"
+                        | "when"
+                        | "while"
+                        | "until"
+                        | "and"
+                        | "or"
+                        | "not"
+                        | "typeof"
+                        | "case"
+                ) || (self.ruby_literals
+                    && !word.is_empty()
+                    && trimmed.len() < before.len()
+                    && !next.is_ascii_whitespace())
+            }
+        }
+    }
+
+    /// `%w[a b]`, `%r{x}`, `%(text)`: paired delimiters nest, others do not.
+    fn lex_percent(&mut self, start: usize) -> Option<Token<'a>> {
+        let mut i = start + 1;
+        if matches!(
+            self.bytes.get(i),
+            Some(b'q' | b'Q' | b'w' | b'W' | b'i' | b'I' | b'r' | b's' | b'x')
+        ) {
+            i += 1;
+        }
+        let open = *self.bytes.get(i)?;
+        let close = match open {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            b'<' => b'>',
+            b'|' | b'!' | b'/' | b'^' => open,
+            _ => return None,
+        };
+        if !self.value_may_start(start) {
+            return None;
+        }
+        let mut depth = 1;
+        i += 1;
+        while depth > 0 {
+            let &b = self.bytes.get(i)?;
+            if b == b'\\' {
+                i += 1;
+            } else if b == close {
+                depth -= 1;
+            } else if b == open {
+                depth += 1;
+            }
+            i += 1;
+        }
+        while self.bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
+            i += 1;
+        }
+        self.pos = i;
+        Some(Token {
+            kind: TokenKind::StringLit(self.slice(start, i)),
+            start: start as u32,
+            end: i as u32,
+        })
+    }
+
+    /// A regexp stays on its line; what cannot be one is a division.
+    fn lex_regex(&mut self, start: usize) -> Option<Token<'a>> {
+        if matches!(self.bytes.get(start + 1), Some(b'/' | b'*')) || !self.value_may_start(start) {
+            return None;
+        }
+        let mut i = start + 1;
+        let mut class = false;
+        while let Some(&b) = self.bytes.get(i) {
+            match b {
+                b'\n' => return None,
+                b'\\' => i += 1,
+                b'[' => class = true,
+                b']' => class = false,
+                b'/' if !class => {
+                    i += 1;
+                    while self.bytes.get(i).is_some_and(u8::is_ascii_alphabetic) {
+                        i += 1;
+                    }
+                    self.pos = i;
+                    return Some(Token {
+                        kind: TokenKind::StringLit(self.slice(start, i)),
+                        start: start as u32,
+                        end: i as u32,
+                    });
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
     }
 
     /// A sigil runs to its first unescaped closing delimiter, a heredoc one to

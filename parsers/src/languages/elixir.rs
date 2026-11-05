@@ -1,22 +1,8 @@
 //! Language-specific syntax; lexical and call rules come from the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, Token, TokenKind};
+use crate::lexer::{is_atom_or_member, is_key, CommentStyle, Lexer, TokenKind};
 use crate::scope::ScopeStack;
-
-/// `do: x` and `end: 3` are keyword keys.
-fn is_key(tokens: &[Token<'_>], i: usize) -> bool {
-    tokens
-        .get(i + 1)
-        .is_some_and(|t| t.kind == TokenKind::Symbol(':') && t.start == tokens[i].end)
-}
-
-/// `:end` is an atom and `range.end` a field.
-fn is_atom_or_field(tokens: &[Token<'_>], i: usize) -> bool {
-    i > 0
-        && matches!(tokens[i - 1].kind, TokenKind::Symbol(':' | '.'))
-        && tokens[i - 1].end == tokens[i].start
-}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
@@ -26,6 +12,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    let mut brackets = 0;
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -38,6 +25,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             TokenKind::Newline => {
                 i += 1;
                 continue;
+            }
+            TokenKind::Symbol('(' | '[' | '{') => {
+                brackets += 1;
+                scope.had_receiver = false;
+            }
+            TokenKind::Symbol(')' | ']' | '}') => {
+                brackets -= 1;
+                scope.had_receiver = false;
             }
             TokenKind::Symbol('.') => {
                 scope.on_receiver();
@@ -116,11 +111,16 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Ident(ident) => match *ident {
-                "do" if is_key(&tokens, i) => scope.body_is_one_statement(),
-                "do" | "fn" if !is_atom_or_field(&tokens, i) => {
+                "do" if is_key(&tokens, i) => {
+                    // `def f(o \\ [do: 1]) do` has a default, not a body.
+                    if brackets == 0 {
+                        scope.body_is_one_statement();
+                    }
+                }
+                "do" | "fn" if !is_atom_or_member(&tokens, i) => {
                     scope.on_open_delimiter();
                 }
-                "end" if !is_key(&tokens, i) && !is_atom_or_field(&tokens, i) => {
+                "end" if !is_key(&tokens, i) && !is_atom_or_member(&tokens, i) => {
                     scope.close_statements(tok.start as usize, &mut facts);
                     scope.on_close_delimiter(tok.end as usize, &mut facts);
                 }

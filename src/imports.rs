@@ -25,6 +25,9 @@ pub enum Import {
         spec: String,
         name: String,
     },
+    /// `class A extends B`, a mixin, Elixir's `import B`: a name the file does
+    /// not define may come from the module `B`.
+    Base(String),
 }
 
 /// The import statements of one file.
@@ -36,8 +39,77 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
         Lang::Elixir => elixir(src),
         Lang::Java => java(src),
         Lang::Kotlin => kotlin(src),
+        Lang::Php => php(src),
+        Lang::Ruby => ruby(src),
+        Lang::Dart => dart(src),
         _ => Vec::new(),
     }
+}
+
+/// The last segment of a class named in code: `\\A\\B`, `A::B`, `B<T>` are `B`.
+fn base(written: &str) -> Option<Import> {
+    let name = written.trim().split('<').next()?.trim();
+    let name = name.rsplit(['\\', ':']).next()?;
+    let valid = name.starts_with(|c: char| c.is_uppercase())
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    valid.then(|| Import::Base(name.to_string()))
+}
+
+/// `class A extends B`, and `use C, D;` inside a class body.
+fn php(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("use ") {
+            if line.starts_with(char::is_whitespace) {
+                let names = rest.split([';', '{']).next().unwrap_or("");
+                out.extend(names.split(',').filter_map(base));
+            }
+        } else if let Some((_, rest)) = line
+            .split_once(" extends ")
+            .filter(|(head, _)| head.contains("class "))
+        {
+            out.extend(base(rest.split_whitespace().next().unwrap_or("")));
+        }
+    }
+    out
+}
+
+/// `class A < B`, `include C, D`, `extend E`, `prepend F`.
+fn ruby(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines().map(str::trim) {
+        if let Some((_, parent)) = line
+            .strip_prefix("class ")
+            .and_then(|rest| rest.split_once(" < "))
+        {
+            out.extend(base(parent.split_whitespace().next().unwrap_or("")));
+        }
+        for keyword in ["include ", "extend ", "prepend "] {
+            if let Some(names) = line.strip_prefix(keyword) {
+                out.extend(names.split(',').filter_map(base));
+            }
+        }
+    }
+    out
+}
+
+/// `class A extends B with C, D implements E`.
+fn dart(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines().map(str::trim) {
+        if !(line.contains("class ") || line.starts_with("mixin ")) {
+            continue;
+        }
+        let head = line.split(['{', ';']).next().unwrap_or("");
+        let head = head.split(" implements ").next().unwrap_or("");
+        for keyword in [" extends ", " with ", " on "] {
+            if let Some((_, rest)) = head.split_once(keyword) {
+                let rest = rest.split(" with ").next().unwrap_or("");
+                out.extend(rest.split(',').filter_map(base));
+            }
+        }
+    }
+    out
 }
 
 /// `alias Shop.Cart` makes `Cart` mean `Shop.Cart`, `, as: C` names it `C`,
@@ -59,7 +131,27 @@ fn elixir(src: &str) -> Vec<Import> {
     };
     let last = |spec: &'_ str| spec.rsplit('.').next().unwrap_or("").to_string();
     let mut lines = src.lines();
+    let mut in_heredoc = false;
+    let mut bases = Vec::new();
     while let Some(line) = lines.next() {
+        // A `@doc` example shows an alias its module does not have.
+        if line.matches("\"\"\"").count() % 2 == 1 {
+            in_heredoc = !in_heredoc;
+            continue;
+        }
+        if in_heredoc {
+            continue;
+        }
+        if let Some(rest) = line.trim().strip_prefix("import ") {
+            let spec = rest.split(',').next().unwrap_or("").trim();
+            if spec
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
+            {
+                bases.push(Import::Base(spec.to_string()));
+            }
+            continue;
+        }
         let Some(rest) = line.trim().strip_prefix("alias ") else {
             continue;
         };
@@ -83,6 +175,7 @@ fn elixir(src: &str) -> Vec<Import> {
         };
         push(spec, &alias);
     }
+    out.append(&mut bases);
     out
 }
 
@@ -591,6 +684,12 @@ pub fn module_file(lang: Lang, module: &str) -> Option<String> {
     match lang {
         Lang::Erlang => Some(format!("*/{module}.erl")),
         Lang::Elixir => Some(format!("@{module}")),
+        // `Billing.total()` goes to the one file defining `Billing`.
+        Lang::Ruby | Lang::Php | Lang::Dart | Lang::Swift
+            if module.starts_with(|c: char| c.is_uppercase()) =>
+        {
+            Some(format!("@{module}"))
+        }
         _ => None,
     }
 }

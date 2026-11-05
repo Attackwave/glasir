@@ -649,6 +649,7 @@ fn prepare_facts(
     let lang = Lang::from_path(path);
     let mut modules: HashMap<&str, String> = HashMap::new();
     let mut names: HashMap<&str, (String, &str)> = HashMap::new();
+    let mut bases: Vec<&str> = Vec::new();
     if let Some(lang) = lang {
         for import in &facts.imports {
             match import {
@@ -662,9 +663,13 @@ fn prepare_facts(
                         names.entry(local).or_insert((t, name));
                     }
                 }
+                crate::imports::Import::Base(module) => bases.push(module),
             }
         }
     }
+    bases.sort_unstable();
+    bases.dedup();
+    let inherited = (!bases.is_empty()).then(|| format!("@{}", bases.join("+")));
 
     let mut edges: Vec<(NodeId, Edge)> = Vec::with_capacity(facts.calls.len());
     for (i, (caller, callee, has_receiver)) in facts.calls.iter().enumerate() {
@@ -673,11 +678,14 @@ fn prepare_facts(
         // A call through an import names its file, so its placeholder says
         // which file: tier 3 then links it there instead of refusing a name
         // several files define.
-        let imported = if *has_receiver {
-            facts
-                .call_modules
-                .get(i)
-                .and_then(Option::as_deref)
+        let module = facts.call_modules.get(i).and_then(Option::as_deref);
+        let in_base = matches!(module, Some("super" | "base" | "parent")) && inherited.is_some();
+        let imported = if in_base {
+            inherited
+                .as_deref()
+                .map(|t| crate::imports::scoped(callee, t))
+        } else if *has_receiver {
+            module
                 .and_then(|m| {
                     modules
                         .get(m)
@@ -697,10 +705,15 @@ fn prepare_facts(
             names
                 .get(callee.as_str())
                 .map(|(t, n)| crate::imports::scoped(n, t))
+                .or_else(|| {
+                    inherited
+                        .as_deref()
+                        .map(|t| crate::imports::scoped(callee, t))
+                })
         } else {
             None
         };
-        let target = if !*has_receiver && registry.contains(&local) {
+        let target = if !*has_receiver && !in_base && registry.contains(&local) {
             registry.get_or_mint(&local)
         } else if let Some(scoped) = imported {
             let node = registry.get_or_mint(&scoped);

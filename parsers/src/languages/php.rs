@@ -54,6 +54,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         | "abstract"
                         | "readonly"
                 ) {
+                    scope.on_word(ident);
                     i += 1;
                     continue;
                 }

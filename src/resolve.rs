@@ -56,6 +56,48 @@ fn is_test_path(file: &str) -> bool {
 /// A name defined in exactly one place is an unambiguous win. A name defined in
 /// several is reported with its candidate count and left for the caller to
 /// decide — see `link_edges`, which drops those rather than guessing.
+/// The one definition of a module. `A::BcD`, defined several times, is the one
+/// in the file the convention names: `a/bc_d.rb`.
+fn defining_module(
+    by_name: &HashMap<&str, Vec<NodeId>>,
+    file_of: &HashMap<NodeId, &str>,
+    module: &str,
+) -> Option<NodeId> {
+    let last = module.rsplit("::").next()?;
+    let defs = by_name.get(last)?;
+    if let [only] = defs[..] {
+        return Some(only);
+    }
+    let mut tail = String::new();
+    for segment in module.split("::") {
+        tail.push('/');
+        for (j, c) in segment.chars().enumerate() {
+            if c.is_uppercase() && j > 0 {
+                tail.push('_');
+            }
+            tail.extend(c.to_lowercase());
+        }
+    }
+    tail.push_str(".rb");
+    let mut found = defs
+        .iter()
+        .copied()
+        .filter(|d| file_of.get(d).is_some_and(|f| f.ends_with(&tail)));
+    match (module.contains("::"), found.next(), found.next()) {
+        (true, Some(d), None) => Some(d),
+        _ => None,
+    }
+}
+
+/// A class's file may define the name elsewhere: `LIMIT.freeze()` is no call
+/// into the file-level `freeze` beside the constant.
+fn contains(registry: &SymbolRegistry, outer: NodeId, inner: NodeId) -> bool {
+    match (registry.span(outer), registry.span(inner)) {
+        (Some(o), Some(i)) => o.0 <= i.0 && i.1 <= o.1,
+        _ => false,
+    }
+}
+
 pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
     // Definition name -> nodes defining it. A name may be defined many times.
     let mut by_name: HashMap<&str, Vec<NodeId>> = HashMap::new();
@@ -90,19 +132,16 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         };
         if let Some(target) = target {
             let found: Vec<NodeId> = if let Some(module) = target.strip_prefix('@') {
-                let files: Vec<&str> = by_name
-                    .get(module)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|d| file_of.get(d).copied())
-                    .collect();
-                match files[..] {
-                    [file] => registry
-                        .node_of(&format!("{file}#{bare}"))
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
-                }
+                module
+                    .split('+')
+                    .filter_map(|m| {
+                        let module = defining_module(&by_name, &file_of, m)?;
+                        file_of
+                            .get(&module)
+                            .and_then(|file| registry.node_of(&format!("{file}#{bare}")))
+                            .filter(|&d| contains(registry, module, d))
+                    })
+                    .collect()
             } else if let Some(base) = target.strip_prefix("*/") {
                 by_name
                     .get(bare)

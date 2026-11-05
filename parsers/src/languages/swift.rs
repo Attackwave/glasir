@@ -1,8 +1,28 @@
 //! Language-specific syntax; lexical and call rules come from the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, TokenKind};
+use crate::lexer::{CommentStyle, Lexer, Token, TokenKind};
 use crate::scope::ScopeStack;
+
+/// The name of the computed property declared by the `var` at `i`.
+fn computed_property<'a>(tokens: &[Token<'a>], i: usize) -> Option<&'a str> {
+    let TokenKind::Ident(name) = tokens.get(i + 1)?.kind else {
+        return None;
+    };
+    if tokens.get(i + 2)?.kind != TokenKind::Symbol(':') {
+        return None;
+    }
+    tokens[i + 3..]
+        .iter()
+        .find(|t| {
+            matches!(
+                t.kind,
+                TokenKind::Newline | TokenKind::Symbol('=' | '{' | ';')
+            )
+        })
+        .filter(|t| t.kind == TokenKind::Symbol('{'))
+        .map(|_| name)
+}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
@@ -120,6 +140,22 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 i += 2;
                                 continue;
                             }
+                        }
+                    }
+                    // `var body: T { … }` computes: a stored one has no brace,
+                    // or `=` before it.
+                    "var" if computed_property(&tokens, i).is_some() => {
+                        if let Some(name) = computed_property(&tokens, i) {
+                            scope.open_definition_with_body_docs(
+                                name,
+                                tok.start as usize,
+                                true,
+                                true,
+                                &mut facts,
+                            );
+                            scope.on_word(name);
+                            i += 2;
+                            continue;
                         }
                     }
                     "func" => {
