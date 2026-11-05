@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/42";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/43";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -980,6 +980,38 @@ mod tests {
                 Language::Ruby,
                 "def m\n  x || if a\n    b()\n  end\n  run()\nend\n",
             ),
+            (
+                Language::Ruby,
+                "def m\n  x = +%(<i a=\"b\">)\n  y = +%{c's}\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x(\"#{a ? \"{ #{b} }\" : c}\")\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x = { a: /#{b.sub(/c/, \"\")}/ }\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  def a.b = 1\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  x = '#{'\n  run()\nend\n",
+            ),
+            (
+                Language::TypeScript,
+                "function m() {\n  a = i++ / 2; { b / 3 }\n  run();\n}\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  a :[]= unless b\n  c(:d=) if e\n  run()\nend\n",
+            ),
+            (
+                Language::Ruby,
+                "def m\n  t << if a\n    b()\n  end\n  t << %(it's)\n  run()\nend\n",
+            ),
         ] {
             let facts = rules.parse(language, src);
             assert!(!facts.had_errors, "{language:?} {src}");
@@ -1019,6 +1051,7 @@ mod tests {
         for src in [
             "<p>don't {</p>\n<?php\nfunction m() {\n  run();\n}\n?>\n<p>it's }</p>\n",
             "<?php\nfunction m() {\n  x(<<<EOT\n  it's {\n  EOT);\n  run();\n}\n",
+            "<p>'</p>\n<? function m() {\n  run();\n}\n",
             "<?php\nfunction m() {\n  x(<<<'A_B'\nA_BC {\nA_B\n);\n  run();\n}\n",
             "<?php if ($a): ?><b>'</b><?= f() ?><i>'{</i><?php endif;\nfunction m() {\n  run();\n}\n",
         ] {

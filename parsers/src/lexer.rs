@@ -87,6 +87,25 @@ pub fn is_key(tokens: &[Token<'_>], i: usize) -> bool {
         .is_some_and(|t| t.kind == TokenKind::Symbol(':') && t.start == tokens[i].end)
 }
 
+/// The `=` at `i` closes `:name=` or `:[]=`.
+pub fn ends_a_setter_symbol(tokens: &[Token<'_>], i: usize) -> bool {
+    let glued = |k: usize| k > 0 && tokens[k - 1].end == tokens[k].start;
+    if !glued(i) {
+        return false;
+    }
+    match tokens[i - 1].kind {
+        TokenKind::Ident(_) => is_atom_or_member(tokens, i - 1),
+        TokenKind::Symbol(']') => {
+            i >= 3
+                && glued(i - 1)
+                && tokens[i - 2].kind == TokenKind::Symbol('[')
+                && glued(i - 2)
+                && tokens[i - 3].kind == TokenKind::Symbol(':')
+        }
+        _ => false,
+    }
+}
+
 /// `:end`, `range.end`, `@case`: the word at `i` is a symbol or a member.
 pub fn is_atom_or_member(tokens: &[Token<'_>], i: usize) -> bool {
     i > 0
@@ -452,7 +471,7 @@ impl<'a, 's> Lexer<'a, 's> {
             let quote = b;
             self.pos += 1;
             while self.pos < self.bytes.len() {
-                if self.skip_interpolation() {
+                if self.skip_interpolation(quote) {
                     continue;
                 }
                 let cur = self.bytes[self.pos];
@@ -758,6 +777,8 @@ impl<'a, 's> Lexer<'a, 's> {
             None | Some(b'\n' | b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|') => true,
             Some(b'?' | b'{' | b'}' | b';' | b'~') => true,
             Some(b'>') => trimmed.ends_with("=>"),
+            Some(b'<') => trimmed.ends_with("<<"),
+            Some(b'+' | b'-') => !trimmed.ends_with("++") && !trimmed.ends_with("--"),
             _ => {
                 matches!(
                     word,
@@ -844,6 +865,15 @@ impl<'a, 's> Lexer<'a, 's> {
             match b {
                 b'\n' if !lines => return None,
                 b'\\' => i += 1,
+                b'#' => {
+                    self.pos = i;
+                    let skipped = self.skip_interpolation(b'/');
+                    i = self.pos;
+                    self.pos = start;
+                    if skipped {
+                        continue;
+                    }
+                }
                 b'[' => class = true,
                 b']' => class = false,
                 b'/' if !class => {
@@ -936,6 +966,12 @@ impl<'a, 's> Lexer<'a, 's> {
             } else if self.bytes[self.pos..].starts_with(b"=") {
                 self.pos += 1;
                 self.in_page = false;
+            } else if self
+                .bytes
+                .get(self.pos)
+                .is_some_and(u8::is_ascii_whitespace)
+            {
+                self.in_page = false;
             }
         }
     }
@@ -997,7 +1033,7 @@ impl<'a, 's> Lexer<'a, 's> {
                 closed = true;
                 break;
             }
-            if interpolates && self.skip_interpolation() {
+            if interpolates && self.skip_interpolation(quote[0]) {
                 continue;
             }
             if self.bytes[self.pos] == b'\\' && !self.raw_triple_quotes {
@@ -1021,15 +1057,15 @@ impl<'a, 's> Lexer<'a, 's> {
         }
     }
 
-    /// Past the `${…}` at `pos`, read as code so that its strings and braces
+    /// Past the `${…}` or `#{…}` at `pos`, read as code so that its strings and braces
     /// count. Nesting past the bound stays text: a file must not choose how
     /// deep this recursion goes.
-    fn skip_interpolation(&mut self) -> bool {
+    fn skip_interpolation(&mut self, quote: u8) -> bool {
         const DEEPEST: u32 = 16;
-        if !self.interpolation
-            || self.interpolation_depth == DEEPEST
-            || !self.bytes[self.pos..].starts_with(b"${")
-        {
+        let rest = &self.bytes[self.pos..];
+        let opens = (self.interpolation && rest.starts_with(b"${"))
+            || (self.ruby_literals && quote != b'\'' && rest.starts_with(b"#{"));
+        if !opens || self.interpolation_depth == DEEPEST {
             return false;
         }
         self.pos += 2;

@@ -164,6 +164,32 @@ const REQUESTS: &[(&str, usize)] = &[
     ("Post", 0),
 ];
 
+/// From which byte on which range is the smallest around it, `MODULE` where
+/// none is. Each call site asks, so walking `ranges` per site is quadratic.
+fn innermost_ranges(ranges: &[(String, (u32, u32))]) -> Vec<(u32, u32)> {
+    use std::cmp::Reverse;
+    let mut bounds: Vec<u32> = ranges.iter().flat_map(|(_, (s, e))| [*s, *e]).collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut by_start: Vec<usize> = (0..ranges.len()).collect();
+    by_start.sort_by_key(|&k| ranges[k].1.0);
+    let mut waiting = by_start.into_iter().peekable();
+    let mut open = std::collections::BinaryHeap::new();
+    let mut out = Vec::with_capacity(bounds.len());
+    for from in bounds {
+        while let Some(k) = waiting.next_if(|&k| ranges[k].1.0 <= from) {
+            let (start, end) = ranges[k].1;
+            open.push(Reverse((end.saturating_sub(start), k, end)));
+        }
+        while open.peek().is_some_and(|Reverse((_, _, end))| *end <= from) {
+            open.pop();
+        }
+        let top = open.peek().map_or(MODULE, |Reverse((_, k, _))| *k as u32);
+        out.push((from, top));
+    }
+    out
+}
+
 pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
     if lang == Lang::Yaml {
         return openapi(src);
@@ -172,13 +198,10 @@ pub fn extract(lang: Lang, src: &str, ranges: &[(String, (u32, u32))]) -> Http {
     if tokens.is_empty() {
         return Http::default();
     }
+    let innermost = innermost_ranges(ranges);
     let enclosing = |at: u32| -> u32 {
-        ranges
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, (s, e)))| *s <= at && at < *e)
-            .min_by_key(|(_, (_, (s, e)))| e - s)
-            .map_or(MODULE, |(k, _)| k as u32)
+        let after = innermost.partition_point(|(from, _)| *from <= at);
+        after.checked_sub(1).map_or(MODULE, |k| innermost[k].1)
     };
     let contains = |outer: u32, inner: u32| -> bool {
         outer == MODULE
@@ -867,4 +890,42 @@ fn method_option(tokens: &[Token<'_>], open: usize) -> Option<Verb> {
             }
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The index against the walk it replaced, on nested, overlapping, empty
+    /// and equal ranges.
+    #[test]
+    fn innermost_ranges_agree_with_a_walk() {
+        let mut state = 7u64;
+        let mut next = |bound: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) % bound) as u32
+        };
+        for round in 0..300 {
+            let ranges: Vec<(String, (u32, u32))> = (0..round % 40)
+                .map(|_| {
+                    let start = next(200);
+                    (String::new(), (start, start + next(60)))
+                })
+                .collect();
+            let index = innermost_ranges(&ranges);
+            for at in 0..270 {
+                let walked = ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, (s, e)))| *s <= at && at < *e)
+                    .min_by_key(|(_, (_, (s, e)))| e - s)
+                    .map_or(MODULE, |(k, _)| k as u32);
+                let after = index.partition_point(|(from, _)| *from <= at);
+                let found = after.checked_sub(1).map_or(MODULE, |k| index[k].1);
+                assert_eq!(found, walked, "{ranges:?} at {at}");
+            }
+        }
+    }
 }
