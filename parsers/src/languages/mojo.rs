@@ -12,12 +12,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut i = 0;
     let mut scope = ScopeStack::new();
 
+    let mut line_start = crate::lexer::LineStart::default();
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize]
-            .rfind('\n')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+        let line_start_pos = line_start.of(src, tok.start as usize);
         let current_line_indent = (tok.start as usize).saturating_sub(line_start_pos) as i32;
 
         match &tok.kind {

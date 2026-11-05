@@ -276,6 +276,9 @@ fn assigned_function<'a>(
     let mut name = None;
     let mut k = start + 1;
     while tokens.get(k)?.kind == TokenKind::Symbol('.') {
+        if k > start + crate::lexer::LOOKAHEAD {
+            return None;
+        }
         let TokenKind::Ident(member) = tokens.get(k + 1)?.kind else {
             return None;
         };
@@ -374,7 +377,8 @@ fn skip_type_arguments(tokens: &[crate::lexer::Token<'_>], j: usize) -> Option<u
     }
     let mut depth = 0i32;
     let mut k = j;
-    while let Some(t) = tokens.get(k) {
+    let window = tokens.get(..tokens.len().min(j + crate::lexer::LOOKAHEAD))?;
+    while let Some(t) = window.get(k) {
         match t.kind {
             TokenKind::Symbol('<') => depth += 1,
             TokenKind::Symbol('>') => depth -= 1,
@@ -400,6 +404,7 @@ fn skip_return_type(tokens: &[crate::lexer::Token<'_>], mut k: usize) -> usize {
     // Whether a type has just ended: a `{` after one is the body, a `{`
     // anywhere else opens an object type, `(): { id: string } {`.
     let mut ended = false;
+    let tokens = &tokens[..tokens.len().min(k + crate::lexer::LOOKAHEAD)];
     while let Some(t) = tokens.get(k) {
         match t.kind {
             TokenKind::Symbol('{') if !ended => {

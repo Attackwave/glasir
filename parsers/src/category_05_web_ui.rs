@@ -25,6 +25,9 @@ pub fn parse_html(src: &str) -> FileFacts {
                 i = start + end_rel + 3;
                 continue;
             }
+            // Unterminated, nothing after it can be read: each `<!--` left
+            // would otherwise search to the end of the file again.
+            break;
         }
 
         if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] != b'/' && bytes[i + 1] != b'!' {
@@ -131,6 +134,8 @@ pub fn parse_html(src: &str) -> FileFacts {
                 current_element = None;
                 i = tag_start + tag_end_rel + 1;
                 continue;
+            } else {
+                break;
             }
         }
         i += 1;
@@ -139,10 +144,31 @@ pub fn parse_html(src: &str) -> FileFacts {
     facts
 }
 
+/// Every brace in order, with the end of the block a `{` opens: 0 for a `}`
+/// and for a `{` never closed.
+fn css_braces(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut braces = Vec::new();
+    let mut open = Vec::new();
+    for (at, &b) in bytes.iter().enumerate() {
+        if b == b'{' {
+            open.push(braces.len());
+            braces.push((at, 0));
+        } else if b == b'}' {
+            if let Some(k) = open.pop() {
+                braces[k].1 = at + 1;
+            }
+            braces.push((at, 0));
+        }
+    }
+    braces
+}
+
 pub fn parse_css(src: &str) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut i = 0;
     let bytes = src.as_bytes();
+    let braces = css_braces(bytes);
+    let mut next_brace = 0;
     let mut pending_comments = Vec::new();
 
     while i < bytes.len() {
@@ -157,6 +183,9 @@ pub fn parse_css(src: &str) -> FileFacts {
                 i = start + end_rel + 2;
                 continue;
             }
+            // Unterminated, nothing after it can be read: each `<!--` left
+            // would otherwise search to the end of the file again.
+            break;
         }
 
         if bytes[i] == b'.' || bytes[i] == b'#' || bytes[i] == b'@' || bytes[i..].starts_with(b"--")
@@ -197,30 +226,21 @@ pub fn parse_css(src: &str) -> FileFacts {
                     // snippet reading `.btn-primary` alone answers nothing —
                     // the declarations inside the braces are what the question
                     // "what colour is this button" is about.
-                    let mut depth = 0usize;
-                    let mut end = j;
-                    for (off, ch) in src[j..].char_indices() {
-                        match ch {
-                            '{' => depth += 1,
-                            // A close before any open ends an enclosing block:
-                            // this was a declaration, not a rule. Subtracting
-                            // anyway underflowed — a panic in a debug build, a
-                            // range that never closed in a release one.
-                            '}' if depth == 0 => break,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    end = j + off + 1;
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
+                    while braces.get(next_brace).is_some_and(|b| b.0 < j) {
+                        next_brace += 1;
                     }
+                    // A close before any open ends an enclosing block: this
+                    // was a declaration, not a rule.
+                    let end = braces
+                        .get(next_brace)
+                        .map_or(j, |b| if b.1 == 0 { j } else { b.1 });
                     facts.add_definition(sym, (start as u32, end as u32), doc);
                     i = j;
                     continue;
                 }
+                // What follows the run decides for every suffix of it alike.
+                i = j.max(i + 1);
+                continue;
             }
         }
         i += 1;
@@ -702,6 +722,9 @@ pub fn parse_xml(src: &str) -> FileFacts {
                 i = start + end_rel + 3;
                 continue;
             }
+            // Unterminated, nothing after it can be read: each `<!--` left
+            // would otherwise search to the end of the file again.
+            break;
         }
 
         if bytes[i] == b'<'
@@ -765,6 +788,8 @@ pub fn parse_xml(src: &str) -> FileFacts {
 
                 i = tag_start + tag_end_rel + 1;
                 continue;
+            } else {
+                break;
             }
         }
 

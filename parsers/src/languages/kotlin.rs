@@ -38,6 +38,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut lexer = Lexer::new(src, style);
     lexer.nested_comments = true;
     lexer.interpolation = true;
+    lexer.raw_triple_quotes = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -341,16 +342,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             ) {
                                 is_call = true;
                             } else if tokens[j].kind == TokenKind::Symbol('<') {
-                                let mut depth = 1;
-                                let mut k = j + 1;
-                                while k < tokens.len() && depth > 0 {
-                                    if tokens[k].kind == TokenKind::Symbol('<') {
-                                        depth += 1;
-                                    } else if tokens[k].kind == TokenKind::Symbol('>') {
-                                        depth -= 1;
-                                    }
-                                    k += 1;
-                                }
+                                let mut k = after_angles(&tokens, j + 1);
                                 while k < tokens.len() && tokens[k].kind == TokenKind::Newline {
                                     k += 1;
                                 }

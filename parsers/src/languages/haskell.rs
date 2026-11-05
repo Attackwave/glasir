@@ -15,6 +15,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut expect_callee = false;
     let mut paren_expect_callee: Vec<bool> = Vec::new();
 
+    let mut defined = std::collections::HashSet::new();
     while i < tokens.len() {
         let tok = &tokens[i];
         match &tok.kind {
@@ -140,7 +141,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     );
                                     scope.on_word(type_name);
                                     let mut j = i + 2;
-                                    while j < tokens.len()
+                                    while j < tokens.len().min(i + crate::lexer::LOOKAHEAD)
                                         && tokens[j].kind != TokenKind::Newline
                                         && tokens[j].kind != TokenKind::Symbol('=')
                                     {
@@ -156,7 +157,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             if i + 1 < tokens.len()
                                 && tokens[i + 1].kind == TokenKind::DoubleSymbol("::")
                             {
-                                if !facts.defines.contains(&ident.to_string()) {
+                                if defined.insert(*ident) {
                                     scope.close_definitions_at_or_above(
                                         scope.depth,
                                         start_byte as usize,
@@ -177,7 +178,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             }
 
                             let mut j = i + 1;
-                            while j < tokens.len()
+                            while j < tokens.len().min(i + crate::lexer::LOOKAHEAD)
                                 && tokens[j].kind != TokenKind::Newline
                                 && tokens[j].kind != TokenKind::Symbol('=')
                             {
@@ -187,7 +188,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 && tokens[j].kind == TokenKind::Symbol('=')
                                 && !is_keyword
                             {
-                                if !facts.defines.contains(&ident.to_string()) {
+                                if defined.insert(*ident) {
                                     scope.close_definitions_at_or_above(
                                         scope.depth,
                                         start_byte as usize,

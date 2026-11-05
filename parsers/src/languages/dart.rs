@@ -9,7 +9,7 @@ use crate::scope::ScopeStack;
 fn after_type_arguments(tokens: &[Token<'_>], i: usize) -> Option<usize> {
     let mut depth = 0;
     let mut k = i;
-    loop {
+    while k < i + crate::lexer::LOOKAHEAD {
         match tokens.get(k)?.kind {
             TokenKind::Symbol('<') => depth += 1,
             TokenKind::Symbol('>') => depth -= 1,
@@ -22,6 +22,7 @@ fn after_type_arguments(tokens: &[Token<'_>], i: usize) -> Option<usize> {
             return (depth == 0).then_some(k);
         }
     }
+    None
 }
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
@@ -138,7 +139,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     "const" | "final" if scope.depth == 0 => {
                         let mut k = i;
                         let mut ok = false;
-                        while k + 1 < tokens.len() {
+                        while k + 1 < tokens.len().min(i + crate::lexer::LOOKAHEAD) {
                             match tokens[k + 1].kind {
                                 TokenKind::Symbol('=') => {
                                     ok = true;

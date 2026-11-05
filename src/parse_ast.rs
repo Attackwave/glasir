@@ -50,6 +50,8 @@ pub struct FileFacts {
     /// callee rather than inside it, because every consumer reads the bare
     /// name and `charge -> process` must stay `process`.
     pub call_modules: Vec<Option<String>>,
+    /// See `native_parsers::FileFacts::call_owners`.
+    pub call_owners: Vec<Option<u32>>,
     /// Import statements, for resolving a call through a module to the file it
     /// names. See `imports`.
     pub imports: Vec<crate::imports::Import>,
@@ -356,6 +358,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         docs: f.docs,
         calls: f.calls,
         call_modules: f.call_modules,
+        call_owners: f.call_owners,
         imports: crate::imports::read(lang, src),
         refs,
         http,

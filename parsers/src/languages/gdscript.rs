@@ -12,12 +12,10 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut i = 0;
     let mut scope = ScopeStack::new();
 
+    let mut line_start = crate::lexer::LineStart::default();
     while i < tokens.len() {
         let tok = &tokens[i];
-        let line_start_pos = src[..tok.start as usize]
-            .rfind('\n')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+        let line_start_pos = line_start.of(src, tok.start as usize);
         // The line's indentation, not the token's column: in `static func f`
         // the `func` sits at column 7 and would nest inside the class above.
         let current_line_indent = src[line_start_pos..tok.start as usize]

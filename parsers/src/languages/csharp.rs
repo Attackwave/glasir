@@ -129,7 +129,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     "const" => {
                         let mut k = i;
                         let mut ok = false;
-                        while k + 1 < tokens.len() {
+                        while k + 1 < tokens.len().min(i + crate::lexer::LOOKAHEAD) {
                             match tokens[k + 1].kind {
                                 TokenKind::Symbol('=') => {
                                     ok = true;
@@ -293,7 +293,8 @@ fn skip_type_arguments(tokens: &[crate::lexer::Token<'_>], j: usize) -> Option<u
     }
     let mut depth = 0i32;
     let mut k = j;
-    while let Some(t) = tokens.get(k) {
+    let window = tokens.get(..tokens.len().min(j + crate::lexer::LOOKAHEAD))?;
+    while let Some(t) = window.get(k) {
         match t.kind {
             TokenKind::Symbol('<') => depth += 1,
             TokenKind::Symbol('>') => depth -= 1,

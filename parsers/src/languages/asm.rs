@@ -98,6 +98,8 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut routine: Option<String> = None;
     let mut last = Exit::Other;
     let mut track = Track::default();
+    let mut counted = 0;
+    let mut lines_before = 0;
     let line_of = |at: usize| {
         let start = src[..at].rfind('\n').map_or(0, |n| n + 1);
         let end = src[at..].find('\n').map_or(src.len(), |n| at + n);
@@ -346,10 +348,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     let field = tokens[j - 1].end as usize;
                     let (_, line_end) = line_of(tok.start as usize);
                     let ops = operands(src.get(field..line_end as usize).unwrap_or(""));
-                    let line = 1 + src.as_bytes()[..tok.start as usize]
+                    let upto = tok.start as usize;
+                    lines_before += src.as_bytes()[counted..upto]
                         .iter()
                         .filter(|&&b| b == b'\n')
                         .count() as u32;
+                    counted = upto;
+                    let line = 1 + lines_before;
                     track.step(
                         from,
                         &ident.to_ascii_lowercase(),
@@ -812,6 +817,11 @@ impl Track {
             });
             let mut k = 0;
             facts.call_modules.retain(|_| {
+                k += 1;
+                !drop.contains(&(k - 1))
+            });
+            let mut k = 0;
+            facts.call_owners.retain(|_| {
                 k += 1;
                 !drop.contains(&(k - 1))
             });

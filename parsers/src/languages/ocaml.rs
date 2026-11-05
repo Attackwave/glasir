@@ -168,7 +168,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     expect_callee = false;
                                     // Advance to '=' if present
                                     let mut k = j + 1;
-                                    while k < tokens.len()
+                                    while k < tokens.len().min(j + crate::lexer::LOOKAHEAD)
                                         && tokens[k].kind != TokenKind::Symbol('=')
                                         && tokens[k].kind != TokenKind::Newline
                                     {
@@ -186,7 +186,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 } else {
                                     // Local let binding: let x = ...
                                     let mut k = j + 1;
-                                    while k < tokens.len()
+                                    while k < tokens.len().min(j + crate::lexer::LOOKAHEAD)
                                         && tokens[k].kind != TokenKind::Symbol('=')
                                         && tokens[k].kind != TokenKind::Newline
                                     {

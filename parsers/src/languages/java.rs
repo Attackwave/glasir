@@ -121,7 +121,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     // `<type> <NAME> =` — the name is the token before the `=`.
                     let mut k = i;
                     let mut ok = false;
-                    while k + 1 < tokens.len() {
+                    while k + 1 < tokens.len().min(i + crate::lexer::LOOKAHEAD) {
                         match tokens[k + 1].kind {
                             TokenKind::Symbol('=') => {
                                 ok = true;
