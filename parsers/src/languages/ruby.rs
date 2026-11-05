@@ -1,12 +1,40 @@
 //! Language-specific syntax; configurable lexical and call rules are supplied by the registry.
 
 use crate::facts::FileFacts;
-use crate::lexer::{CommentStyle, Lexer, TokenKind};
+use crate::lexer::{is_atom_or_member, is_key, CommentStyle, Lexer, Token, TokenKind};
 use crate::scope::ScopeStack;
+
+/// `def verb = "GET"` and `def call(req) = go(req)` have no `end`. The token at
+/// `i` follows the name; `def name=(value)` is a setter and has one.
+fn is_endless(tokens: &[Token<'_>], i: usize) -> bool {
+    let mut k = i;
+    if tokens
+        .get(k)
+        .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+    {
+        let mut depth = 0;
+        while let Some(t) = tokens.get(k) {
+            match t.kind {
+                TokenKind::Symbol('(') => depth += 1,
+                TokenKind::Symbol(')') => depth -= 1,
+                _ => {}
+            }
+            k += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    }
+    tokens
+        .get(k)
+        .is_some_and(|t| t.kind == TokenKind::Symbol('=') && (k > i || t.start > tokens[k - 1].end))
+}
 
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.regexes = true;
+    lexer.ruby_literals = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -49,6 +77,23 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
             | TokenKind::DoubleSymbol("&.")
             | TokenKind::DoubleSymbol("::") => {
                 scope.on_receiver();
+                // `Journey::Router::Utils.escape` names more than its last word.
+                let mut chain: Vec<&str> = Vec::new();
+                let mut k = i;
+                while let Some(TokenKind::Ident(w)) = k.checked_sub(1).map(|p| &tokens[p].kind) {
+                    if !w.starts_with(|c: char| c.is_uppercase()) {
+                        break;
+                    }
+                    chain.push(w);
+                    if k < 2 || tokens[k - 2].kind != TokenKind::DoubleSymbol("::") {
+                        break;
+                    }
+                    k -= 2;
+                }
+                if chain.len() > 1 {
+                    chain.reverse();
+                    scope.module_receiver = Some(chain.join("::"));
+                }
                 i += 1;
                 continue;
             }
@@ -64,7 +109,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     continue;
                 }
 
-                match *ident {
+                // `self.class`, `:end`, `if:` are no keywords.
+                let word = if is_key(&tokens, i) || is_atom_or_member(&tokens, i) {
+                    ""
+                } else {
+                    *ident
+                };
+                match word {
                     "class" | "module" => {
                         let start_byte = tok.start;
                         let mut j = i + 1;
@@ -127,7 +178,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 true,
                                 &mut facts,
                             );
-                            scope.on_open_delimiter();
+                            if is_endless(&tokens, j) {
+                                scope.body_is_one_statement();
+                            } else {
+                                scope.on_open_delimiter();
+                            }
                             scope.on_word(&fn_name);
                             i = j;
                             continue;

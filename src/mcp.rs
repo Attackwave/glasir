@@ -510,6 +510,7 @@ fn tool_list() -> Value {
             "shown": {"type": "integer", "description": "How many subsystems this page holds"},
             "total_subsystems": {"type": "integer"},
             "next_offset": {"type": "integer", "description": "Present when more remain"},
+            "repeated_directories": {"type": "array", "items": {"type": "string"}},
             "subsystems": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
@@ -4047,8 +4048,15 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     merged.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let groups = merged;
 
+    let repeated = repeated_directories(served);
     if groups.is_empty() {
-        return Ok(json!({"symbols": 0, "files": 0, "subsystems": [], "total_subsystems": 0}));
+        return Ok(json!({
+            "symbols": 0,
+            "files": 0,
+            "subsystems": [],
+            "total_subsystems": 0,
+            "repeated_directories": repeated,
+        }));
     }
 
     let symbols = served.defined.len();
@@ -4078,6 +4086,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "shown": page.len(),
         "total_subsystems": groups.len(),
+        "repeated_directories": repeated,
     });
     if offset + page.len() < groups.len() {
         answer["next_offset"] = json!(offset + page.len());
@@ -4085,15 +4094,69 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     Ok(answer)
 }
 
+/// Directories whose definitions mostly exist in another directory too, with
+/// the same file extension: tier 3 refuses those names, so a copy of a tree
+/// costs the original its callers. Which copy to exclude is the owner's call.
+fn repeated_directories(served: &Served) -> Vec<String> {
+    const MIN_DEFINITIONS: usize = 500;
+    let directory = |file: &str| -> String {
+        let mut parts = file.split('/');
+        let (first, second) = (parts.next().unwrap_or(""), parts.next());
+        match (second, parts.next()) {
+            (Some(second), Some(_)) => format!("{first}/{second}"),
+            _ => first.to_string(),
+        }
+    };
+    let mut dirs_of: std::collections::HashMap<(&str, &str), std::collections::BTreeSet<String>> =
+        Default::default();
+    for (symbol, _) in served.registry.entries() {
+        let Some((file, name)) = symbol.split_once('#') else {
+            continue;
+        };
+        let extension = file.rsplit_once('.').map_or("", |(_, e)| e);
+        if name != "<module>" {
+            dirs_of
+                .entry((name, extension))
+                .or_default()
+                .insert(directory(file));
+        }
+    }
+    let mut counts: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for dirs in dirs_of.values() {
+        for dir in dirs {
+            let entry = counts.entry(dir).or_default();
+            entry.0 += 1;
+            entry.1 += usize::from(dirs.len() > 1);
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|&(_, (all, repeated))| all >= MIN_DEFINITIONS && repeated * 10 >= all * 8)
+        .map(|(dir, _)| dir.to_string())
+        .collect()
+}
+
 fn render_overview(v: &Value) -> String {
     let groups = v["subsystems"].as_array().map_or(&[][..], Vec::as_slice);
     let total = v["total_subsystems"]
         .as_u64()
         .unwrap_or(groups.len() as u64);
+    let repeated = v["repeated_directories"]
+        .as_array()
+        .filter(|dirs| !dirs.is_empty())
+        .map_or(String::new(), |dirs| {
+            let names: Vec<&str> = dirs.iter().filter_map(Value::as_str).collect();
+            format!(
+                "\nthese directories repeat each other, so calls to their names stay \
+unlinked: {}. If one is a copy, list it in `.glasirignore`.\n",
+                names.join(", ")
+            )
+        });
     if total == 0 {
-        return "no subsystems: the tree has no partition yet, which means \
-either no analysis has run or nothing in it is connected.\n"
-            .to_string();
+        return format!(
+            "no subsystems: the tree has no partition yet, which means \
+either no analysis has run or nothing in it is connected.\n{repeated}"
+        );
     }
     let mut out = format!(
         "{} symbols in {} files, {total} subsystems\n\n",
@@ -4114,6 +4177,7 @@ either no analysis has run or nothing in it is connected.\n"
             ));
         }
     }
+    out.push_str(&repeated);
     if let Some(next) = v["next_offset"].as_u64() {
         out.push_str(&format!(
             "\n... and {} more (offset: {next})\n",

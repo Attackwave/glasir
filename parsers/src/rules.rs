@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/37";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/39";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -706,6 +706,14 @@ mod tests {
         assert_eq!(caller("kick"), Some("<module>"));
     }
 
+    fn end_of_in_head_before_h(facts: &FileFacts, src: &str) -> bool {
+        let start = src.find("def h(x)").unwrap() as u32;
+        facts
+            .ranges
+            .iter()
+            .any(|r| r.0 == "head" && r.1 .1 <= start)
+    }
+
     #[test]
     fn elixir_blocks_end_where_their_keywords_say() {
         let rules = RuleSet::load(None).unwrap();
@@ -719,6 +727,8 @@ mod tests {
                    defdelegate e(x), to: M.Other\n\
                    defmacrop f(x) do\n  unless x in @tag do\n    in_unless()\n  end\n  after_unless()\nend\n\
                    def g(x) do\n  %{start: 1, end: 2}\n  [do: 1]\n  x.end\n  at(:end)\n  after_keys()\nend\n\
+                   def head(o \\\\ [do: 1]) do\n  x()\n  in_head()\nend\n\
+                   past_head()\n\
                    def h(x) do\n  ~S|a do b|\n  ~r/don't/i\n  ~s\"\"\"\n  say \"x do\n  \"\"\"\n  [?\", ?(]\n  after_sigils()\nend\n\
                    defmodule N do\n  def z(x), do: x\nend\n\
                    after_n()\n\
@@ -744,6 +754,9 @@ mod tests {
         assert_eq!(caller("after_keys"), Some("g"));
         assert_eq!(caller("after_sigils"), Some("h"));
         assert_eq!(caller("after_n"), Some("M"));
+        assert_eq!(caller("in_head"), Some("head"));
+        assert_eq!(caller("past_head"), Some("M"));
+        assert!(end_of_in_head_before_h(&facts, src));
         // A definition without a block ends where the next one begins.
         let start_of = |name: &str| src.find(name).unwrap() as u32;
         let end_of = |name: &str| {
@@ -756,6 +769,122 @@ mod tests {
         };
         assert!(end_of("b!") <= start_of("def c"));
         assert!(end_of("e") <= start_of("defmacrop f"));
+    }
+
+    #[test]
+    fn dart_definitions_keep_their_bodies() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "T first<T extends Object>(List<Set<T>> a) {\n  one();\n}\n\
+                   class C extends D {\n\
+                   \x20 void named({int a = 1}) {\n    two();\n  }\n\
+                   \x20 String get label {\n    three();\n  }\n\
+                   \x20 String get short => four();\n\
+                   \x20 int small() => 1;\n\
+                   \x20 final made = seen();\n\
+                   \x20 int size() => () { five(); six(); }();\n\
+                   \x20 Function make() {\n    return (int x) {\n      seven();\n    };\n  }\n\
+                   \x20 void use() {\n    first<Set<int>>(x);\n    if (a < b && c > d) {}\n  }\n\
+                   }\n";
+        let facts = rules.parse(Language::Dart, src);
+        assert!(!facts.had_errors);
+        let caller = |callee: &str| {
+            facts
+                .calls
+                .iter()
+                .find(|c| c.1 == callee)
+                .map(|c| c.0.as_str())
+        };
+        assert_eq!(caller("one"), Some("first"));
+        assert_eq!(caller("two"), Some("named"));
+        assert_eq!(caller("three"), Some("label"));
+        assert_eq!(caller("four"), Some("short"));
+        assert_eq!(caller("seen"), Some("C"));
+        assert_eq!(caller("five"), Some("size"));
+        assert_eq!(caller("six"), Some("size"));
+        assert_eq!(caller("seven"), Some("make"));
+        assert_eq!(caller("first"), Some("use"));
+        assert!(!facts.defines.iter().any(|d| d == "return"));
+        assert!(caller("a").is_none());
+    }
+
+    #[test]
+    fn ruby_members_and_literals_are_no_keywords() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "class A\n\
+                   \x20 class << self\n    def made\n      made_body()\n    end\n  end\n\
+                   \x20 def one\n    self.class.go\n    x = { class: 1, if: 2 }\n    run(:end, :class)\n    y.end\n    first()\n  end\n\
+                   \x20 def two\n    text = <<~SQL\n      class Hidden\n      do end\n    SQL\n    assert_match(/class Foo/, text)\n    check /def bar/, text\n    z = %r{def baz}\n    w = %w[end class]\n    second()\n  end\n\
+                   \x20 def three(a, b)\n    a / b\n    c = a / 2\n    third()\n  end\n\
+                   end\n";
+        let facts = rules.parse(Language::Ruby, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        for name in ["Hidden", "Foo", "bar", "baz", "SQL"] {
+            assert!(!facts.defines.iter().any(|d| d == name), "{name}");
+        }
+        let caller = |callee: &str| {
+            facts
+                .calls
+                .iter()
+                .find(|c| c.1 == callee)
+                .map(|c| c.0.as_str())
+        };
+        assert_eq!(caller("made_body"), Some("made"));
+        assert_eq!(caller("first"), Some("one"));
+        assert_eq!(caller("second"), Some("two"));
+        assert_eq!(caller("third"), Some("three"));
+    }
+
+    #[test]
+    fn script_regexes_and_decorators_keep_blocks_balanced() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "function a(s) {\n  var r = s.replace(/\\{([^}]+)\\}/g, function (m) { return m; });\n  inner();\n}\n\
+                   function b(x) {\n  return x / 2 + later(x) / 3;\n}\n";
+        let facts = rules.parse(Language::JavaScript, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        assert!(facts.calls.iter().any(|c| c.0 == "a" && c.1 == "inner"));
+        assert!(facts.calls.iter().any(|c| c.0 == "b" && c.1 == "later"));
+        let src = "@Component({\n  a: 'b',\n})\nexport class C {}\n\
+                   @Injectable() export class D {\n  @Input() run() {\n    go();\n  }\n}\n";
+        let facts = rules.parse(Language::TypeScript, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        for name in ["C", "D", "run"] {
+            assert!(facts.defines.iter().any(|d| d == name), "{name}");
+        }
+        assert!(facts.calls.iter().any(|c| c.0 == "run" && c.1 == "go"));
+    }
+
+    #[test]
+    fn ruby_endless_methods_open_no_block() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "class Outer\n\
+                   \x20 class Verb\n\
+                   \x20   def self.name = \"GET\"\n\
+                   \x20   def self.call(req) = go(req)\n\
+                   \x20 end\n\
+                   \x20 def value=(v)\n    @v = v\n    set()\n  end\n\
+                   \x20 def after\n    last()\n  end\n\
+                   end\n";
+        let facts = rules.parse(Language::Ruby, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        let range = |name: &str| facts.ranges.iter().find(|r| r.0 == name).unwrap().1;
+        assert!(range("Verb").1 <= range("value").0, "{:?}", facts.ranges);
+        assert!(facts.calls.iter().any(|c| c.0 == "call" && c.1 == "go"));
+        assert!(facts.calls.iter().any(|c| c.0 == "value" && c.1 == "set"));
+        assert!(facts.calls.iter().any(|c| c.0 == "after" && c.1 == "last"));
+    }
+
+    #[test]
+    fn swift_computed_properties_define_and_stored_ones_do_not() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "struct S {\n\
+                   \x20 var body: [Int] {\n    work()\n  }\n\
+                   \x20 var stored: Int = 1\n\
+                   \x20 var plain: Int\n\
+                   }\n";
+        let facts = rules.parse(Language::Swift, src);
+        assert!(facts.defines.iter().any(|d| d == "body"));
+        assert!(!facts.defines.iter().any(|d| d == "stored" || d == "plain"));
+        assert!(facts.calls.iter().any(|c| c.0 == "body" && c.1 == "work"));
     }
 
     #[test]

@@ -124,6 +124,10 @@ can both exclude more and bring back what git ignores:
 /reference/scans/     # ... of which only this part stays out
 ```
 
+A tree holding a copy of itself, such as an amalgamated header or a vendored
+snapshot, defines each name twice, and calls to an ambiguous name stay unlinked.
+`overview` names such directories; exclude the copy here.
+
 As in git, a file inside an ignored directory comes back only once the
 directory does (`!/reference/` above). Only ignore files inside the tree
 count — not your global excludes file and not `.git/info/exclude` — so the

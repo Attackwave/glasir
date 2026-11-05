@@ -6993,6 +6993,123 @@ fn demo_imports() {
             "ex/pay.ex",
             "defmodule Shop.Pay do\n  alias Shop.Cart, as: C\n  def full(c), do: Shop.Cart.total(c)\n  def short(c), do: C.total(c)\nend\n",
         ),
+        // A class name decides between two files defining the method; a
+        // constant's value does not.
+        (
+            "cq/tax.rb",
+            "MAX_SIZE = 1\nclass Tax\n  LEVEL = 1\n  def self.adjust(x)\n    x\n  end\n  def self.rate(x)\n    x\n  end\nend\n",
+        ),
+        (
+            "cq/fee.rb",
+            "class Fee\n  def self.adjust(x)\n    x\n  end\n  def self.rate(x)\n    x\n  end\nend\n",
+        ),
+        (
+            "cq/use.rb",
+            "def bill(x)\n  Tax.rate(x)\nend\ndef cap(x)\n  MAX_SIZE.rate(x)\nend\ndef lift(x)\n  LEVEL.adjust(x)\nend\n",
+        ),
+        (
+            "cq/Tax.php",
+            "<?php\nclass PhpTax {\n  public static function rate($x) { return $x; }\n}\n",
+        ),
+        (
+            "cq/Fee.php",
+            "<?php\nclass PhpFee {\n  public static function rate($x) { return $x; }\n}\n",
+        ),
+        (
+            "cq/use.php",
+            "<?php\nfunction bill($x) { return \\Shop\\PhpTax::rate($x); }\n",
+        ),
+        (
+            "cq/tax.dart",
+            "class DartTax {\n  static int rate(int x) { return x; }\n}\n",
+        ),
+        (
+            "cq/fee.dart",
+            "class DartFee {\n  static int rate(int x) { return x; }\n}\n",
+        ),
+        (
+            "cq/use.dart",
+            "int bill(int x) {\n  return DartTax.rate(x);\n}\n",
+        ),
+        (
+            "cq/Tax.swift",
+            "struct SwiftTax {\n    static func rate(_ x: Int) -> Int { return x }\n}\n",
+        ),
+        (
+            "cq/Fee.swift",
+            "struct SwiftFee {\n    static func rate(_ x: Int) -> Int { return x }\n}\n",
+        ),
+        (
+            "cq/use.swift",
+            "func bill(_ x: Int) -> Int {\n    return SwiftTax.rate(x)\n}\n",
+        ),
+        // Inherited names: a base class, a mixin, Elixir's `import`, and a
+        // constant path where several files define its last word.
+        (
+            "in/base.php",
+            "<?php\nclass PayBase {\n  public function fetch($x) { return $x; }\n}\n",
+        ),
+        (
+            "in/other.php",
+            "<?php\nclass PayOther {\n  public function fetch($x) { return $x; }\n}\n",
+        ),
+        (
+            "in/child.php",
+            "<?php\nclass PayChild extends PayBase {\n  public function run($x) { return $this->fetch($x); }\n  public function own($x) { return static::mine($x); }\n  public static function mine($x) { return $x; }\n}\n",
+        ),
+        (
+            "in/twin.php",
+            "<?php\nclass PayTwin {\n  public static function mine($x) { return $x; }\n}\n",
+        ),
+        (
+            "in/priced.rb",
+            "module Priced\n  def price\n    1\n  end\nend\n",
+        ),
+        (
+            "in/cheap.rb",
+            "class Cheap\n  def price\n    0\n  end\nend\n",
+        ),
+        (
+            "in/sold.rb",
+            "class Sold\n  include Priced\n  def bill\n    price()\n  end\nend\n",
+        ),
+        (
+            "in/extra.php",
+            "<?php\ntrait Extra {\n  public function helper() { return 1; }\n}\n",
+        ),
+        (
+            "in/stray.php",
+            "<?php\nclass Stray {\n  public function helper() { return 2; }\n}\n",
+        ),
+        (
+            "in/both.php",
+            "<?php\nclass Both extends PayBase {\n    use Extra;\n    public function go() { return $this->helper(); }\n}\n",
+        ),
+        (
+            "in/late.php",
+            "<?php\nclass Late extends PayBase {\n  public function fetch($x) { return parent::fetch($x); }\n}\n",
+        ),
+        (
+            "in/lib/a/utils.rb",
+            "module A\n  module Utils\n    def self.clean(x)\n      x\n    end\n  end\nend\n",
+        ),
+        (
+            "in/lib/b/utils.rb",
+            "module B\n  module Utils\n    def self.clean(x)\n      x\n    end\n  end\nend\n",
+        ),
+        ("in/lib/use.rb", "def wash(x)\n  A::Utils.clean(x)\nend\n"),
+        (
+            "in/route.ex",
+            "defmodule Shop.Route do\n  def build(x), do: x\nend\n",
+        ),
+        (
+            "in/plan.ex",
+            "defmodule Shop.Plan do\n  def build(x), do: x\nend\n",
+        ),
+        (
+            "in/route_test.ex",
+            "defmodule Shop.Check do\n  import Shop.Route\n  def go(x), do: build(x)\nend\n",
+        ),
         (
             "box/crate_box.py",
             "class Crate:\n    def seal_lid(self):\n        pass\n",
@@ -7012,7 +7129,7 @@ fn demo_imports() {
         ),
         (
             "ex/use.ex",
-            "defmodule Shop.Use do\n  alias Shop.{Cart,\n    Order}\n  alias Shop.Billing, warn: false\n  def both(c) do\n    Cart.total(c)\n    Order.total(c)\n  end\n  def tax(c), do: Billing.Tax.rate(c)\nend\n",
+            "defmodule Shop.Use do\n  @moduledoc \"\"\"\n  alias Shop.Invoice, as: Cart\n  \"\"\"\n  alias Shop.{Cart,\n    Order}\n  alias Shop.Billing, warn: false\n  def both(c) do\n    Cart.total(c)\n    Order.total(c)\n  end\n  def tax(c), do: Billing.Tax.rate(c)\nend\n",
         ),
         // Rust: a module is a file. `changes` is defined twice, so the bare
         // name is refused; the module qualifier decides, beside the caller,
@@ -7062,6 +7179,22 @@ fn demo_imports() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
+    let many = |prefix: &str| -> String {
+        (0..500)
+            .map(|i| format!("def {prefix}{i}():\n    pass\n"))
+            .collect()
+    };
+    for (file, text) in [
+        ("rep/one/m.py", many("shared_")),
+        ("rep/two/m.py", many("shared_")),
+        ("rep/own/m.py", many("unique_")),
+        ("rep/head/m.py", many("paired_")),
+        ("rep/body/m.rb", many("paired_")),
+    ] {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     let a = analyse(&dir).unwrap();
     let node = |s: &str| a.registry.node_of(s).unwrap_or_else(|| panic!("no {s}"));
     let reaches = |from: &str, to: &str| {
@@ -7091,6 +7224,29 @@ fn demo_imports() {
         ("ex/pay.ex#full", "ex/cart.ex#total", true),
         ("ex/pay.ex#short", "ex/cart.ex#total", true),
         ("ex/pay.ex#full", "ex/order.ex#total", false),
+        ("in/child.php#run", "in/base.php#fetch", true),
+        ("in/child.php#run", "in/other.php#fetch", false),
+        ("in/child.php#own", "in/child.php#mine", true),
+        ("in/child.php#own", "in/twin.php#mine", false),
+        ("in/sold.rb#bill", "in/priced.rb#price", true),
+        ("in/sold.rb#bill", "in/cheap.rb#price", false),
+        ("in/both.php#go", "in/extra.php#helper", true),
+        ("in/both.php#go", "in/stray.php#helper", false),
+        ("in/late.php#fetch", "in/base.php#fetch", true),
+        ("in/lib/use.rb#wash", "in/lib/a/utils.rb#clean", true),
+        ("in/lib/use.rb#wash", "in/lib/b/utils.rb#clean", false),
+        ("in/route_test.ex#go", "in/route.ex#build", true),
+        ("in/route_test.ex#go", "in/plan.ex#build", false),
+        ("cq/use.rb#bill", "cq/tax.rb#rate", true),
+        ("cq/use.rb#bill", "cq/fee.rb#rate", false),
+        ("cq/use.rb#cap", "cq/tax.rb#rate", false),
+        ("cq/use.rb#lift", "cq/tax.rb#adjust", false),
+        ("cq/use.php#bill", "cq/Tax.php#rate", true),
+        ("cq/use.php#bill", "cq/Fee.php#rate", false),
+        ("cq/use.dart#bill", "cq/tax.dart#rate", true),
+        ("cq/use.dart#bill", "cq/fee.dart#rate", false),
+        ("cq/use.swift#bill", "cq/Tax.swift#rate", true),
+        ("cq/use.swift#bill", "cq/Fee.swift#rate", false),
         ("ex/use.ex#both", "ex/cart.ex#total", true),
         ("ex/use.ex#both", "ex/order.ex#total", true),
         ("ex/use.ex#tax", "ex/tax.ex#rate", true),
@@ -7124,6 +7280,16 @@ fn demo_imports() {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
     let state = served_state(&dir).unwrap();
+    let overview = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "overview", "arguments": {}}}),
+    )
+    .unwrap();
+    let text = overview["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("repeat each other"), "{text}");
+    assert!(text.contains("rep/one, rep/two."), "{text}");
+    assert!(!text.contains("rep/head"), "{text}");
     let impact = |symbol: &str| -> String {
         let r = mcp::handle_for_test(
             &state.as_served(),
