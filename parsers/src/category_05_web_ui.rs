@@ -349,7 +349,7 @@ pub fn parse_dart(src: &str) -> FileFacts {
                                     ok = true;
                                     break;
                                 }
-                                TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                                TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                                 _ => k += 1,
                             }
                         }

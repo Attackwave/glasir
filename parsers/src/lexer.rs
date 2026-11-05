@@ -105,6 +105,11 @@ pub struct Lexer<'a, 's> {
     /// `~S|…|` and `?"` are literals: read as code, a sigil's `do` or a quote
     /// behind `?` unbalances the block scan of the whole file.
     pub sigils: bool,
+    /// `/* a /* b */ c */` nests here. Elsewhere its first `*/` ends it, and
+    /// `"application/*"` in a comment must not swallow the code after it.
+    pub nested_comments: bool,
+    /// `R"(…)"` ends at its delimiter, not at the first quote.
+    pub cpp_raw: bool,
     /// `/class Foo/` is a literal where a value may start.
     pub regexes: bool,
     /// Ruby: `<<~TEXT` holds lines of text, and `run /x/` passes a regexp.
@@ -120,6 +125,8 @@ impl<'a, 's> Lexer<'a, 's> {
             pos: 0,
             comment_style,
             sigils: false,
+            nested_comments: false,
+            cpp_raw: false,
             regexes: false,
             ruby_literals: false,
             heredocs: Vec::new(),
@@ -222,7 +229,10 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.pos += b_start.len();
                 let mut depth = 1;
                 while self.pos < self.bytes.len() && depth > 0 {
-                    if self.starts_with(b_start) && b_start != b_end {
+                    if self.starts_with(b_start)
+                        && b_start != b_end
+                        && (self.nested_comments || b_start != "/*")
+                    {
                         depth += 1;
                         self.pos += b_start.len();
                     } else if self.starts_with(b_end) {
@@ -357,6 +367,10 @@ impl<'a, 's> Lexer<'a, 's> {
             while self.pos + 2 < self.bytes.len() {
                 if self.bytes[self.pos..self.pos + 3] == quote {
                     self.pos += 3;
+                    // `"""a""""`: a quote before the closing three is text.
+                    while self.bytes.get(self.pos) == Some(&quote[0]) {
+                        self.pos += 1;
+                    }
                     closed = true;
                     break;
                 }
@@ -886,7 +900,7 @@ impl<'a, 's> Lexer<'a, 's> {
             (0, false)
         };
 
-        if is_rust_raw {
+        if is_rust_raw && !(self.cpp_raw && remaining.starts_with("R\"")) {
             let mut k = self.pos + prefix_len;
             let mut hash_count = 0;
             while k < bytes.len() && bytes[k] == b'#' {
@@ -968,7 +982,7 @@ impl<'a, 's> Lexer<'a, 's> {
 
                 self.pos = paren_pos + 1;
                 while self.pos < bytes.len() {
-                    if self.src[self.pos..].starts_with(&closing) {
+                    if bytes[self.pos..].starts_with(closing.as_bytes()) {
                         self.pos += closing.len();
                         let end = self.pos.min(bytes.len());
                         return Some(Token {
@@ -1044,7 +1058,7 @@ impl<'a, 's> Lexer<'a, 's> {
                                 start: start as u32,
                                 end: end as u32,
                             });
-                        } else if cur == b'\n' {
+                        } else if cur == b'\n' && quote_byte == b'\'' {
                             break;
                         } else {
                             self.pos += 1;

@@ -7061,6 +7061,31 @@ fn demo_imports() {
             "in/twin.php",
             "<?php\nclass PayTwin {\n  public static function mine($x) { return $x; }\n}\n",
         ),
+        // Bases belong to their class, not to the file.
+        (
+            "in/pair.php",
+            "<?php\nclass First extends PayBase {\n  public function run_first($x) { return $this->fetch($x); }\n}\nclass Second extends PayOther {\n  public function run_second($x) { return $this->fetch($x); }\n}\n",
+        ),
+        (
+            "in/only.ex",
+            "defmodule Shop.Only do\n  import Shop.Plan, only: [build: 1]\n  def go(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/except.ex",
+            "defmodule Shop.Except do\n  import Shop.Route, except: [build: 1]\n  def go(x), do: build(x)\nend\n",
+        ),
+        (
+            "in/left_base.rb",
+            "class LeftBase\n  def shared\n    1\n  end\nend\n",
+        ),
+        (
+            "in/right_other.rb",
+            "class RightOther\n  def shared\n    2\n  end\nend\n",
+        ),
+        (
+            "in/nest.rb",
+            "module Wrap\n  class Left < LeftBase\n    def go_left\n      shared()\n    end\n  end\n  class Right\n    def go_right\n      shared()\n    end\n  end\nend\n",
+        ),
         (
             "in/priced.rb",
             "module Priced\n  def price\n    1\n  end\nend\n",
@@ -7228,6 +7253,15 @@ fn demo_imports() {
         ("in/child.php#run", "in/other.php#fetch", false),
         ("in/child.php#own", "in/child.php#mine", true),
         ("in/child.php#own", "in/twin.php#mine", false),
+        ("in/nest.rb#go_left", "in/left_base.rb#shared", true),
+        ("in/nest.rb#go_right", "in/left_base.rb#shared", false),
+        ("in/pair.php#run_first", "in/base.php#fetch", true),
+        ("in/pair.php#run_first", "in/other.php#fetch", false),
+        ("in/pair.php#run_second", "in/other.php#fetch", true),
+        ("in/pair.php#run_second", "in/base.php#fetch", false),
+        ("in/only.ex#go", "in/plan.ex#build", true),
+        ("in/only.ex#go", "in/route.ex#build", false),
+        ("in/except.ex#go", "in/route.ex#build", false),
         ("in/sold.rb#bill", "in/priced.rb#price", true),
         ("in/sold.rb#bill", "in/cheap.rb#price", false),
         ("in/both.php#go", "in/extra.php#helper", true),

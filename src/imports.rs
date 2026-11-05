@@ -26,8 +26,9 @@ pub enum Import {
         name: String,
     },
     /// `class A extends B`, a mixin, Elixir's `import B`: a name the file does
-    /// not define may come from the module `B`.
-    Base(String),
+    /// not define may come from the module `B`, for the definition around the
+    /// byte `at`.
+    Base { module: String, at: u32 },
 }
 
 /// The import statements of one file.
@@ -46,13 +47,21 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
     }
 }
 
+/// Where `slice`, a part of `src`, begins.
+fn offset(src: &str, slice: &str) -> u32 {
+    (slice.as_ptr() as usize).saturating_sub(src.as_ptr() as usize) as u32
+}
+
 /// The last segment of a class named in code: `\\A\\B`, `A::B`, `B<T>` are `B`.
-fn base(written: &str) -> Option<Import> {
+fn base(src: &str, written: &str) -> Option<Import> {
     let name = written.trim().split('<').next()?.trim();
     let name = name.rsplit(['\\', ':']).next()?;
     let valid = name.starts_with(|c: char| c.is_uppercase())
         && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    valid.then(|| Import::Base(name.to_string()))
+    valid.then(|| Import::Base {
+        module: name.to_string(),
+        at: offset(src, written),
+    })
 }
 
 /// `class A extends B`, and `use C, D;` inside a class body.
@@ -62,13 +71,13 @@ fn php(src: &str) -> Vec<Import> {
         if let Some(rest) = line.trim_start().strip_prefix("use ") {
             if line.starts_with(char::is_whitespace) {
                 let names = rest.split([';', '{']).next().unwrap_or("");
-                out.extend(names.split(',').filter_map(base));
+                out.extend(names.split(',').filter_map(|n| base(src, n)));
             }
         } else if let Some((_, rest)) = line
             .split_once(" extends ")
             .filter(|(head, _)| head.contains("class "))
         {
-            out.extend(base(rest.split_whitespace().next().unwrap_or("")));
+            out.extend(base(src, rest.split_whitespace().next().unwrap_or("")));
         }
     }
     out
@@ -82,11 +91,11 @@ fn ruby(src: &str) -> Vec<Import> {
             .strip_prefix("class ")
             .and_then(|rest| rest.split_once(" < "))
         {
-            out.extend(base(parent.split_whitespace().next().unwrap_or("")));
+            out.extend(base(src, parent.split_whitespace().next().unwrap_or("")));
         }
         for keyword in ["include ", "extend ", "prepend "] {
             if let Some(names) = line.strip_prefix(keyword) {
-                out.extend(names.split(',').filter_map(base));
+                out.extend(names.split(',').filter_map(|n| base(src, n)));
             }
         }
     }
@@ -105,7 +114,7 @@ fn dart(src: &str) -> Vec<Import> {
         for keyword in [" extends ", " with ", " on "] {
             if let Some((_, rest)) = head.split_once(keyword) {
                 let rest = rest.split(" with ").next().unwrap_or("");
-                out.extend(rest.split(',').filter_map(base));
+                out.extend(rest.split(',').filter_map(|n| base(src, n)));
             }
         }
     }
@@ -133,6 +142,7 @@ fn elixir(src: &str) -> Vec<Import> {
     let mut lines = src.lines();
     let mut in_heredoc = false;
     let mut bases = Vec::new();
+    let mut names_imported = Vec::new();
     while let Some(line) = lines.next() {
         // A `@doc` example shows an alias its module does not have.
         if line.matches("\"\"\"").count() % 2 == 1 {
@@ -143,12 +153,31 @@ fn elixir(src: &str) -> Vec<Import> {
             continue;
         }
         if let Some(rest) = line.trim().strip_prefix("import ") {
-            let spec = rest.split(',').next().unwrap_or("").trim();
-            if spec
+            let (spec, options) = rest.split_once(',').unwrap_or((rest, ""));
+            let spec = spec.trim();
+            let plain = spec
                 .chars()
-                .all(|c| c.is_alphanumeric() || c == '.' || c == '_')
-            {
-                bases.push(Import::Base(spec.to_string()));
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '_');
+            let only = options.split_once("only: [").map(|(_, names)| names);
+            match only {
+                Some(names) if plain => {
+                    let names = names.split(']').next().unwrap_or("");
+                    for name in names.split(',').filter_map(|n| n.split(':').next()) {
+                        let name = name.trim().to_string();
+                        names_imported.push(Import::Name {
+                            local: name.clone(),
+                            spec: spec.to_string(),
+                            name,
+                        });
+                    }
+                }
+                // Options are the reader's limit: what they exclude, or what
+                // the next line says, is not known here.
+                None if plain && !rest.contains(',') => bases.push(Import::Base {
+                    module: spec.to_string(),
+                    at: offset(src, spec),
+                }),
+                _ => {}
             }
             continue;
         }
@@ -176,6 +205,7 @@ fn elixir(src: &str) -> Vec<Import> {
         push(spec, &alias);
     }
     out.append(&mut bases);
+    out.append(&mut names_imported);
     out
 }
 

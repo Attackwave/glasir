@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/39";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/40";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -851,6 +851,63 @@ mod tests {
             assert!(facts.defines.iter().any(|d| d == name), "{name}");
         }
         assert!(facts.calls.iter().any(|c| c.0 == "run" && c.1 == "go"));
+    }
+
+    #[test]
+    fn long_strings_end_where_their_language_says() {
+        let rules = RuleSet::load(None).unwrap();
+        for (language, src) in [
+            (
+                Language::Php,
+                "<?php\nfunction m() {\n  /* any application/* type */\n  run();\n}\n",
+            ),
+            (
+                Language::Java,
+                "class A {\n  void m() {\n    /* a /* b */\n    run();\n  }\n}\n",
+            ),
+            (
+                Language::Rust,
+                "fn m() {\n  /* a /* b */ { */\n  run();\n}\n",
+            ),
+            (
+                Language::Cpp,
+                "int m() {\n  auto t = R\"({\"a\":[}\")\";\n  run();\n}\n",
+            ),
+            (
+                Language::Cpp,
+                "int m() {\n  auto t = R\"x({)\"ü)x\";\n  run();\n}\n",
+            ),
+            (
+                Language::Rust,
+                "fn m() {\n  let x = b\"\\\nfoo{\n\";\n  run();\n}\n",
+            ),
+            (
+                Language::Kotlin,
+                "fun m() {\n  x(\"\"\"file{=\"t\"\"\"\")\n  run()\n}\n",
+            ),
+        ] {
+            let facts = rules.parse(language, src);
+            assert!(!facts.had_errors, "{language:?} {src}");
+            assert!(
+                facts.calls.iter().any(|c| c.0 == "m" && c.1 == "run"),
+                "{language:?} {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_const_parameter_defines_no_constant() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "static int f(const char* a,\n    int b) {\n  int c = 1;\n  run();\n}\nconst int LIMIT = 3;\n";
+        let facts = rules.parse(Language::Cpp, src);
+        assert!(!facts.had_errors, "{:?}", facts.ranges);
+        assert!(
+            !facts.defines.iter().any(|d| d == "c"),
+            "{:?}",
+            facts.defines
+        );
+        assert!(facts.defines.iter().any(|d| d == "LIMIT"));
+        assert!(facts.calls.iter().any(|c| c.0 == "f" && c.1 == "run"));
     }
 
     #[test]

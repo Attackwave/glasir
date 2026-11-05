@@ -7,6 +7,7 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
+    lexer.cpp_raw = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -119,7 +120,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     ok = true;
                                     break;
                                 }
-                                TokenKind::Symbol(';') | TokenKind::Symbol('(') => break,
+                                TokenKind::Symbol(';' | '(' | ')' | '{' | '}' | ',') => break,
                                 _ => k += 1,
                             }
                         }
