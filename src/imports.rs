@@ -89,7 +89,7 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
             contracts(src, "interface"),
         ]
         .concat(),
-        Lang::Rust => rust_traits(src),
+        Lang::Rust => [rust_traits(src), rust_methods(src), rust_types(src)].concat(),
         Lang::Swift => [
             colon_heads(src, &["class", "struct", "enum", "actor", "extension"]),
             contracts(src, "protocol"),
@@ -532,6 +532,148 @@ fn go_classes(src: &str) -> Vec<Import> {
         }
     }
     out
+}
+
+/// The methods of each `impl`, which the type's own body does not hold.
+fn rust_methods(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    let mut class = None;
+    for line in src.lines() {
+        if line.starts_with('}') {
+            class = None;
+        } else if line.starts_with("impl") {
+            let head = line.split('{').next().unwrap_or(line);
+            let head = head.rsplit(" for ").next().unwrap_or(head);
+            let mut depth = 0;
+            let plain: String = head
+                .strip_prefix("impl")
+                .unwrap_or(head)
+                .chars()
+                .filter(|c| {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0 && *c != '>'
+                })
+                .collect();
+            class = plain
+                .split_whitespace()
+                .next_back()
+                .and_then(|w| w.rsplit("::").next())
+                .map(str::to_string);
+        } else if let Some(class) = &class {
+            let mut words = line.split_whitespace().skip_while(|w| *w != "fn");
+            let Some(name) = words.nth(1) else {
+                continue;
+            };
+            let name = name.split(['(', '<']).next().unwrap_or(name);
+            if line.trim_start().starts_with("//") || name.is_empty() {
+                continue;
+            }
+            out.push(Import::Method {
+                class: class.clone(),
+                name: name.to_string(),
+                receiver: String::new(),
+                at: offset(src, line),
+            });
+        }
+    }
+    out
+}
+
+/// The type a Rust declaration states: `&mut Box<a::B<T>>` is `B`.
+fn rust_type(written: &str) -> Option<&str> {
+    const WRAPPERS: [&str; 7] = ["Box", "Arc", "Rc", "Option", "RefCell", "Mutex", "RwLock"];
+    let mut text = written.trim().trim_start_matches('&').trim_start();
+    if text.starts_with('\'') {
+        text = text.split_once(' ')?.1;
+    }
+    text = text.strip_prefix("mut ").unwrap_or(text).trim_start();
+    loop {
+        let (head, rest) = text.split_once('<').unwrap_or((text, ""));
+        let name = head.rsplit("::").next()?.trim();
+        if !WRAPPERS.contains(&name) || rest.is_empty() {
+            let valid = name.starts_with(char::is_uppercase)
+                && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+            return valid.then_some(name);
+        }
+        text = rest;
+    }
+}
+
+/// The type a constructor call builds: `Type::new(…)`, and only the names that
+/// by convention return their type.
+fn constructed(value: &str) -> Option<&str> {
+    let (ty, call) = value.split_once("::")?;
+    let name = call.split('(').next()?;
+    let builds = matches!(name, "new" | "default") || name.starts_with("with_");
+    if builds && !call.contains(").") {
+        rust_type(ty)
+    } else {
+        None
+    }
+}
+
+/// `name: Type` in fields, parameters and `let`, and `let name = Type::new()`.
+/// A name declared with two types is left out, as for Java.
+fn rust_types(src: &str) -> Vec<Import> {
+    let mut types: std::collections::BTreeMap<&str, Option<&str>> = Default::default();
+    let mut seen: Vec<(&str, &str)> = Vec::new();
+    let mut in_struct = false;
+    for line in src.lines() {
+        let text = line.split("//").next().unwrap_or("").trim();
+        if in_struct {
+            if text.starts_with('}') {
+                in_struct = false;
+                continue;
+            }
+            let field = match text.strip_prefix("pub(") {
+                Some(rest) => rest.split_once(')').map_or(text, |(_, f)| f.trim_start()),
+                None => text.strip_prefix("pub ").unwrap_or(text),
+            };
+            if let Some((name, ty)) = field.split_once(':') {
+                seen.extend(rust_type(ty.trim_end_matches(',')).map(|t| (name.trim(), t)));
+            }
+        } else if text.split_whitespace().any(|w| w == "struct") && text.ends_with('{') {
+            in_struct = true;
+        } else if let Some(rest) = text.strip_prefix("let ") {
+            let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+            let Some((name, value)) = rest.split_once('=') else {
+                continue;
+            };
+            let (name, ty) = match name.split_once(':') {
+                Some((name, ty)) => (name.trim(), rust_type(ty)),
+                None => (name.trim(), constructed(value)),
+            };
+            seen.extend(ty.map(|t| (name, t)));
+        } else if let Some(at) = text.find("fn ") {
+            let list = text[at..].split_once('(').map_or("", |(_, l)| l);
+            let list = list.rsplit_once(')').map_or(list, |(l, _)| l);
+            for parameter in list.split(',') {
+                if let Some((name, ty)) = parameter.split_once(':') {
+                    let name = name.trim().trim_start_matches("mut ");
+                    seen.extend(rust_type(ty).map(|t| (name, t)));
+                }
+            }
+        }
+    }
+    for (name, ty) in seen {
+        let known = types.entry(name).or_insert(Some(ty));
+        if *known != Some(ty) {
+            *known = None;
+        }
+    }
+    types
+        .into_iter()
+        .filter_map(|(alias, ty)| {
+            ty.map(|ty| Import::Module {
+                alias: alias.to_string(),
+                spec: ty.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// `class A(B, mod.C, metaclass=M):`, whose list may span lines.
@@ -1135,7 +1277,7 @@ pub fn resolve(lang: Lang, file: &str, spec: &str, root: &Path) -> Option<String
         Lang::Go => go_target(dir, spec, root),
         Lang::TypeScript | Lang::JavaScript => js_target(dir, spec, root),
         Lang::Elixir => module_file(lang, spec),
-        Lang::Java | Lang::Kotlin => Some(format!("@{spec}")),
+        Lang::Java | Lang::Kotlin | Lang::Rust => Some(format!("@{spec}")),
         _ => None,
     }
 }

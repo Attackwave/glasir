@@ -7597,6 +7597,34 @@ fn demo_imports() {
             "package a.b;\nclass OwnKid extends Own {\n  void go_own() {\n    own_pkg();\n  }\n}\n",
         ),
         (
+            "in/rs/area.rs",
+            "pub struct AreaPath {\n    n: u32,\n}\n\nimpl AreaPath {\n    pub fn grant(&mut self) {}\n}\n",
+        ),
+        (
+            "in/rs/other.rs",
+            "pub struct OtherPath;\n\nimpl OtherPath {\n    pub fn grant(&self) {}\n}\n",
+        ),
+        (
+            "in/rs/cycles.rs",
+            "pub(super) struct Cycles {\n    pub(crate) datapath: AreaPath,\n}\n\nimpl Cycles {\n    pub fn clock(&mut self) {\n        self\n            .datapath\n            .grant();\n    }\n}\n",
+        ),
+        (
+            "in/rs/local.rs",
+            "fn go_local(p: &mut AreaPath) {\n    p.grant();\n}\n\nfn go_let() {\n    let mut q = OtherPath::new();\n    q.grant();\n}\n\nfn go_built() {\n    let r = OtherPath::make();\n    r.grant();\n}\n",
+        ),
+        (
+            "in/rs/twin_a.rs",
+            "pub struct TwinA;\n\nimpl TwinA {\n    pub fn both_call(&self) {}\n}\n",
+        ),
+        (
+            "in/rs/twin_b.rs",
+            "pub struct TwinB;\n\nimpl TwinB {\n    pub fn both_call(&self) {}\n}\n",
+        ),
+        (
+            "in/rs/unknown.rs",
+            "fn go_unknown(x: u32) {\n    x.both_call();\n}\n",
+        ),
+        (
             "in/same.php",
             "<?php\nclass TwinA extends PayBase {\n  public function twin($x) { return $this->fetch($x); }\n}\nclass TwinB extends PayOther {\n  public function twin($x) { return $this->fetch($x); }\n}\n",
         ),
@@ -8095,6 +8123,13 @@ fn demo_imports() {
             "in/roots/main/a/b/Own.java#own_pkg",
             true,
         ),
+        ("in/rs/cycles.rs#clock", "in/rs/area.rs#grant", true),
+        ("in/rs/cycles.rs#clock", "in/rs/other.rs#grant", false),
+        ("in/rs/local.rs#go_local", "in/rs/area.rs#grant", true),
+        ("in/rs/local.rs#go_local", "in/rs/other.rs#grant", false),
+        ("in/rs/local.rs#go_let", "in/rs/other.rs#grant", true),
+        ("in/rs/local.rs#go_let", "in/rs/area.rs#grant", false),
+        ("in/rs/local.rs#go_built", "in/rs/other.rs#grant", false),
         ("in/same.php#twin", "in/base.php#fetch", true),
         ("in/same.php#twin", "in/other.php#fetch", true),
         ("in/stop.dart#go_stop", "in/wide_base.dart#pull", true),
@@ -8162,6 +8197,25 @@ fn demo_imports() {
     assert!(text.contains("repeat each other"), "{text}");
     assert!(text.contains("rep/one, rep/two."), "{text}");
     assert!(!text.contains("rep/head"), "{text}");
+    assert!(
+        text.contains(concat!(
+            "(glasir ",
+            env!("CARGO_PKG_VERSION"),
+            ", indexed at "
+        )),
+        "{text}"
+    );
+    let callers = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_callers",
+                           "arguments": {"symbol": "in/rs/twin_a.rs#both_call"}}}),
+    )
+    .unwrap();
+    let text = callers["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("could mean another definition"), "{text}");
+    assert!(text.contains("in/rs/unknown.rs#go_unknown"), "{text}");
+    assert!(!mcp::without_undecided(text).contains("in/rs/unknown.rs#go_unknown"));
     let impact = |symbol: &str| -> String {
         let r = mcp::handle_for_test(
             &state.as_served(),

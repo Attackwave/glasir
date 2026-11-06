@@ -71,7 +71,12 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 scope.on_receiver();
                 // `community.get(i)` is a value's method: only `::` names a
                 // module, so a variable sharing a file's name is no module.
-                scope.module_receiver = None;
+                // `x.f()` names a value, never a module: marked so.
+                scope.module_receiver = scope
+                    .module_receiver
+                    .take()
+                    .filter(|_| scope.had_receiver)
+                    .map(|name| format!(".{name}"));
                 i += 1;
                 continue;
             }

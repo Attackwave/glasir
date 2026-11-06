@@ -297,6 +297,7 @@ pub fn structural_answer(served: &Served, q: &Question) -> Answer {
                 .map(str::to_string)
         })
         .unwrap_or_default();
+    let text = crate::mcp::without_undecided(&text);
     // An expectation may name a *section* of the answer with `in:`, because a
     // symbol often appears in several. `explain_node src/auth.rs#current` lists
     // `src/auth.rs#read` both as a subsystem sibling and as a callee, so a
