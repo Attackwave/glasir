@@ -11,6 +11,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    scope.names_base = true;
     // Where the modifiers before a declaration begin, so its range, and the
     // snippet handed back for it, starts at `public static` and not at the name.
     let mut declared_at: Option<u32> = None;

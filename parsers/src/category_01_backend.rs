@@ -738,6 +738,7 @@ pub fn parse_csharp(src: &str) -> FileFacts {
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    scope.names_base = true;
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -1008,6 +1009,7 @@ pub fn parse_php(src: &str) -> FileFacts {
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    scope.names_base = true;
 
     while i < tokens.len() {
         let tok = &tokens[i];

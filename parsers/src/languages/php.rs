@@ -14,6 +14,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     let mut i = 0;
     let mut scope = ScopeStack::new();
+    scope.names_base = true;
 
     while i < tokens.len() {
         let tok = &tokens[i];

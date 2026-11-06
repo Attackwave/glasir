@@ -10,6 +10,7 @@
 //! do: a variable's declared type names the class a call through it reaches.
 
 use crate::parse_ast::Lang;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// One import statement, as written. Resolved against the tree by `resolve`.
@@ -29,20 +30,96 @@ pub enum Import {
     /// not define may come from the module `B`, for the definition around the
     /// byte `at`.
     Base { module: String, at: u32 },
+    /// `interface A`, `protocol A`: the type only declares its methods.
+    Contract { name: String },
+    /// `trait A`, `module A`, `mixin A`: its methods reach into the class using
+    /// it, so its own chain does not bound what `self` holds.
+    Mixin { name: String },
+    /// `import a.b.C`: the class `C` lives in a package ending in `b`. A `*`
+    /// class says the file reaches names no statement lists.
+    Qualified { class: String, package: String },
+    /// `func (r *T) name()`: a Go method, which its type's body does not hold.
+    Method {
+        class: String,
+        name: String,
+        receiver: String,
+        at: u32,
+    },
+    /// `extension A`: more of a type defined elsewhere, not a definition of it.
+    Extension { name: String },
 }
 
 /// The import statements of one file.
 pub fn read(lang: Lang, src: &str) -> Vec<Import> {
     match lang {
-        Lang::Python => python(src),
-        Lang::Go => go(src),
-        Lang::TypeScript | Lang::JavaScript => javascript(src),
+        Lang::Python => [python(src), python_bases(src)].concat(),
+        Lang::Go => [go(src), go_classes(src)].concat(),
+        Lang::TypeScript | Lang::JavaScript => [
+            javascript(src),
+            heads(src, &["class"], &["extends"], &["implements"]),
+        ]
+        .concat(),
         Lang::Elixir => elixir(src),
-        Lang::Java => java(src),
-        Lang::Kotlin => kotlin(src),
-        Lang::Php => php(src),
-        Lang::Ruby => ruby(src),
-        Lang::Dart => dart(src),
+        Lang::Java => [
+            java(src),
+            contracts(src, "interface"),
+            qualified(src),
+            without_outsiders(
+                src,
+                heads(
+                    src,
+                    &["class", "interface", "enum", "record"],
+                    &["extends", "implements"],
+                    &[],
+                ),
+            ),
+        ]
+        .concat(),
+        Lang::Kotlin => [
+            kotlin(src),
+            contracts(src, "interface"),
+            qualified(src),
+            kotlin_actuals(src),
+            kotlin_receivers(src),
+            without_outsiders(src, colon_heads(src, &["class", "interface", "object"])),
+        ]
+        .concat(),
+        Lang::CSharp => [
+            colon_heads(src, &["class", "struct", "interface", "record"]),
+            contracts(src, "interface"),
+        ]
+        .concat(),
+        Lang::Rust => rust_traits(src),
+        Lang::Swift => [
+            colon_heads(src, &["class", "struct", "enum", "actor", "extension"]),
+            contracts(src, "protocol"),
+            swift_extensions(src),
+            class_heads(src, &["extension"])
+                .into_iter()
+                .filter_map(|(head, len)| {
+                    let name = head[len..].split_whitespace().next()?;
+                    Some(Import::Extension {
+                        name: name.split(':').next()?.to_string(),
+                    })
+                })
+                .collect(),
+        ]
+        .concat(),
+        Lang::Cpp | Lang::C => colon_heads(src, &["class", "struct"]),
+        Lang::Scala => heads(
+            src,
+            &["class", "object", "trait"],
+            &["extends", "with"],
+            &[],
+        ),
+        Lang::Php => [
+            without_outsiders(src, php(src)),
+            mixins(src, "trait"),
+            qualified(src),
+        ]
+        .concat(),
+        Lang::Ruby => [ruby(src), mixins(src, "module")].concat(),
+        Lang::Dart => [dart(src), mixins(src, "mixin")].concat(),
         _ => Vec::new(),
     }
 }
@@ -52,11 +129,12 @@ fn offset(src: &str, slice: &str) -> u32 {
     (slice.as_ptr() as usize).saturating_sub(src.as_ptr() as usize) as u32
 }
 
-/// The last segment of a class named in code: `\\A\\B`, `A::B`, `B<T>` are `B`.
+/// The last segment of a class named in code: `\\A\\B`, `A::B`, `A.B`, `B<T>`,
+/// `B(x)` and `B[T]` are `B`.
 fn base(src: &str, written: &str) -> Option<Import> {
-    let name = written.trim().split('<').next()?.trim();
-    let name = name.rsplit(['\\', ':']).next()?;
-    let valid = name.starts_with(|c: char| c.is_uppercase())
+    let name = written.trim().split(['<', '(', '[']).next()?.trim();
+    let name = name.rsplit(['\\', ':', '.']).next()?;
+    let valid = name.starts_with(char::is_alphabetic)
         && name.chars().all(|c| c.is_alphanumeric() || c == '_');
     valid.then(|| Import::Base {
         module: name.to_string(),
@@ -101,7 +179,12 @@ fn head_bases(src: &str, head: &str, open: &[&str], close: &[&str]) -> Vec<Impor
     let mut out = Vec::new();
     let mut angles = 0i32;
     let mut reading = false;
-    for word in rest.split_whitespace() {
+    for (k, word) in rest.split_whitespace().enumerate() {
+        // Heads of languages without a `{` here end at the next declaration.
+        const DECLARATIONS: [&str; 7] = ["class", "object", "trait", "def", "val", "var", "case"];
+        if k > 0 && angles == 0 && DECLARATIONS.contains(&word) {
+            break;
+        }
         if angles == 0 {
             if open.contains(&word) {
                 reading = true;
@@ -111,10 +194,383 @@ fn head_bases(src: &str, head: &str, open: &[&str], close: &[&str]) -> Vec<Impor
                 reading = false;
             }
             if reading {
-                out.extend(base(src, word.trim_end_matches(',')));
+                out.extend(word.split(',').filter_map(|name| base(src, name)));
             }
         }
         angles += word.matches('<').count() as i32 - word.matches('>').count() as i32;
+    }
+    out
+}
+
+/// Where a line declares one of `keywords`: the word itself and what follows,
+/// taking the last on the line, past `template <class T>`.
+fn class_heads<'a>(src: &'a str, keywords: &[&str]) -> Vec<(&'a str, usize)> {
+    let mut out = Vec::new();
+    for line in src.lines().map(str::trim) {
+        if line.starts_with(['*', '/', '#']) {
+            continue;
+        }
+        let found = keywords.iter().filter_map(|word| {
+            let mut last = None;
+            for (at, _) in line.match_indices(word) {
+                let before = line[..at].chars().next_back();
+                let after = line[at + word.len()..].chars().next();
+                if before.is_none_or(|c| c.is_whitespace())
+                    && after.is_some_and(char::is_whitespace)
+                {
+                    last = Some((at, word.len()));
+                }
+            }
+            last
+        });
+        if let Some((at, len)) = found.max() {
+            out.push((&line[at..], len));
+        }
+    }
+    out
+}
+
+/// `class A extends B implements C` in every class head of the file.
+fn heads(src: &str, keywords: &[&str], open: &[&str], close: &[&str]) -> Vec<Import> {
+    class_heads(src, keywords)
+        .into_iter()
+        .flat_map(|(head, _)| head_bases(src, head, open, close))
+        .collect()
+}
+
+/// The classes a list names, split at its top level: `B(x), C<D, E>, public F`
+/// names `B`, `C` and `F`.
+fn listed_bases(src: &str, list: &str) -> Vec<Import> {
+    let mut items = Vec::new();
+    let (mut depth, mut from) = (0i32, 0);
+    let mut before = ' ';
+    for (at, c) in list.char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            '>' if before == '-' => {}
+            ')' | '>' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                items.push(&list[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+        before = c;
+    }
+    items.push(&list[from..]);
+    const QUALIFIERS: [&str; 5] = ["public", "private", "protected", "virtual", "final"];
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let word = item
+                .split_whitespace()
+                .find(|w| !QUALIFIERS.contains(w) && !w.starts_with('@'))?;
+            base(src, word)
+        })
+        .collect()
+}
+
+/// `class A(x: T) : B(x), C where T : D`: the list after the colon outside any
+/// brackets. Without a `{` the head ends with a line nothing continues.
+fn colon_heads(src: &str, keywords: &[&str]) -> Vec<Import> {
+    let mut out = Vec::new();
+    for (head, keyword) in class_heads(src, keywords) {
+        let after = &head[keyword..];
+        let first = after.split_whitespace().next().unwrap_or("");
+        if first.starts_with(':') || matches!(first, "func" | "var" | "let" | "fun") {
+            continue;
+        }
+        let start = offset(src, after) as usize;
+        let rest = src.get(start..).unwrap_or("");
+        let mut lines = rest.split_inclusive('\n').take(STATEMENT_LINES).peekable();
+        let (mut end, mut depth) = (0, 0i32);
+        while let Some(line) = lines.next() {
+            end += line.len();
+            depth +=
+                line.matches(['(', '<']).count() as i32 - line.matches([')', '>']).count() as i32;
+            let text = line.trim();
+            let next = lines.peek().map_or("", |l| l.trim());
+            if depth <= 0
+                && !text.ends_with([',', ':'])
+                && !next.starts_with([':', ','])
+                && !next.starts_with("where ")
+            {
+                break;
+            }
+        }
+        let text = &rest[..end];
+        let text = &text[..text.find(['{', ';']).unwrap_or(text.len())];
+        let (mut depth, mut before, mut colon) = (0i32, ' ', None);
+        for (at, c) in text.char_indices() {
+            match c {
+                '(' | '<' | '[' => depth += 1,
+                '>' if before == '-' => {}
+                ')' | '>' | ']' => depth -= 1,
+                // `struct a *b = c ? d : e;` declares a variable.
+                '=' | '*' if depth == 0 => break,
+                ':' if depth == 0 && before != ':' && !text[at + 1..].starts_with(':') => {
+                    colon = Some(at);
+                    break;
+                }
+                _ => {}
+            }
+            before = c;
+        }
+        if let Some(colon) = colon {
+            let list = &text[colon + 1..];
+            let list = list.split("where").next().unwrap_or(list);
+            out.extend(listed_bases(src, list));
+        }
+    }
+    out
+}
+
+/// The types declared with `keyword`.
+fn contracts(src: &str, keyword: &str) -> Vec<Import> {
+    class_heads(src, &[keyword])
+        .into_iter()
+        .filter_map(|(head, len)| {
+            let name = head[len..].split_whitespace().next()?;
+            let name = name.split(['<', ':', '{', '(']).next()?;
+            (!name.is_empty()).then(|| Import::Contract {
+                name: name.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Drops bases the file says come from the platform, whatever a class of the
+/// same name in the tree: PHP's `use Exception;` and `\\Exception`, and a
+/// `java.` or `kotlin.` import.
+fn without_outsiders(src: &str, bases: Vec<Import>) -> Vec<Import> {
+    let mut outside = HashSet::new();
+    for line in src.lines() {
+        let php = line.strip_prefix("use ").filter(|n| !n.contains('\\'));
+        let name = php.or_else(|| {
+            let spec = line.strip_prefix("import ")?;
+            let platform = ["java.", "javax.", "kotlin.", "kotlinx."];
+            platform
+                .iter()
+                .any(|p| spec.starts_with(p))
+                .then(|| spec.rsplit('.').next().unwrap_or(spec))
+        });
+        if let Some(name) = name {
+            outside.insert(name.trim().trim_end_matches(';'));
+        }
+    }
+    bases
+        .into_iter()
+        .filter(|import| match import {
+            Import::Base { module, at } => {
+                !outside.contains(module.as_str())
+                    && src.as_bytes().get(*at as usize) != Some(&b'\\')
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+/// The mixins declared with `keyword`.
+fn mixins(src: &str, keyword: &str) -> Vec<Import> {
+    contracts(src, keyword)
+        .into_iter()
+        .filter_map(|c| match c {
+            Import::Contract { name } => Some(Import::Mixin { name }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `fun Foo<T>.bar()` runs with a `Foo` as its implicit receiver.
+fn kotlin_receivers(src: &str) -> Vec<Import> {
+    class_heads(src, &["fun"])
+        .into_iter()
+        .filter_map(|(head, len)| {
+            let rest = head[len..].trim_start();
+            let rest = match rest.strip_prefix('<') {
+                Some(after) => {
+                    let mut depth = 1;
+                    let end = after.char_indices().find_map(|(at, c)| {
+                        match c {
+                            '<' => depth += 1,
+                            '>' => depth -= 1,
+                            _ => {}
+                        }
+                        (depth == 0).then_some(at)
+                    })?;
+                    after[end + 1..].trim_start()
+                }
+                None => rest,
+            };
+            let name = &rest[..rest.find('(')?];
+            let (receiver, _) = name.rsplit_once('.')?;
+            base(src, receiver)
+        })
+        .collect()
+}
+
+/// `extension Foo` holds methods of `Foo`.
+fn swift_extensions(src: &str) -> Vec<Import> {
+    class_heads(src, &["extension"])
+        .into_iter()
+        .filter_map(|(head, len)| {
+            let name = head[len..].split_whitespace().next()?;
+            base(src, name.split(':').next()?)
+        })
+        .collect()
+}
+
+/// `impl<T> Walk<T> for Kid` reaches the default methods of `Walk`.
+fn rust_traits(src: &str) -> Vec<Import> {
+    class_heads(src, &["impl"])
+        .into_iter()
+        .filter_map(|(head, _)| {
+            let (before, _) = head.split_once(" for ")?;
+            base(src, before.split_whitespace().next_back()?)
+        })
+        .collect()
+}
+
+/// `import a.b.C;`, `import a.b.C as D`, and PHP's `use A\\B\\C;` at file level,
+/// each with its package as a path. `a.b.*` and `A\\B\\{C, D}` read as class `*`.
+fn qualified(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let own = line
+            .strip_prefix("package ")
+            .or_else(|| line.strip_prefix("namespace "));
+        if let Some(own) = own {
+            out.push(Import::Qualified {
+                class: ".".to_string(),
+                package: own
+                    .trim()
+                    .trim_end_matches([';', '{'])
+                    .trim()
+                    .replace(['.', '\\'], "/"),
+            });
+            continue;
+        }
+        let path = line
+            .strip_prefix("import ")
+            .or_else(|| line.strip_prefix("use "))
+            .filter(|p| !p.starts_with("static "));
+        let Some(path) = path.map(|p| p.trim().trim_end_matches(';')) else {
+            continue;
+        };
+        let (path, alias) = match path.split_once(" as ") {
+            Some((path, alias)) => (path.trim(), Some(alias.trim())),
+            None => (path, None),
+        };
+        let (path, listed) = match path.find(['{', '*']) {
+            Some(end) => (path[..end].trim_end_matches(['.', '\\']), true),
+            None => (path, false),
+        };
+        let mut segments: Vec<&str> = path.split(['.', '\\']).collect();
+        let class = if listed {
+            "*"
+        } else {
+            segments.pop().unwrap_or("")
+        };
+        out.push(Import::Qualified {
+            class: alias.unwrap_or(class).to_string(),
+            package: segments.join("/"),
+        });
+    }
+    out
+}
+
+/// `actual class A` carries out `expect class A`, the one a caller reads.
+fn kotlin_actuals(src: &str) -> Vec<Import> {
+    src.lines()
+        .filter(|line| line.trim_start().contains("actual "))
+        .flat_map(|line| class_heads(line, &["class", "interface", "object"]))
+        .filter_map(|(head, len)| {
+            let name = head[len..].split_whitespace().next()?;
+            Some(Import::Extension {
+                name: name.split(['<', '(', ':']).next()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Go's embedded fields, and its methods with their receivers.
+fn go_classes(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    let mut in_struct = false;
+    for line in src.lines() {
+        let text = line.split("//").next().unwrap_or("").trim();
+        if in_struct {
+            if text.starts_with('}') {
+                in_struct = false;
+            } else if !text.is_empty() {
+                let field = text.split('`').next().unwrap_or("").trim();
+                if !field.contains(char::is_whitespace) {
+                    out.extend(base(src, field.trim_start_matches('*')));
+                }
+            }
+        } else if text.starts_with("type ") && text.ends_with("struct {") {
+            in_struct = true;
+        } else if let Some(rest) = text.strip_prefix("func (") {
+            let Some((receiver, after)) = rest.split_once(')') else {
+                continue;
+            };
+            let mut words = receiver.split_whitespace();
+            let (Some(variable), Some(class)) = (words.next(), words.next()) else {
+                continue;
+            };
+            let class = class.trim_start_matches('*');
+            let class = class.split('[').next().unwrap_or(class);
+            let name = after.trim().split(['(', '[']).next().unwrap_or("");
+            if !name.is_empty() {
+                out.push(Import::Method {
+                    class: class.to_string(),
+                    name: name.to_string(),
+                    receiver: variable.to_string(),
+                    at: offset(src, text),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// `class A(B, mod.C, metaclass=M):`, whose list may span lines.
+fn python_bases(src: &str) -> Vec<Import> {
+    let mut out = Vec::new();
+    for line in src.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix("class ") else {
+            continue;
+        };
+        let Some(open) = rest.find('(').filter(|o| !rest[..*o].contains(':')) else {
+            continue;
+        };
+        // Python has no word for a mixin but the one its authors use.
+        if rest[..open].ends_with("Mixin") {
+            out.push(Import::Mixin {
+                name: rest[..open].to_string(),
+            });
+        }
+        let start = offset(src, rest) as usize + open + 1;
+        let text = src.get(start..).unwrap_or("");
+        let lines = text.split_inclusive('\n').take(STATEMENT_LINES);
+        let mut depth = 1;
+        let mut end = None;
+        'text: for (at, c) in text[..lines.map(str::len).sum()].char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(at);
+                        break 'text;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(end) = end {
+            out.extend(listed_bases(src, &text[..end]));
+        }
     }
     out
 }

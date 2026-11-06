@@ -47,7 +47,7 @@ use std::path::Path;
 /// 39: library calls through A6 apart from untraced ones (`dispatch.library`).
 /// 40: Rust module-qualified calls mint a scoped placeholder (`f from src/m.rs`).
 /// 41: workflows and actions are read (`workflow`), with `.github/{workflows,actions,scripts}` in scope.
-const FORMAT_VERSION: u32 = 49;
+const FORMAT_VERSION: u32 = 55;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -91,6 +91,8 @@ pub struct Snapshot {
     pub definers: Vec<(String, Vec<String>)>,
     /// Per file, indirect calls and the fields they go through.
     pub dispatch: Vec<(String, crate::ingest::FileDispatch)>,
+    /// Bases, interfaces and mixins, for what a partial re-parse resolves.
+    pub classes: crate::ingest::ClassFacts,
 }
 
 impl Snapshot {
@@ -121,6 +123,7 @@ impl Snapshot {
             http: Vec::new(),
             definers: Vec::new(),
             dispatch: Vec::new(),
+            classes: Default::default(),
         }
     }
 }

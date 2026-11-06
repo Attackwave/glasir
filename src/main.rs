@@ -650,6 +650,8 @@ fn build_graph(
         .flat_map(|f| f.macro_definers.iter().cloned())
         .collect();
     let mut parsed = define_macro_arguments(parsed, &definers);
+    reg.find_bases(parsed.iter().filter_map(|(_, _, f)| f.as_ref()));
+    reg.find_called(parsed.iter().filter_map(|(_, _, f)| f.as_ref()));
 
     // One delta for the whole tree rather than one published snapshot per
     // file. `update` clones the delta on every call so readers are never
@@ -687,6 +689,7 @@ fn build_graph(
         }
         ingest::ingest_markdown_into(snap, d, &mut arena, &mut reg, root, &markdown, now);
     });
+    reg.forget_called();
     reg.prune_refs();
     link_placeholders_quiet(&g, &reg);
     Ok((g, reg, arena))
@@ -928,6 +931,7 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             for (file, definers) in stored.definers {
                 registry.set_definers(&file, definers);
             }
+            registry.set_classes(stored.classes);
             let g = std::sync::Arc::new(graph::Graph::new(stored.csr));
 
             let refreshed =
@@ -1070,6 +1074,7 @@ fn store_snapshot(
         .collect();
     definers.sort();
     stored.definers = definers;
+    stored.classes = reg.classes().clone();
     let contract_path = root.join(".glasir/contracts.json");
     if contract_path.exists() {
         stored.contracts =
@@ -1148,6 +1153,30 @@ fn refresh_files(
         .into_iter()
         .flatten()
         .collect();
+
+    reg.find_bases(parsed.values().filter_map(Option::as_ref));
+    // Dropping a base leaves links nothing here takes back: only a build does.
+    if parsed.iter().any(|(path, facts)| {
+        let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+        facts.as_ref().is_some_and(|f| reg.base_dropped(&rel, f))
+    }) {
+        return None;
+    }
+    // A class others named as outside the tree: those files read again.
+    for rel in reg.take_base_arrived() {
+        let path = root.join(rel);
+        if parsed.contains_key(&path) {
+            continue;
+        }
+        let facts = read_source(&path).and_then(|src| {
+            let lang = parse_ast::Lang::from_path(&path)?;
+            parse_ast::parse_file(&path, &src, lang)
+        });
+        parsed.insert(path.clone(), facts);
+        paths.push(path);
+    }
+    paths.sort();
+    reg.find_called(parsed.values().filter_map(Option::as_ref));
 
     // Which macros define their argument is a property of the whole tree. A
     // re-parse that changes it would leave every unchanged file that invokes
@@ -1240,6 +1269,7 @@ fn refresh_files(
         }
         ingest::ingest_markdown_into(snap, d, &mut arena, reg, root, &markdown, now());
     });
+    reg.forget_called();
 
     // Tier 3 runs over the whole registry, not per file: a call is routinely
     // parsed before the file defining it, and its links are re-applied as a set
@@ -3967,6 +3997,8 @@ fn run_watch(root: &str) -> std::io::Result<()> {
             files += 1;
         }
     }
+    // One file at a time, a class may be read before the base it names.
+    read_again(&g, &mut arena, &mut reg, root, &covered);
     println!(
         "indexed {files} files ({skipped} covered by tier 1), {} symbols",
         reg.len()
@@ -4166,6 +4198,7 @@ fn run_watch(root: &str) -> std::io::Result<()> {
             }
         }
         if touched > 0 {
+            read_again(&g, &mut arena, &mut reg, root, &covered);
             // A new file can define what an older call referenced, so the
             // links are recomputed after each batch.
             link_placeholders(&g, &reg);
@@ -4178,6 +4211,25 @@ fn run_watch(root: &str) -> std::io::Result<()> {
         }
     })
     .map_err(std::io::Error::other)
+}
+
+/// Reads again what was built before a base arrived.
+fn read_again(
+    g: &std::sync::Arc<graph::Graph>,
+    arena: &mut arena::SymbolArena,
+    reg: &mut ingest::SymbolRegistry,
+    root: &std::path::Path,
+    covered: &std::collections::HashSet<String>,
+) {
+    for rel in reg.take_base_arrived() {
+        if covered.contains(&rel) {
+            continue;
+        }
+        let path = root.join(&rel);
+        if let Ok(src) = std::fs::read_to_string(&path) {
+            ingest::ingest_file(g, arena, reg, &path, root, &src, now());
+        }
+    }
 }
 
 /// Applies tier 3 to the current registry and reports what it could link.
@@ -4488,6 +4540,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_walk_order();
     demo_parallel_ingest();
     demo_incremental();
+    demo_incremental_classes();
     demo_index_scale();
     demo_cohesion_scale();
     demo_subsystem_scale();
@@ -6934,8 +6987,20 @@ fn demo_imports() {
     use parse_ast::Lang;
     let names = |lang, src: &str| {
         let found = crate::imports::read(lang, src);
-        found.len()
+        found
+            .iter()
+            .filter(|i| matches!(i, crate::imports::Import::Base { .. }))
+            .count()
     };
+    assert_eq!(names(Lang::C, "struct Foo *a = b ? c : d;\n"), 0);
+    assert_eq!(names(Lang::CSharp, "class A : B where T : C, D {\n"), 1);
+    assert_eq!(
+        names(Lang::Cpp, "template <int N, class T> class A : B {\n"),
+        1
+    );
+    assert_eq!(names(Lang::Python, "class A(B, metaclass=M):\n"), 1);
+    assert_eq!(names(Lang::Kotlin, "val a = object : B() {\n"), 0);
+    assert_eq!(names(Lang::Swift, "class func a(b: C) -> D {\n"), 0);
     let line = |n: usize| format!("class A\n{}extends B {{\n", "\n".repeat(n));
     assert_eq!(names(Lang::Php, &line(50)), 1);
     assert_eq!(names(Lang::Php, &line(70)), 0);
@@ -7121,6 +7186,417 @@ fn demo_imports() {
             "class WideOther {\n  void pull() {}\n}\n",
         ),
         (
+            "in/bases/java_top.java",
+            "class TopJava {\n  void pull_java() {}\n}\n",
+        ),
+        (
+            "in/bases/java_odd.java",
+            "class OddJava {\n  void pull_java() {}\n}\n",
+        ),
+        (
+            "in/bases/java_kid.java",
+            "class KidJava extends TopJava implements Thing {\n  void goJava() {\n    pull_java();\n    nowhere();\n  }\n}\n",
+        ),
+        (
+            "in/bases/kt_top.kt",
+            "open class TopKt {\n  fun pull_kt() {}\n}\n",
+        ),
+        (
+            "in/bases/kt_odd.kt",
+            "open class OddKt {\n  fun pull_kt() {}\n}\n",
+        ),
+        (
+            "in/bases/kt_kid.kt",
+            "class KidKt(x: Int) :\n    TopKt(),\n    Thing {\n  fun goKt() {\n    pull_kt()\n  }\n}\n",
+        ),
+        (
+            "in/bases/cs_top.cs",
+            "class TopCs {\n  public void pull_cs() {}\n}\n",
+        ),
+        (
+            "in/bases/cs_odd.cs",
+            "class OddCs {\n  public void pull_cs() {}\n}\n",
+        ),
+        (
+            "in/bases/cs_kid.cs",
+            "class KidCs<T>\n    : TopCs, IThing where T : Other {\n  void goCs() {\n    pull_cs();\n  }\n}\n",
+        ),
+        (
+            "in/bases/swift_top.swift",
+            "class TopSwift {\n  func pull_swift() {}\n}\n",
+        ),
+        (
+            "in/bases/swift_odd.swift",
+            "class OddSwift {\n  func pull_swift() {}\n}\n",
+        ),
+        (
+            "in/bases/swift_kid.swift",
+            "class KidSwift: TopSwift, Thing {\n  func goSwift() {\n    pull_swift()\n  }\n}\n",
+        ),
+        (
+            "in/bases/cpp_top.cpp",
+            "class TopCpp {\n public:\n  void pull_cpp() {}\n};\n",
+        ),
+        (
+            "in/bases/cpp_odd.cpp",
+            "class OddCpp {\n public:\n  void pull_cpp() {}\n};\n",
+        ),
+        (
+            "in/bases/cpp_kid.cpp",
+            "template <class T>\nclass KidCpp final : public TopCpp, private T {\n  void goCpp() {\n    pull_cpp();\n  }\n};\n",
+        ),
+        (
+            "in/bases/scala_top.scala",
+            "class TopScala {\n  def pull_scala(): Unit = {}\n}\n",
+        ),
+        (
+            "in/bases/scala_odd.scala",
+            "class OddScala {\n  def pull_scala(): Unit = {}\n}\n",
+        ),
+        (
+            "in/bases/scala_kid.scala",
+            "class KidScala(x: Int) extends TopScala\n    with Thing {\n  def goScala(): Unit = {\n    pull_scala()\n  }\n}\n",
+        ),
+        (
+            "in/bases/py_top.py",
+            "class TopPy:\n    def pull_py(self):\n        pass\n",
+        ),
+        (
+            "in/bases/py_odd.py",
+            "class OddPy:\n    def pull_py(self):\n        pass\n",
+        ),
+        (
+            "in/bases/py_kid.py",
+            "class KidPy(pkg.TopPy,\n          metaclass=Thing):\n    def goPy(self):\n        self.pull_py()\n",
+        ),
+        ("in/bases/ts_top.ts", "class TopTs {\n  pull_ts() {}\n}\n"),
+        ("in/bases/ts_odd.ts", "class OddTs {\n  pull_ts() {}\n}\n"),
+        (
+            "in/bases/ts_kid.ts",
+            "class KidTs<T extends Other> extends TopTs<T> implements Thing {\n  goTs() {\n    this.pull_ts();\n  }\n}\n",
+        ),
+        (
+            "in/bases/bare_base.py",
+            "class BareBase:\n    def bare_name(self):\n        pass\n",
+        ),
+        ("in/bases/bare_other.py", "def bare_name():\n    pass\n"),
+        (
+            "in/bases/bare_kid.py",
+            "class BareKid(BareBase):\n    def go_bare(self):\n        self.x = bare_name()\n",
+        ),
+        (
+            "in/bases/chain_top.java",
+            "class ChainTop {\n  void from_top() {}\n}\n",
+        ),
+        (
+            "in/bases/chain_mid.java",
+            "class ChainMid extends ChainTop {\n}\n",
+        ),
+        (
+            "in/bases/chain_kid.java",
+            "class ChainKid extends ChainMid {\n  void go_chain() {\n    from_top();\n  }\n}\n",
+        ),
+        (
+            "in/bases/chain_decoy.java",
+            "class ChainDecoy {\n  void from_top() {}\n}\n",
+        ),
+        (
+            "in/bases/loop_a.java",
+            "class LoopA extends LoopB {\n  void go_loop() {\n    nowhere();\n  }\n}\n",
+        ),
+        ("in/bases/loop_b.java", "class LoopB extends LoopA {\n}\n"),
+        (
+            "in/bases/own.py",
+            "class Outside(Missing):\n    def own_call(self):\n        super().own_call()\n",
+        ),
+        (
+            "in/bases/near.py",
+            "class NearBase:\n    def own_near(self):\n        pass\n",
+        ),
+        (
+            "in/bases/near_kid.py",
+            "class NearKid(NearBase):\n    def own_near(self):\n        super().own_near()\n",
+        ),
+        (
+            "in/bases/ternary.c",
+            "void go_ternary(void) {\n  struct Foo *a = b ? c_value() : d;\n  helper_c();\n}\n",
+        ),
+        ("in/bases/helper_c.c", "void helper_c(void) {}\n"),
+        (
+            "in/bases/twin_a/Same.java",
+            "class Same extends TwinUp {\n}\n",
+        ),
+        (
+            "in/bases/twin_b/Same.java",
+            "class Same extends TwinOdd {\n}\n",
+        ),
+        (
+            "in/bases/twin_up.java",
+            "class TwinUp {\n  void twin_call() {}\n}\n",
+        ),
+        (
+            "in/bases/twin_odd.java",
+            "class TwinOdd {\n  void twin_call() {}\n}\n",
+        ),
+        (
+            "in/bases/twin_kid.java",
+            "class TwinKid extends Same {\n  void go_twin() {\n    twin_call();\n  }\n}\n",
+        ),
+        (
+            "in/bases/out_only.java",
+            "class OutOnly extends NotHere {\n  void go_out() {\n    not_here();\n  }\n}\n",
+        ),
+        (
+            "in/bases/ext_base.kt",
+            "class ExtHost {\n  fun host_call() {}\n}\n",
+        ),
+        (
+            "in/bases/ext_odd.kt",
+            "class ExtOdd {\n  fun host_call() {}\n}\n",
+        ),
+        (
+            "in/bases/ext.kt",
+            "fun ExtHost.go_ext() {\n  host_call()\n}\n",
+        ),
+        (
+            "in/bases/ext_base.swift",
+            "class SwiftHost {\n  func host_swift() {}\n}\n",
+        ),
+        (
+            "in/bases/ext_odd.swift",
+            "class SwiftOdd {\n  func host_swift() {}\n}\n",
+        ),
+        (
+            "in/bases/ext.swift",
+            "extension SwiftHost {\n  func go_swift() {\n    host_swift()\n  }\n}\n",
+        ),
+        (
+            "in/bases/walk.rs",
+            "pub trait Walk {\n    fn step(&self) {}\n}\n",
+        ),
+        (
+            "in/bases/run.rs",
+            "pub trait Run {\n    fn step(&self) {}\n}\n",
+        ),
+        (
+            "in/bases/kid.rs",
+            "struct Kid;\nimpl Walk for Kid {\n    fn go_rust(&self) {\n        self.step();\n    }\n}\n",
+        ),
+        (
+            "in/bases/iface.java",
+            "interface Doer {\n  default void deed() {}\n}\n",
+        ),
+        (
+            "in/bases/concrete.java",
+            "class Concrete {\n  void deed() {}\n}\n",
+        ),
+        (
+            "in/bases/both.java",
+            "class Both extends Concrete implements Doer {\n  void go_both() {\n    deed();\n  }\n}\n",
+        ),
+        (
+            "in/bases/parent_var.js",
+            "function own_near_js() {}\nfunction go_parent(parent) {\n  parent.own_near_js();\n}\n",
+        ),
+        ("in/bases/strict_base.php", "<?php\nclass StrictBase {\n}\n"),
+        (
+            "in/bases/strict_other.php",
+            "<?php\nfunction only_elsewhere() {}\n",
+        ),
+        (
+            "in/bases/strict_kid.php",
+            "<?php\nclass StrictKid extends StrictBase {\n  function go_strict() { $this->only_elsewhere(); }\n}\n",
+        ),
+        (
+            "in/bases/built.java",
+            "class Built extends Concrete {\n  void go_built() {\n    new Made();\n  }\n}\n",
+        ),
+        ("in/bases/made.java", "class Made {\n}\n"),
+        (
+            "in/bases/same_file.py",
+            "class Down(Up):\n    def in_file(self):\n        super().in_file()\nclass Up:\n    def in_file(self):\n        pass\n",
+        ),
+        ("in/bases/parent_other.js", "function own_near_js() {}\n"),
+        (
+            "in/near_dir/Queue.php",
+            "<?php\nclass Queue {\n  function enqueue_near() {}\n}\n",
+        ),
+        (
+            "in/far_dir/Queue.php",
+            "<?php\nclass Queue {\n  function enqueue_near() {}\n}\n",
+        ),
+        (
+            "in/near_dir/Beanstalk.php",
+            "<?php\nclass Beanstalk extends Queue {\n  function push_near() { $this->enqueue_near(); }\n}\n",
+        ),
+        (
+            "in/bases/lost.php",
+            "<?php\nclass LostKid extends Lost {\n  function go_lost() { $this->in_lost(); }\n}\n",
+        ),
+        ("in/lost_a/Lost.php", "<?php\nclass Lost {\n}\n"),
+        ("in/lost_b/Lost.php", "<?php\nclass Lost {\n}\n"),
+        ("in/bases/in_lost.php", "<?php\nfunction in_lost() {}\n"),
+        (
+            "in/bases/host.php",
+            "<?php\nclass Host {\n  function host_only() {}\n}\n",
+        ),
+        (
+            "in/bases/mix.php",
+            "<?php\nclass MixBase {\n}\ntrait Mixed {\n  use MixUp;\n  function go_mix() { $this->host_only(); }\n}\ntrait MixUp {\n}\n",
+        ),
+        (
+            "in/bases/stdlib.php",
+            "<?php\nclass Stdlib {\n  function plat_call() {}\n}\n",
+        ),
+        (
+            "in/bases/global.php",
+            "<?php\nuse Stdlib;\nclass GlobalKid extends Stdlib {\n  function go_global() { $this->plat_call(); }\n}\n",
+        ),
+        (
+            "in/bases/slash.php",
+            "<?php\nclass SlashKid extends \\Stdlib {\n  function go_slash() { $this->plat_call(); }\n}\n",
+        ),
+        (
+            "in/bases/ArrayStack.java",
+            "class ArrayStack {\n  void plat_java() {}\n}\n",
+        ),
+        (
+            "in/bases/stack_kid.java",
+            "import java.util.ArrayStack;\nclass StackKid extends ArrayStack {\n  void go_stack() {\n    plat_java();\n  }\n}\n",
+        ),
+        (
+            "in/bases/loose.java",
+            "class Loose {\n  void elsewhere_fn() {}\n}\n",
+        ),
+        (
+            "in/bases/tight.java",
+            "class Tight extends Concrete {\n  void go_tight() {\n    elsewhere_fn();\n  }\n}\n",
+        ),
+        (
+            "in/gopkg/base.go",
+            "package gopkg\n\ntype Base struct {\n}\n\nfunc (b *Base) Pull() {}\n",
+        ),
+        (
+            "in/goodd/odd.go",
+            "package goodd\n\ntype Odd struct {\n}\n\nfunc (o *Odd) Pull() {}\n",
+        ),
+        (
+            "in/gopkg/kid.go",
+            "package gopkg\n\ntype Kid struct {\n\t*Base\n\tname string\n}\n\nfunc (k *Kid) Run() {\n\tk.Pull()\n}\n",
+        ),
+        (
+            "in/gopkg/split.go",
+            "package gopkg\n\ntype Split struct {\n}\n\nfunc (s *Split) Run2() {\n\ts.Other()\n}\n",
+        ),
+        (
+            "in/gopkg/split_more.go",
+            "package gopkg\n\nfunc (s *Split) Other() {}\n",
+        ),
+        (
+            "in/goodd/other.go",
+            "package goodd\n\nfunc (o *Odd) Other() {}\n",
+        ),
+        (
+            "in/pkg_a/Dup.java",
+            "package pkg_a;\nclass Dup {\n  void dup_call() {}\n}\n",
+        ),
+        (
+            "in/pkg_b/Dup.java",
+            "package pkg_b;\nclass Dup {\n  void dup_call() {}\n}\n",
+        ),
+        (
+            "in/bases/uses_dup.java",
+            "import pkg_b.Dup;\nclass UsesDup extends Dup {\n  void go_dup() {\n    dup_call();\n  }\n}\n",
+        ),
+        (
+            "in/pkg_c/Solo.java",
+            "class Solo {\n  void solo_call() {}\n}\n",
+        ),
+        (
+            "in/bases/no_import.java",
+            "class NoImport extends Solo {\n  void go_solo() {\n    solo_call();\n  }\n}\n",
+        ),
+        (
+            "in/kmp/common/pk/Multi.kt",
+            "expect class Multi {\n  fun shared_kmp()\n}\n",
+        ),
+        (
+            "in/kmp/jvm/pk/Multi.kt",
+            "actual class Multi {\n  actual fun shared_kmp() {}\n}\n",
+        ),
+        (
+            "in/kmp/js/pk/Multi.kt",
+            "actual class Multi {\n  actual fun shared_kmp() {}\n}\n",
+        ),
+        (
+            "in/kmp/common/pk/UsesMulti.kt",
+            "class UsesMulti : Multi() {\n  fun go_kmp() {\n    shared_kmp()\n  }\n}\n",
+        ),
+        (
+            "in/bases/py_host.py",
+            "class PyHost:\n    def host_method(self):\n        pass\n",
+        ),
+        (
+            "in/bases/py_mix.py",
+            "class PlainBase:\n    pass\nclass HostMixin(PlainBase):\n    def go_mix(self):\n        self.host_method()\n",
+        ),
+        (
+            "in/gopkg/twins.go",
+            "package gopkg\n\ntype Left struct {\n\t*Base\n}\n\ntype Right struct {\n\t*Other2\n}\n\nfunc (l *Left) Same() {\n\tl.Pull()\n}\n\nfunc (r *Right) Same() {\n\tr.Push()\n}\n",
+        ),
+        (
+            "in/gopkg/other2.go",
+            "package gopkg\n\ntype Other2 struct {\n}\n\nfunc (o *Other2) Push() {}\n",
+        ),
+        (
+            "in/goodd/push.go",
+            "package goodd\n\nfunc (o *Odd) Push() {}\n",
+        ),
+        (
+            "in/deep/one/shared/Pair.java",
+            "package one.shared;\nclass Pair {\n  void pair_call() {}\n}\n",
+        ),
+        (
+            "in/deep/two/shared/Pair.java",
+            "package two.shared;\nclass Pair {\n  void pair_call() {}\n}\n",
+        ),
+        (
+            "in/bases/uses_pair.java",
+            "import two.shared.Pair;\nclass UsesPair extends Pair {\n  void go_pair() {\n    pair_call();\n  }\n}\n",
+        ),
+        (
+            "in/wild/lib/Open.java",
+            "package wild.lib;\nclass Open {\n  void open_call() {}\n}\n",
+        ),
+        (
+            "in/wild/other/Open.java",
+            "package wild.other;\nclass Open {\n  void open_call() {}\n}\n",
+        ),
+        (
+            "in/bases/uses_open.java",
+            "import wild.lib.*;\nclass UsesOpen extends Open {\n  void go_open() {\n    open_call();\n  }\n}\n",
+        ),
+        (
+            "in/tie1/pk/Tie.java",
+            "package pk;\nclass Tie {\n  void tie_call() {}\n}\n",
+        ),
+        (
+            "in/tie2/pk/Tie.java",
+            "package pk;\nclass Tie {\n  void tie_call() {}\n}\n",
+        ),
+        (
+            "in/bases/uses_tie.java",
+            "import pk.Tie;\nclass UsesTie extends Tie {\n  void go_tie() {\n    tie_call();\n  }\n}\n",
+        ),
+        (
+            "in/roots/main/a/b/Own.java",
+            "package a.b;\nclass Own {\n  void own_pkg() {}\n}\n",
+        ),
+        (
+            "in/roots/test/a/b/OwnKid.java",
+            "package a.b;\nclass OwnKid extends Own {\n  void go_own() {\n    own_pkg();\n  }\n}\n",
+        ),
+        (
             "in/same.php",
             "<?php\nclass TwinA extends PayBase {\n  public function twin($x) { return $this->fetch($x); }\n}\nclass TwinB extends PayOther {\n  public function twin($x) { return $this->fetch($x); }\n}\n",
         ),
@@ -7279,6 +7755,18 @@ fn demo_imports() {
         std::fs::write(path, text).unwrap();
     }
     let a = analyse(&dir).unwrap();
+    // A base from outside the tree costs no node per method.
+    assert!(a.registry.node_of("plat_call from @?Stdlib").is_none());
+    assert!(a.registry.node_of("plat_java from @?ArrayStack").is_none());
+    assert!(a.registry.node_of("not_here from @NotHere").is_none());
+    assert!(a.registry.node_of("not_here").is_some());
+    assert!(a.registry.node_of("nowhere").is_some());
+    assert!(a.registry.node_of("own_pkg from @?Own^/a/b").is_some());
+    assert!(
+        a.registry
+            .node_of("nowhere from @TopJava^/in/bases")
+            .is_none()
+    );
     let node = |s: &str| a.registry.node_of(s).unwrap_or_else(|| panic!("no {s}"));
     let reaches = |from: &str, to: &str| {
         let target = node(to);
@@ -7328,6 +7816,285 @@ fn demo_imports() {
         ("in/group.ex#go_group", "in/route.ex#build", false),
         ("in/wide.rb#bill_wide", "in/priced.rb#price", true),
         ("in/wide.rb#bill_wide", "in/cheap.rb#price", false),
+        (
+            "in/bases/java_kid.java#goJava",
+            "in/bases/java_top.java#pull_java",
+            true,
+        ),
+        (
+            "in/bases/java_kid.java#goJava",
+            "in/bases/java_odd.java#pull_java",
+            false,
+        ),
+        (
+            "in/bases/kt_kid.kt#goKt",
+            "in/bases/kt_top.kt#pull_kt",
+            true,
+        ),
+        (
+            "in/bases/kt_kid.kt#goKt",
+            "in/bases/kt_odd.kt#pull_kt",
+            false,
+        ),
+        (
+            "in/bases/cs_kid.cs#goCs",
+            "in/bases/cs_top.cs#pull_cs",
+            true,
+        ),
+        (
+            "in/bases/cs_kid.cs#goCs",
+            "in/bases/cs_odd.cs#pull_cs",
+            false,
+        ),
+        (
+            "in/bases/swift_kid.swift#goSwift",
+            "in/bases/swift_top.swift#pull_swift",
+            true,
+        ),
+        (
+            "in/bases/swift_kid.swift#goSwift",
+            "in/bases/swift_odd.swift#pull_swift",
+            false,
+        ),
+        (
+            "in/bases/cpp_kid.cpp#goCpp",
+            "in/bases/cpp_top.cpp#pull_cpp",
+            true,
+        ),
+        (
+            "in/bases/cpp_kid.cpp#goCpp",
+            "in/bases/cpp_odd.cpp#pull_cpp",
+            false,
+        ),
+        (
+            "in/bases/scala_kid.scala#goScala",
+            "in/bases/scala_top.scala#pull_scala",
+            true,
+        ),
+        (
+            "in/bases/scala_kid.scala#goScala",
+            "in/bases/scala_odd.scala#pull_scala",
+            false,
+        ),
+        (
+            "in/bases/py_kid.py#goPy",
+            "in/bases/py_top.py#pull_py",
+            true,
+        ),
+        (
+            "in/bases/py_kid.py#goPy",
+            "in/bases/py_odd.py#pull_py",
+            false,
+        ),
+        (
+            "in/bases/ts_kid.ts#goTs",
+            "in/bases/ts_top.ts#pull_ts",
+            true,
+        ),
+        (
+            "in/bases/ts_kid.ts#goTs",
+            "in/bases/ts_odd.ts#pull_ts",
+            false,
+        ),
+        (
+            "in/bases/bare_kid.py#go_bare",
+            "in/bases/bare_base.py#bare_name",
+            false,
+        ),
+        (
+            "in/bases/bare_kid.py#go_bare",
+            "in/bases/bare_other.py#bare_name",
+            false,
+        ),
+        (
+            "in/bases/chain_kid.java#go_chain",
+            "in/bases/chain_top.java#from_top",
+            true,
+        ),
+        (
+            "in/bases/chain_kid.java#go_chain",
+            "in/bases/chain_decoy.java#from_top",
+            false,
+        ),
+        (
+            "in/bases/near_kid.py#own_near",
+            "in/bases/near.py#own_near",
+            true,
+        ),
+        (
+            "in/bases/near_kid.py#own_near",
+            "in/bases/near_kid.py#own_near",
+            false,
+        ),
+        (
+            "in/bases/own.py#own_call",
+            "in/bases/own.py#own_call",
+            false,
+        ),
+        (
+            "in/bases/ternary.c#go_ternary",
+            "in/bases/helper_c.c#helper_c",
+            true,
+        ),
+        (
+            "in/bases/twin_kid.java#go_twin",
+            "in/bases/twin_up.java#twin_call",
+            false,
+        ),
+        (
+            "in/bases/twin_kid.java#go_twin",
+            "in/bases/twin_odd.java#twin_call",
+            false,
+        ),
+        (
+            "in/bases/ext.kt#go_ext",
+            "in/bases/ext_base.kt#host_call",
+            true,
+        ),
+        (
+            "in/bases/ext.kt#go_ext",
+            "in/bases/ext_odd.kt#host_call",
+            false,
+        ),
+        (
+            "in/bases/ext.swift#go_swift",
+            "in/bases/ext_base.swift#host_swift",
+            true,
+        ),
+        (
+            "in/bases/ext.swift#go_swift",
+            "in/bases/ext_odd.swift#host_swift",
+            false,
+        ),
+        ("in/bases/kid.rs#go_rust", "in/bases/walk.rs#step", true),
+        ("in/bases/kid.rs#go_rust", "in/bases/run.rs#step", false),
+        (
+            "in/bases/both.java#go_both",
+            "in/bases/concrete.java#deed",
+            true,
+        ),
+        (
+            "in/bases/both.java#go_both",
+            "in/bases/iface.java#deed",
+            false,
+        ),
+        (
+            "in/bases/parent_var.js#go_parent",
+            "in/bases/parent_var.js#own_near_js",
+            false,
+        ),
+        (
+            "in/bases/strict_kid.php#go_strict",
+            "in/bases/strict_other.php#only_elsewhere",
+            false,
+        ),
+        (
+            "in/bases/built.java#go_built",
+            "in/bases/made.java#Made",
+            true,
+        ),
+        (
+            "in/bases/same_file.py#in_file",
+            "in/bases/same_file.py#in_file",
+            false,
+        ),
+        (
+            "in/near_dir/Beanstalk.php#push_near",
+            "in/near_dir/Queue.php#enqueue_near",
+            true,
+        ),
+        (
+            "in/near_dir/Beanstalk.php#push_near",
+            "in/far_dir/Queue.php#enqueue_near",
+            false,
+        ),
+        (
+            "in/bases/lost.php#go_lost",
+            "in/bases/in_lost.php#in_lost",
+            true,
+        ),
+        (
+            "in/bases/mix.php#go_mix",
+            "in/bases/host.php#host_only",
+            true,
+        ),
+        (
+            "in/bases/tight.java#go_tight",
+            "in/bases/loose.java#elsewhere_fn",
+            false,
+        ),
+        ("in/gopkg/kid.go#Run", "in/gopkg/base.go#Pull", true),
+        ("in/gopkg/kid.go#Run", "in/goodd/odd.go#Pull", false),
+        (
+            "in/gopkg/split.go#Run2",
+            "in/gopkg/split_more.go#Other",
+            true,
+        ),
+        ("in/gopkg/split.go#Run2", "in/goodd/other.go#Other", false),
+        (
+            "in/bases/uses_dup.java#go_dup",
+            "in/pkg_b/Dup.java#dup_call",
+            true,
+        ),
+        (
+            "in/bases/uses_dup.java#go_dup",
+            "in/pkg_a/Dup.java#dup_call",
+            false,
+        ),
+        (
+            "in/kmp/common/pk/UsesMulti.kt#go_kmp",
+            "in/kmp/common/pk/Multi.kt#shared_kmp",
+            true,
+        ),
+        (
+            "in/kmp/common/pk/UsesMulti.kt#go_kmp",
+            "in/kmp/jvm/pk/Multi.kt#shared_kmp",
+            false,
+        ),
+        (
+            "in/bases/py_mix.py#go_mix",
+            "in/bases/py_host.py#host_method",
+            true,
+        ),
+        ("in/gopkg/twins.go#Same", "in/gopkg/base.go#Pull", true),
+        ("in/gopkg/twins.go#Same", "in/gopkg/other2.go#Push", true),
+        ("in/gopkg/twins.go#Same", "in/goodd/odd.go#Pull", false),
+        ("in/gopkg/twins.go#Same", "in/goodd/push.go#Push", false),
+        (
+            "in/bases/uses_pair.java#go_pair",
+            "in/deep/two/shared/Pair.java#pair_call",
+            true,
+        ),
+        (
+            "in/bases/uses_pair.java#go_pair",
+            "in/deep/one/shared/Pair.java#pair_call",
+            false,
+        ),
+        (
+            "in/bases/uses_open.java#go_open",
+            "in/wild/lib/Open.java#open_call",
+            true,
+        ),
+        (
+            "in/bases/uses_open.java#go_open",
+            "in/wild/other/Open.java#open_call",
+            false,
+        ),
+        (
+            "in/bases/uses_tie.java#go_tie",
+            "in/tie1/pk/Tie.java#tie_call",
+            false,
+        ),
+        (
+            "in/bases/uses_tie.java#go_tie",
+            "in/tie2/pk/Tie.java#tie_call",
+            false,
+        ),
+        (
+            "in/roots/test/a/b/OwnKid.java#go_own",
+            "in/roots/main/a/b/Own.java#own_pkg",
+            true,
+        ),
         ("in/same.php#twin", "in/base.php#fetch", true),
         ("in/same.php#twin", "in/other.php#fetch", true),
         ("in/stop.dart#go_stop", "in/wide_base.dart#pull", true),
@@ -12172,6 +12939,97 @@ fn demo_index_scale() {
 /// on them; community ids are checked as a *partition* rather than by label,
 /// because the numbers are assigned by walking the graph and carry no meaning —
 /// every use in the codebase compares them for equality, never against a value.
+fn demo_incremental_classes() {
+    let dir = std::env::temp_dir().join(format!("glasir-inc-classes-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+    write("Top.java", "class Top {\n  void from_top() {}\n}\n");
+    write("Mid.java", "class Mid extends Top {\n}\n");
+    write(
+        "Kid.java",
+        "class Kid extends Mid {\n  void go() {\n    from_top();\n  }\n}\n",
+    );
+    write(
+        "Decoy.java",
+        "class Decoy {\n  void from_top() {}\n  void later_call() {}\n}\n",
+    );
+    write(
+        "Waits.java",
+        "class Waits extends Later {\n  void hold() {\n    later_call();\n  }\n}\n",
+    );
+    for i in 0..24 {
+        write(&format!("F{i:02}.java"), &format!("class F{i} {{}}\n"));
+    }
+    // Read one file at a time, as a watch does, a class comes before its base.
+    let mut arena = arena::SymbolArena::new();
+    let mut reg = ingest::SymbolRegistry::new(0);
+    let g = std::sync::Arc::new(graph::Graph::new(csr::CsrBuilder::new().build()));
+    let mut read = |name: &str, src: &str, reg: &mut ingest::SymbolRegistry| {
+        ingest::ingest_file(
+            &g,
+            &mut arena,
+            reg,
+            std::path::Path::new(name),
+            &dir,
+            src,
+            1,
+        );
+    };
+    read("A.java", "class A extends Z {\n}\n", &mut reg);
+    assert!(reg.take_base_arrived().is_empty());
+    read("Z.java", "class Z {\n}\n", &mut reg);
+    assert_eq!(reg.take_base_arrived().len(), 1, "the file naming it");
+    assert!(reg.take_base_arrived().is_empty(), "asking clears it");
+
+    let reaches = |a: &Analysed, from: &str, to: &str| {
+        let (Some(from), Some(to)) = (a.registry.node_of(from), a.registry.node_of(to)) else {
+            return false;
+        };
+        a.snap
+            .neighbors(from)
+            .any(|e| a.snap.neighbors(e.target).any(|e2| e2.target == to))
+    };
+    let first = analyse(&dir).unwrap();
+    assert!(reaches(&first, "Kid.java#go", "Top.java#from_top"));
+
+    // A partial re-parse resolves the whole tree, the unchanged chain included.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write("F03.java", "class F3 {\n  void changed() {}\n}\n");
+    let patched = analyse(&dir).unwrap();
+    assert!(patched.from_snapshot);
+    assert!(reaches(&patched, "Kid.java#go", "Top.java#from_top"));
+
+    // A class others named as outside the tree arrives.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write("Later.java", "class Later {\n  void later_call() {}\n}\n");
+    let added = analyse(&dir).unwrap();
+    assert!(reaches(&added, "Waits.java#hold", "Later.java#later_call"));
+    assert!(!reaches(&added, "Waits.java#hold", "Decoy.java#later_call"));
+
+    // A type that stops being an interface is one no longer.
+    write(
+        "Doer.java",
+        "interface Doer {\n  default void deed() {}\n}\n",
+    );
+    let added = {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        analyse(&dir).unwrap()
+    };
+    assert!(added.registry.is_contract("Doer.java#Doer"));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write("Doer.java", "class Doer {\n  void deed() {}\n}\n");
+    let added = analyse(&dir).unwrap();
+    assert!(!added.registry.is_contract("Doer.java#Doer"));
+
+    // A base taken away ends the chain through it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write("Mid.java", "class Mid {\n}\n");
+    let cut = analyse(&dir).unwrap();
+    assert!(!reaches(&cut, "Kid.java#go", "Top.java#from_top"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn demo_incremental() {
     let dir = std::env::temp_dir().join(format!("glasir-inc-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -18,7 +18,8 @@ orchestration belong to the separate Control Plane.
 3. **Resolution** links unqualified references only when the evidence is
    unique. A call through an import, a module or a variable's declared type is
    linked to the file that names, and an HTTP request to the handler of the
-   route it names. Ambiguous references remain explicit graph nodes instead of
+   route it names. An inherited method is followed up the classes a type names,
+   within the tree. Ambiguous references remain explicit graph nodes instead of
    being guessed.
 4. **Storage** persists a versioned snapshot and applies incremental changes
    through a compact delta layer. Snapshot publication is atomic, so readers

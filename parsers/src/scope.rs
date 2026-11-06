@@ -35,6 +35,8 @@ pub struct ScopeStack {
     pub had_receiver: bool,
     /// The module a `::` call went through, when the receiver was one.
     pub module_receiver: Option<String>,
+    /// `base.` and `parent::` are keywords here. Elsewhere they name a variable.
+    pub names_base: bool,
     /// Current nesting depth (braces, indents, or block delimiters).
     pub depth: i32,
     /// Flagged if closing delimiters occur with depth == 0.
@@ -306,10 +308,9 @@ impl ScopeStack {
     pub fn on_receiver(&mut self) {
         let is_self = matches!(
             self.last_word.as_deref(),
-            Some(
-                "self" | "Self" | "this" | "$this" | "cls" | "static" | "super" | "base" | "parent"
-            )
-        );
+            Some("self" | "Self" | "this" | "$this" | "cls" | "static" | "super")
+        ) || (self.names_base
+            && matches!(self.last_word.as_deref(), Some("base" | "parent")));
         self.had_receiver = !is_self;
         // A lower-case receiver before `::` is a *module*, and in Rust a module
         // is a file: `parse_ast::parse` names `parse` in `parse_ast.rs`. That
@@ -317,15 +318,13 @@ impl ScopeStack {
         // tree, 77 of 77 such calls resolve to a definition in exactly the
         // file the receiver names, while `Instant::now()` and its 84 siblings
         // are upper case and stay receivers.
-        self.module_receiver = match self.last_word.as_deref() {
-            Some(w @ ("super" | "base" | "parent")) => Some(w.to_string()),
-            Some(w) if !is_self => Some(w.to_string()),
-            _ => None,
-        };
+        self.module_receiver = self.last_word.clone();
     }
 
     /// Record an identifier word.
     pub fn on_word(&mut self, word: &str) {
+        // `self.x = f()`: a receiver reaches only the name right after it.
+        self.module_receiver = None;
         self.last_word = Some(word.to_string());
     }
 
@@ -346,7 +345,11 @@ impl ScopeStack {
             .calls
             .push((caller, callee.to_string(), self.had_receiver));
         facts.call_owners.push(owner);
-        facts.call_modules.push(self.module_receiver.take());
+        let built = self.last_word.as_deref() == Some("new");
+        let module = self.module_receiver.take();
+        facts
+            .call_modules
+            .push(module.or(built.then(|| "new".to_string())));
         self.had_receiver = false;
         self.module_receiver = None;
         self.pending_docs.clear();

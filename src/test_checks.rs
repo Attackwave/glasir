@@ -208,6 +208,11 @@ fn incremental() {
 }
 
 #[test]
+fn incremental_classes() {
+    crate::demo_incremental_classes();
+}
+
+#[test]
 fn index_scale() {
     crate::demo_index_scale();
 }
