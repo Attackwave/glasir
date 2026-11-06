@@ -70,7 +70,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 expression_start = true;
             }
             TokenKind::Symbol('}') => scope.on_close_delimiter(tok.end as usize, &mut facts),
-            TokenKind::Symbol('=' | '(' | ',') | TokenKind::DoubleSymbol("||" | "&&") => {
+            // `:name=` and `:[]=` are symbols, and what follows them no value.
+            TokenKind::Symbol('=') if crate::lexer::ends_a_setter_symbol(&tokens, i) => {}
+            TokenKind::Symbol('=' | '(' | ',') | TokenKind::DoubleSymbol("||" | "&&" | "<<") => {
                 expression_start = true;
                 scope.had_receiver = false;
             }
@@ -169,6 +171,14 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             if let TokenKind::Ident(n) = tokens[j].kind {
                                 fn_name = n.to_string();
                                 j += 1;
+                                // `def object.name`: the method is `name`.
+                                if let (Some(TokenKind::Symbol('.')), Some(TokenKind::Ident(m))) = (
+                                    tokens.get(j).map(|t| &t.kind),
+                                    tokens.get(j + 1).map(|t| &t.kind),
+                                ) {
+                                    fn_name = (*m).to_string();
+                                    j += 2;
+                                }
                             }
                         }
                         if !fn_name.is_empty() {
