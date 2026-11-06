@@ -1749,12 +1749,33 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .collect();
 
     let (untraced, untraced_total, library) = served.untraced(node, &reached);
+    // A call the name alone cannot decide between several definitions stays on
+    // the bare name. Those callers may be this one's, and silence would read as
+    // nothing calling it.
+    let full = served.name(node);
+    let bare = full.split_once('#').map(|(_, name)| name);
+    let mut undecided: Vec<NodeId> = bare
+        .and_then(|name| served.registry.node_of(name))
+        .map(|placeholder| direct_callers(served, reverse, placeholder, floor))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(n, _)| n)
+        .filter(|n| !callers.iter().any(|(c, _)| c == n))
+        .collect();
+    undecided.sort_unstable();
+    undecided.dedup();
     let mut value = json!({
         "symbol": served.name(node),
         "named_elsewhere": served.unconnected_mentions(node, &reached),
         "untraced": untraced,
         "untraced_total": untraced_total,
         "library_calls": library,
+        "undecided_callers": undecided
+            .iter()
+            .take(20)
+            .map(|&n| served.name(n))
+            .collect::<Vec<_>>(),
+        "undecided_total": undecided.len(),
         "callers": callers
             .iter()
             .skip(offset)
@@ -1772,7 +1793,38 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     Ok(value)
 }
 
+const UNDECIDED: &str = "call(s) by this name could mean another definition too";
+
+/// An answer without its undecided callers: candidates, not found edges, so a
+/// score counts none of them.
+pub fn without_undecided(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.contains(UNDECIDED))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The calls that name this symbol but several definitions could answer.
+fn render_undecided(v: &Value) -> String {
+    let total = v["undecided_total"].as_u64().unwrap_or(0);
+    if total == 0 {
+        return String::new();
+    }
+    let names: Vec<&str> = v["undecided_callers"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    format!("\n{total} {UNDECIDED}: {}\n", names.join(", "))
+}
+
 fn render_find_callers(v: &Value) -> String {
+    let undecided = render_undecided(v);
+    format!("{}{undecided}", render_callers(v))
+}
+
+fn render_callers(v: &Value) -> String {
     let sym = v["symbol"].as_str().unwrap_or("");
     let callers = v["callers"].as_array().map_or(&[][..], Vec::as_slice);
     if v["count"].as_u64().unwrap_or(0) == 0 {
@@ -4071,6 +4123,8 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     // whatever `limit` the caller asked for.
     let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
     let mut answer = json!({
+        "server_version": env!("CARGO_PKG_VERSION"),
+        "indexed_at": served.now,
         "symbols": symbols,
         "files": files.len(),
         "subsystems": page
@@ -4159,9 +4213,11 @@ either no analysis has run or nothing in it is connected.\n{repeated}"
         );
     }
     let mut out = format!(
-        "{} symbols in {} files, {total} subsystems\n\n",
+        "{} symbols in {} files, {total} subsystems (glasir {}, indexed at {} unix time)\n\n",
         v["symbols"].as_u64().unwrap_or(0),
         v["files"].as_u64().unwrap_or(0),
+        v["server_version"].as_str().unwrap_or(""),
+        v["indexed_at"].as_u64().unwrap_or(0),
     );
     for g in groups {
         out.push_str(&format!(

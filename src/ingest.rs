@@ -1079,8 +1079,9 @@ fn prepare_facts(
         } else if *has_receiver {
             module
                 .and_then(|m| {
+                    let value = m.strip_prefix('.');
                     modules
-                        .get(m)
+                        .get(value.unwrap_or(m))
                         .cloned()
                         .or_else(|| {
                             // `alias Shop.Billing` then `Billing.Tax.rate()`.
