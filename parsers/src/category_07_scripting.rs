@@ -19,6 +19,7 @@ pub fn parse_bash(src: &str) -> FileFacts {
     };
     let mut lexer = Lexer::new(src, style);
     lexer.shell_words = true;
+    lexer.multi_line_quotes = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
