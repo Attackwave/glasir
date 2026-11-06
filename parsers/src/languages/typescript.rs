@@ -10,6 +10,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
     lexer.regexes = true;
+    lexer.template_literals = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -184,14 +185,19 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 }
                                 k += 1;
                             }
+                            // A word on a later line starts a statement:
+                            // `f(x)` then `const { a } = b` is a call.
+                            let close = k;
                             while k < tokens.len()
                                 && (tokens[k].kind == TokenKind::Newline
                                     || matches!(
                                         tokens[k].kind,
-                                        TokenKind::Ident(_)
-                                            | TokenKind::Symbol(':')
-                                            | TokenKind::DoubleSymbol("=>")
-                                    ))
+                                        TokenKind::Symbol(':') | TokenKind::DoubleSymbol("=>")
+                                    )
+                                    || (matches!(tokens[k].kind, TokenKind::Ident(_))
+                                        && !tokens[close..k]
+                                            .iter()
+                                            .any(|t| t.kind == TokenKind::Newline)))
                             {
                                 // A return type is a type expression, not a
                                 // run of names: `Observable<IBankAccount>`,

@@ -143,6 +143,12 @@ pub struct Lexer<'a, 's> {
     pub raw_triple_quotes: bool,
     /// `"${f("x")}"`: the quotes inside `${…}` end nothing.
     pub interpolation: bool,
+    /// The same, in backticks only: `` `${a ? `{` : `(`}` ``.
+    pub template_literals: bool,
+    /// `#` opens a comment only at the start of a word: `${#a[@]}` and `$#`.
+    pub shell_words: bool,
+    /// A backslash between backticks escapes nothing, as in Go.
+    pub raw_backticks: bool,
     interpolation_depth: u32,
     heredocs: Vec<String>,
 }
@@ -164,6 +170,9 @@ impl<'a, 's> Lexer<'a, 's> {
             in_page: false,
             raw_triple_quotes: false,
             interpolation: false,
+            template_literals: false,
+            shell_words: false,
+            raw_backticks: false,
             interpolation_depth: 0,
             heredocs: Vec::new(),
         }
@@ -314,6 +323,19 @@ impl<'a, 's> Lexer<'a, 's> {
                 start: start as u32,
                 end: self.pos as u32,
             };
+        }
+
+        if self.shell_words && self.bytes[self.pos] == b'#' && self.pos > 0 {
+            let before = self.bytes[self.pos - 1];
+            if !before.is_ascii_whitespace() && !matches!(before, b';' | b'(' | b')' | b'&' | b'|')
+            {
+                self.pos += 1;
+                return Token {
+                    kind: TokenKind::Symbol('#'),
+                    start: start as u32,
+                    end: self.pos as u32,
+                };
+            }
         }
 
         // Check for doc comments
@@ -475,7 +497,7 @@ impl<'a, 's> Lexer<'a, 's> {
                     continue;
                 }
                 let cur = self.bytes[self.pos];
-                if cur == b'\\' {
+                if cur == b'\\' && !(self.raw_backticks && quote == b'`') {
                     if self.pos + 1 < self.bytes.len()
                         && self.bytes[self.pos + 1] == b'\r'
                         && self.pos + 2 < self.bytes.len()
@@ -1063,7 +1085,8 @@ impl<'a, 's> Lexer<'a, 's> {
     fn skip_interpolation(&mut self, quote: u8) -> bool {
         const DEEPEST: u32 = 16;
         let rest = &self.bytes[self.pos..];
-        let opens = (self.interpolation && rest.starts_with(b"${"))
+        let opens = ((self.interpolation || (self.template_literals && quote == b'`'))
+            && rest.starts_with(b"${"))
             || (self.ruby_literals && quote != b'\'' && rest.starts_with(b"#{"));
         if !opens || self.interpolation_depth == DEEPEST {
             return false;

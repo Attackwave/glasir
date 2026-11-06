@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/43";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/49";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -981,6 +981,18 @@ mod tests {
                 "def m\n  x || if a\n    b()\n  end\n  run()\nend\n",
             ),
             (
+                Language::TypeScript,
+                "const o = {\n  m() {\n    f(c)\n    const { a } = b\n    run();\n  },\n}\n",
+            ),
+            (
+                Language::TypeScript,
+                "function m() {\n  x(`a ${b ? `{` : `(`}`);\n  run();\n}\n",
+            ),
+            (
+                Language::Go,
+                "func m() {\n  x(`{\\`, `}`)\n  run()\n}\n",
+            ),
+            (
                 Language::Ruby,
                 "def m\n  x = +%(<i a=\"b\">)\n  y = +%{c's}\n  run()\nend\n",
             ),
@@ -1024,6 +1036,33 @@ mod tests {
     }
 
     #[test]
+    fn base_and_parent_are_keywords_only_where_the_language_says() {
+        let rules = RuleSet::load(None).unwrap();
+        let receiver = |language, src: &str| {
+            let facts = rules.parse(language, src);
+            facts.calls.iter().find(|c| c.1 == "run").map(|c| c.2)
+        };
+        let js = "function m(parent) {\n  parent.run();\n}\n";
+        assert_eq!(receiver(Language::JavaScript, js), Some(true));
+        let php = "<?php\nclass A {\n  function m() {\n    parent::run();\n  }\n}\n";
+        assert_eq!(receiver(Language::Php, php), Some(false));
+        let cs = "class A {\n  void M() {\n    base.run();\n  }\n}\n";
+        assert_eq!(receiver(Language::CSharp, cs), Some(false));
+    }
+
+    #[test]
+    fn a_shell_hash_inside_a_word_opens_no_comment() {
+        let rules = RuleSet::load(None).unwrap();
+        for src in [
+            "m() {\n  if [[ ${#a[@]} -gt 0 ]]; then\n    run\n  fi\n}\n",
+            "m() {\n  echo $# # }\n  run\n}\n",
+        ] {
+            let facts = rules.parse(Language::Bash, src);
+            assert!(!facts.had_errors, "{src}");
+        }
+    }
+
+    #[test]
     fn plain_names_declare_nothing() {
         let rules = RuleSet::load(None).unwrap();
         let facts = rules.parse(
@@ -1033,6 +1072,13 @@ mod tests {
         assert!(facts.defines.iter().any(|d| d == "shop.core"));
         assert!(
             !facts.defines.iter().any(|d| d == "uri"),
+            "{:?}",
+            facts.defines
+        );
+        let src = "const o = {\n  m() {\n    f(c)\n    const { a } = b\n    run();\n  },\n}\n";
+        let facts = rules.parse(Language::TypeScript, src);
+        assert!(
+            !facts.defines.iter().any(|d| d == "f"),
             "{:?}",
             facts.defines
         );

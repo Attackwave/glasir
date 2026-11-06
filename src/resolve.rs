@@ -19,7 +19,7 @@
 
 use crate::csr::{Confidence, Edge, NodeId};
 use crate::ingest::SymbolRegistry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// One placeholder resolved onto a definition.
 #[derive(Debug, PartialEq)]
@@ -33,14 +33,9 @@ pub struct Link {
 }
 
 /// The language a definition's file is written in.
-fn lang_of(registry: &SymbolRegistry, node: NodeId) -> Option<crate::parse_ast::Lang> {
+fn lang_of(file_of: &HashMap<NodeId, &str>, node: NodeId) -> Option<crate::parse_ast::Lang> {
     use crate::parse_ast::LangExt;
-    let name = registry
-        .entries()
-        .find(|(_, n)| **n == node)
-        .map(|(s, _)| s)?;
-    let (file, _) = name.split_once('#')?;
-    crate::parse_ast::Lang::from_path(std::path::Path::new(file))
+    crate::parse_ast::Lang::from_path(std::path::Path::new(file_of.get(&node)?))
 }
 
 /// Files whose definitions should not be considered. Test files define names
@@ -56,6 +51,35 @@ fn is_test_path(file: &str) -> bool {
 /// A name defined in exactly one place is an unambiguous win. A name defined in
 /// several is reported with its candidate count and left for the caller to
 /// decide — see `link_edges`, which drops those rather than guessing.
+/// The definition whose directory best ends in one of `packages`, `|/` joined.
+/// `io/ktor/http` lies under `common/src/`, and an equal match decides nothing.
+fn in_package(defs: &[NodeId], file_of: &HashMap<NodeId, &str>, packages: &str) -> Option<NodeId> {
+    let matched = |d: NodeId| -> usize {
+        let file = file_of.get(&d).copied().unwrap_or("");
+        let parent = file.rsplit_once('/').map_or("", |(p, _)| p);
+        packages
+            .split("|/")
+            .map(|package| {
+                if package == parent {
+                    return usize::MAX;
+                }
+                package
+                    .rsplit('/')
+                    .zip(parent.rsplit('/'))
+                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let best = defs.iter().map(|&d| matched(d)).max().filter(|&m| m > 0)?;
+    let mut found = defs.iter().copied().filter(|&d| matched(d) == best);
+    match (found.next(), found.next()) {
+        (Some(d), None) => Some(d),
+        _ => None,
+    }
+}
+
 /// The one definition of a module. `A::BcD`, defined several times, is the one
 /// in the file the convention names: `a/bc_d.rb`.
 fn defining_module(
@@ -63,10 +87,30 @@ fn defining_module(
     file_of: &HashMap<NodeId, &str>,
     module: &str,
 ) -> Option<NodeId> {
+    let (module, beside) = match module.split_once('^') {
+        Some((module, dir)) => (module, Some(dir)),
+        None => (module, None),
+    };
     let last = module.rsplit("::").next()?;
     let defs = by_name.get(last)?;
+    if let Some(packages) = beside.and_then(|b| b.strip_prefix('/')) {
+        return in_package(defs, file_of, packages);
+    }
     if let [only] = defs[..] {
         return Some(only);
+    }
+    if let Some(dir) = beside {
+        let in_dir = |d: &&NodeId| {
+            file_of
+                .get(d)
+                .and_then(|f| f.rsplit_once('/'))
+                .is_some_and(|(parent, _)| parent == dir)
+        };
+        let mut found = defs.iter().filter(in_dir);
+        return match (found.next(), found.next()) {
+            (Some(&d), None) => Some(d),
+            _ => None,
+        };
     }
     let mut tail = String::new();
     for segment in module.split("::") {
@@ -98,6 +142,66 @@ fn contains(registry: &SymbolRegistry, outer: NodeId, inner: NodeId) -> bool {
     }
 }
 
+/// What `name` means in the classes `modules`, `+` joined: each class's own
+/// definition, or the nearest one up its bases. The flag says every class on
+/// the way was known, so that nothing else can hold the name.
+fn inherited(
+    registry: &SymbolRegistry,
+    by_name: &HashMap<&str, Vec<NodeId>>,
+    file_of: &HashMap<NodeId, &str>,
+    modules: &str,
+    name: &str,
+) -> (Vec<NodeId>, bool) {
+    // Past what any hierarchy reaches, and a class may name itself.
+    const WIDEST: usize = 64;
+    let mut waiting: VecDeque<&str> = modules.split('+').collect();
+    let mut seen: HashSet<&str> = waiting.iter().copied().collect();
+    let (mut found, mut declared) = (Vec::new(), Vec::new());
+    let mut known = true;
+    while let Some(class) = waiting.pop_front() {
+        // A class several files define has no one chain to follow.
+        let Some(module) = defining_module(by_name, file_of, class) else {
+            known = false;
+            continue;
+        };
+        let Some(file) = file_of.get(&module) else {
+            continue;
+        };
+        let own = class.split('^').next().unwrap_or(class);
+        let own = own.rsplit("::").next().unwrap_or(own);
+        let directory = file.rsplit_once('/').map_or("", |(d, _)| d);
+        let beside: &[String] = registry.method_files(directory, own, name);
+        let here = match beside {
+            [only] => registry.node_of(&format!("{only}#{name}")),
+            _ => registry
+                .node_of(&format!("{file}#{name}"))
+                .filter(|&d| contains(registry, module, d)),
+        };
+        let symbol = format!("{file}#{own}");
+        known &= !registry.is_mixin(&symbol);
+        if let Some(definition) = here {
+            let list = if registry.is_contract(&symbol) {
+                &mut declared
+            } else {
+                &mut found
+            };
+            list.push(definition);
+            continue;
+        }
+        for base in registry.bases_of(&symbol) {
+            if seen.len() < WIDEST && seen.insert(base) {
+                waiting.push_back(base);
+            }
+        }
+    }
+    if found.is_empty() {
+        found = declared;
+    }
+    found.sort_unstable();
+    found.dedup();
+    (found, known)
+}
+
 pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
     // Definition name -> nodes defining it. A name may be defined many times.
     let mut by_name: HashMap<&str, Vec<NodeId>> = HashMap::new();
@@ -106,6 +210,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // `needs` in their own file, never by a bare name from code.
         if let Some((file, name)) = symbol.split_once('#')
             && !is_test_path(file)
+            && !registry.is_extension(symbol)
             && !crate::workflow::is_workflow(std::path::Path::new(file))
         {
             by_name.entry(name).or_default().push(node);
@@ -131,17 +236,12 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
             None => (symbol.as_str(), None),
         };
         if let Some(target) = target {
+            let mut chain_known = false;
             let found: Vec<NodeId> = if let Some(module) = target.strip_prefix('@') {
-                module
-                    .split('+')
-                    .filter_map(|m| {
-                        let module = defining_module(&by_name, &file_of, m)?;
-                        file_of
-                            .get(&module)
-                            .and_then(|file| registry.node_of(&format!("{file}#{bare}")))
-                            .filter(|&d| contains(registry, module, d))
-                    })
-                    .collect()
+                let module = module.strip_prefix(['!', '?']).unwrap_or(module);
+                let (found, known) = inherited(registry, &by_name, &file_of, module, bare);
+                chain_known = known;
+                found
             } else if let Some(base) = target.strip_prefix("*/") {
                 by_name
                     .get(bare)
@@ -185,6 +285,9 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 });
                 continue;
             }
+            if target.starts_with("@!") || (target.starts_with("@?") && chain_known) {
+                continue;
+            }
         }
         let Some(defs) = by_name.get(bare) else {
             continue;
@@ -204,7 +307,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // behaviour is the safe one.
         let want = registry.placeholder_lang(placeholder);
         if let Some(&definition) = defs.iter().find(|&&d| {
-            d != placeholder && want.is_none_or(|w| lang_of(registry, d).is_none_or(|l| l == w))
+            d != placeholder && want.is_none_or(|w| lang_of(&file_of, d).is_none_or(|l| l == w))
         }) {
             // Assembly has no namespaces: a label is global to the unit the
             // assembler builds, and a unit defining it twice does not
@@ -226,8 +329,9 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
     links
 }
 
-/// Turns unambiguous links into edges, at `Confidence::Ambiguous`. This links
-/// a call to its function when the parser could not tell the target directly.
+/// Turns the unambiguous links of unresolved placeholders into edges, at
+/// `Confidence::Ambiguous`. This links a call to its function when the parser
+/// could not tell the target directly.
 ///
 /// A name with several definitions is skipped: picking one would be a coin
 /// flip, and a wrong edge is worse than a missing one for a retrieval layer

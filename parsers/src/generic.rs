@@ -116,6 +116,7 @@ pub fn parse(src: &str, spec: &LangSpec<'_>) -> FileFacts {
         raw_escapes: spec.raw_escapes,
     };
     let mut lexer = Lexer::new(src, style);
+    lexer.raw_backticks = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

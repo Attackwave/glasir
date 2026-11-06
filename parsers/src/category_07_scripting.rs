@@ -18,6 +18,7 @@ pub fn parse_bash(src: &str) -> FileFacts {
         raw_escapes: false,
     };
     let mut lexer = Lexer::new(src, style);
+    lexer.shell_words = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

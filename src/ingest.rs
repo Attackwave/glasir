@@ -10,7 +10,7 @@ use crate::csr::{Edge, NodeId};
 use crate::delta::DeltaStore;
 use crate::graph::{Graph, GraphSnapshot};
 use crate::parse_ast::{self, Lang, LangExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -71,6 +71,49 @@ impl FileDispatch {
     }
 }
 
+/// What the tree says about its classes. Ordered, since it is stored with the
+/// graph and a rebuild must write the same bytes.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClassFacts {
+    /// Classes named as a base that this tree defines, and those it does not:
+    /// one from outside says nothing a bare name would not, at a node each.
+    bases_here: BTreeSet<String>,
+    bases_elsewhere: BTreeSet<String>,
+    bases_twice: BTreeSet<String>,
+    /// The bases each class names, by `file#class`: several classes may share
+    /// a name, and each has its own chain.
+    class_bases: BTreeMap<String, Vec<String>>,
+    /// Interfaces and protocols, by `file#name`: a class beside one in a base
+    /// list holds the method the interface only declares.
+    contracts: BTreeSet<String>,
+    /// Traits, modules and mixins, by `file#name`.
+    mixins: BTreeSet<String>,
+    /// Swift extensions and Kotlin `actual` classes, by `file#name`: defined
+    /// as symbols, yet not the type a caller means.
+    extensions: BTreeSet<String>,
+    /// Go methods by `directory#type`: the files holding each name.
+    methods: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// The files naming each base the tree does not hold.
+    named_by: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ClassFacts {
+    /// Forgets what `file` said, ahead of reading it again.
+    fn forget(&mut self, file: &str) {
+        let prefix = format!("{file}#");
+        self.class_bases.retain(|k, _| !k.starts_with(&prefix));
+        for names in self.methods.values_mut() {
+            names.retain(|_, files| {
+                files.retain(|f| f != file);
+                !files.is_empty()
+            });
+        }
+        self.contracts.retain(|k| !k.starts_with(&prefix));
+        self.mixins.retain(|k| !k.starts_with(&prefix));
+        self.extensions.retain(|k| !k.starts_with(&prefix));
+    }
+}
+
 /// Maps a qualified symbol name to a node id, minting ids for symbols the base
 /// graph has never seen.
 pub struct SymbolRegistry {
@@ -110,14 +153,195 @@ pub struct SymbolRegistry {
     /// Per file, the macros it defines whose invocations define their first
     /// argument. Kept so a partial re-parse knows the whole tree's set.
     definers: HashMap<String, Vec<String>>,
+    /// What resolving through classes needs, stored with the graph.
+    classes: ClassFacts,
+    base_arrived: BTreeSet<String>,
+    called_here: Option<HashSet<String>>,
     next: NodeId,
 }
 
 impl SymbolRegistry {
+    /// Sorts the bases these files name into defined here or elsewhere, by
+    /// these files and what is already registered.
+    pub fn find_bases<'f>(
+        &mut self,
+        files: impl Iterator<Item = &'f parse_ast::FileFacts> + Clone,
+    ) {
+        let mut wanted: HashSet<&str> = HashSet::new();
+        for file in files.clone() {
+            for import in &file.imports {
+                if let crate::imports::Import::Base { module, .. } = import
+                    && !self.classes.bases_here.contains(module)
+                    && !self.classes.bases_elsewhere.contains(module)
+                {
+                    wanted.insert(module);
+                }
+            }
+        }
+        for file in files.clone() {
+            for name in &file.defines {
+                if self.classes.bases_elsewhere.contains(name) {
+                    wanted.insert(name);
+                }
+            }
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let in_files = files.flat_map(|f| f.defines.iter().map(String::as_str));
+        let registered = self
+            .by_name
+            .keys()
+            .filter_map(|s| s.split_once('#').map(|(_, name)| name));
+        let mut here: HashMap<&str, usize> = HashMap::new();
+        for name in in_files.chain(registered) {
+            if wanted.contains(name) {
+                *here.entry(name).or_default() += 1;
+            }
+        }
+        for (name, count) in &here {
+            if *count > 1 {
+                self.classes.bases_twice.insert((*name).to_string());
+            }
+        }
+        let arrived = here
+            .keys()
+            .filter(|name| self.classes.bases_elsewhere.contains(**name))
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        for name in arrived {
+            self.classes.bases_elsewhere.remove(&name);
+            self.classes.bases_here.insert(name.clone());
+            self.base_arrived
+                .extend(self.classes.named_by.remove(&name).unwrap_or_default());
+        }
+        for module in wanted {
+            let set = if here.contains_key(module) {
+                &mut self.classes.bases_here
+            } else {
+                &mut self.classes.bases_elsewhere
+            };
+            set.insert(module.to_string());
+        }
+    }
+
+    /// What the tree says about its classes.
+    pub fn classes(&self) -> &ClassFacts {
+        &self.classes
+    }
+
+    /// Restores what a stored graph said about its classes.
+    pub fn set_classes(&mut self, classes: ClassFacts) {
+        self.classes = classes;
+    }
+
+    /// Whether the class `symbol` is mixed into others.
+    pub fn is_mixin(&self, symbol: &str) -> bool {
+        self.classes.mixins.contains(symbol)
+    }
+
+    /// The files built without a base that has since arrived. Asking clears it.
+    pub fn take_base_arrived(&mut self) -> BTreeSet<String> {
+        std::mem::take(&mut self.base_arrived)
+    }
+
+    /// Notes which names these files call and the tree defines: only those are
+    /// worth a placeholder of their own, the rest stay one shared bare name.
+    pub fn find_called<'f>(
+        &mut self,
+        files: impl Iterator<Item = &'f parse_ast::FileFacts> + Clone,
+    ) {
+        let wanted: HashSet<&str> = files
+            .clone()
+            .filter(|f| {
+                f.imports
+                    .iter()
+                    .any(|i| matches!(i, crate::imports::Import::Base { .. }))
+            })
+            .flat_map(|f| f.calls.iter().map(|(_, callee, _)| callee.as_str()))
+            .collect();
+        let in_files = files.flat_map(|f| f.defines.iter().map(String::as_str));
+        let registered = self
+            .by_name
+            .keys()
+            .filter_map(|s| s.split_once('#').map(|(_, name)| name));
+        let here = in_files
+            .chain(registered)
+            .filter(|name| wanted.contains(name))
+            .map(str::to_string)
+            .collect();
+        self.called_here = Some(here);
+    }
+
+    /// Ends what `find_called` said, once its files are read.
+    pub fn forget_called(&mut self) {
+        self.called_here = None;
+    }
+
+    /// Whether a call of `name` may reach a definition in this tree.
+    fn may_define(&self, name: &str) -> bool {
+        self.called_here.as_ref().is_none_or(|h| h.contains(name))
+    }
+
+    /// The files of `directory` that define `name` as a method of `class`.
+    pub fn method_files(&self, directory: &str, class: &str, name: &str) -> &[String] {
+        self.classes
+            .methods
+            .get(&format!("{directory}#{class}"))
+            .and_then(|names| names.get(name))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `file`, read again as `facts`, no longer names a base it did.
+    /// Links are only ever added, so one through that base would stay.
+    pub fn base_dropped(&self, file: &str, facts: &parse_ast::FileFacts) -> bool {
+        let named: HashSet<&str> = facts
+            .imports
+            .iter()
+            .filter_map(|import| match import {
+                crate::imports::Import::Base { module, .. } => Some(module.as_str()),
+                _ => None,
+            })
+            .collect();
+        let prefix = format!("{file}#");
+        self.classes
+            .class_bases
+            .range(prefix.clone()..)
+            .take_while(|(class, _)| class.starts_with(&prefix))
+            .flat_map(|(_, bases)| bases)
+            .any(|base| !named.contains(base.split('^').next().unwrap_or(base)))
+    }
+
+    /// Whether classes in the tree name `class` as a base it does not hold.
+    pub fn base_was_elsewhere(&self, class: &str) -> bool {
+        self.classes.bases_elsewhere.contains(class)
+    }
+
+    /// Whether `symbol` extends a type rather than defining it.
+    pub fn is_extension(&self, symbol: &str) -> bool {
+        self.classes.extensions.contains(symbol)
+    }
+
+    /// Whether the class `symbol` is an interface or a protocol.
+    pub fn is_contract(&self, symbol: &str) -> bool {
+        self.classes.contracts.contains(symbol)
+    }
+
+    /// The bases the class `symbol` names.
+    pub fn bases_of(&self, symbol: &str) -> &[String] {
+        self.classes
+            .class_bases
+            .get(symbol)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Starts allocating past the base graph's nodes, so ids never collide with
     /// the ones the CSR already owns.
     pub fn new(base_node_count: usize) -> Self {
         Self {
+            classes: ClassFacts::default(),
+            base_arrived: BTreeSet::new(),
+            called_here: None,
             by_name: HashMap::new(),
             docs: HashMap::new(),
             spans: HashMap::new(),
@@ -330,6 +554,7 @@ impl SymbolRegistry {
         self.http.remove(file);
         self.dispatch.remove(file);
         self.definers.remove(file);
+        self.classes.forget(file);
         for n in gone {
             self.docs.remove(&n);
             // A span into a file that is gone points at bytes that are not
@@ -592,6 +817,7 @@ pub fn ingest_file(
 ) -> Option<usize> {
     let lang = Lang::from_path(path)?;
     let mut facts = parse_ast::parse_file(path, source, lang)?;
+    registry.find_bases(std::iter::once(&facts));
     if !facts.macro_calls.is_empty() {
         // The rest of the tree's argument-defining macros as last read, plus
         // this file's own. An edit that changes another file's set is picked
@@ -644,12 +870,18 @@ fn prepare_facts(
         registry.set_span(node, *span);
     }
 
+    registry.classes.forget(&file);
+
     // What the file's imports say its names refer to: `alias.f()` and a bare
     // imported `f()`, each mapped to the file or package that defines them.
     let lang = Lang::from_path(path);
     let mut modules: HashMap<&str, String> = HashMap::new();
     let mut names: HashMap<&str, (String, &str)> = HashMap::new();
     let mut bases: Vec<(&str, u32)> = Vec::new();
+    let mut packages: HashMap<&str, &str> = HashMap::new();
+    let mut open_packages: Vec<&str> = Vec::new();
+    let mut mixed: Vec<(u32, u32)> = Vec::new();
+    let mut receivers: HashMap<u32, (&String, &String)> = HashMap::new();
     if let Some(lang) = lang {
         for import in &facts.imports {
             match import {
@@ -663,17 +895,93 @@ fn prepare_facts(
                         names.entry(local).or_insert((t, name));
                     }
                 }
-                crate::imports::Import::Base { module, at } => bases.push((module, *at)),
+                crate::imports::Import::Base { module, at } => {
+                    if registry.classes.bases_here.contains(module) {
+                        bases.push((module, *at));
+                    } else {
+                        registry
+                            .classes
+                            .named_by
+                            .entry(module.clone())
+                            .or_default()
+                            .insert(file.clone());
+                    }
+                }
+                crate::imports::Import::Contract { name } => {
+                    registry.classes.contracts.insert(qualify(&file, name));
+                }
+                crate::imports::Import::Mixin { name } => {
+                    registry.classes.mixins.insert(qualify(&file, name));
+                    mixed.extend(
+                        facts
+                            .ranges
+                            .iter()
+                            .filter(|(n, _)| n == name)
+                            .map(|(_, span)| *span),
+                    );
+                }
+                crate::imports::Import::Qualified { class, package } if class == "*" => {
+                    open_packages.push(package);
+                }
+                crate::imports::Import::Qualified { class, package } => {
+                    packages.insert(class, package);
+                }
+                crate::imports::Import::Method {
+                    class,
+                    name,
+                    receiver,
+                    at,
+                } => {
+                    let directory = file.rsplit_once('/').map_or("", |(d, _)| d);
+                    let files = registry
+                        .classes
+                        .methods
+                        .entry(format!("{directory}#{class}"))
+                        .or_default()
+                        .entry(name.clone())
+                        .or_default();
+                    if !files.contains(&file) {
+                        files.push(file.clone());
+                    }
+                    receivers.insert(*at, (receiver, class));
+                }
+                crate::imports::Import::Extension { name } => {
+                    registry.classes.extensions.insert(qualify(&file, name));
+                }
             }
         }
     }
+    // A base defined twice means the one beside this file. Where a file must
+    // import what is not in its own package, the import or that package decides
+    // even for a single candidate: `^/a/b|/c` lists the packages to look in.
+    let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+    let by_package = matches!(lang, Some(Lang::Java | Lang::Kotlin | Lang::Php));
+    let bases: Vec<(String, u32)> = bases
+        .into_iter()
+        .map(|(module, at)| {
+            if by_package {
+                let looked_in = match packages.get(module) {
+                    Some(package) => (*package).to_string(),
+                    None => std::iter::once(packages.get(".").copied().unwrap_or(dir))
+                        .chain(open_packages.iter().copied().take(8))
+                        .collect::<Vec<_>>()
+                        .join("|/"),
+                };
+                return (format!("{module}^/{looked_in}"), at);
+            }
+            let shared = registry.classes.bases_twice.contains(module) && !dir.contains('+');
+            let hinted = format!("{module}^{dir}");
+            (if shared { hinted } else { module.to_string() }, at)
+        })
+        .collect();
     // Who declares each base: the innermost definition around the declaration.
     // No real file comes near this many, and each one costs a walk of `ranges`.
     const MOST_BASES: usize = 4096;
     let owners: Vec<(&str, (u32, u32))> = bases
         .iter()
         .take(MOST_BASES)
-        .map(|&(module, at)| {
+        .map(|(module, at)| {
+            let (module, at) = (module.as_str(), *at);
             let around = facts
                 .ranges
                 .iter()
@@ -683,6 +991,15 @@ fn prepare_facts(
             (module, around.unwrap_or((0, u32::MAX)))
         })
         .collect();
+    for &(module, span) in &owners {
+        if let Some((class, _)) = facts.ranges.iter().find(|(_, s)| *s == span) {
+            let key = qualify(&file, class);
+            let bases = registry.classes.class_bases.entry(key).or_default();
+            if !bases.iter().any(|b| b == module) {
+                bases.push(module.to_string());
+            }
+        }
+    }
     let mut spans_of: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
     if !owners.is_empty() {
         for (name, span) in &facts.ranges {
@@ -723,11 +1040,42 @@ fn prepare_facts(
             .entry((caller, owner))
             .or_insert_with(|| inherited_by(caller, owner))
             .clone();
-        let in_base = matches!(module, Some("super" | "base" | "parent")) && inherited.is_some();
+        let names_base = matches!(module, Some("super" | "base" | "parent"));
+        let in_base = names_base && inherited.is_some();
+        // `super.run()` in `run`, with the base in this file: one node holds
+        // both, and the call says nothing the node does not.
+        if in_base && caller == callee && !bases.is_empty() {
+            let here = |m: &&str| {
+                let m = m.split('^').next().unwrap_or(m);
+                facts.defines.iter().any(|d| d == m)
+            };
+            if inherited
+                .as_deref()
+                .is_some_and(|t| t[1..].split('+').all(|m| here(&m)))
+            {
+                continue;
+            }
+        }
+        // Named through the object, or in a language without free functions
+        // and not built with `new`: only the class chain can hold it.
+        let through_object = module.is_some_and(|m| m != "new");
+        let in_mixin = owner.is_some_and(|at| mixed.iter().any(|s| s.0 <= at && at < s.1));
+        let chain_only = !in_mixin
+            && (through_object
+                || (matches!(lang, Some(Lang::Java | Lang::CSharp)) && module != Some("new")));
         let imported = if in_base {
+            // `!`: the base or nothing. The bare name would be this very
+            // method when the base holds it outside the tree.
             inherited
                 .as_deref()
-                .map(|t| crate::imports::scoped(callee, t))
+                .map(|t| crate::imports::scoped(callee, &t.replacen('@', "@!", 1)))
+        } else if names_base && caller == callee {
+            Some(crate::imports::scoped(callee, "@!"))
+        } else if let Some((_, class)) = owner
+            .and_then(|at| receivers.get(&at))
+            .filter(|(receiver, _)| Some(receiver.as_str()) == module)
+        {
+            Some(crate::imports::scoped(callee, &format!("@?{class}^{dir}")))
         } else if *has_receiver {
             module
                 .and_then(|m| {
@@ -750,14 +1098,29 @@ fn prepare_facts(
                 .get(callee.as_str())
                 .map(|(t, n)| crate::imports::scoped(n, t))
                 .or_else(|| {
+                    // There a method is reached through the object only: a
+                    // bare name is a global, whatever the base defines.
+                    let bare_is_global = matches!(
+                        lang,
+                        Some(Lang::Python | Lang::JavaScript | Lang::TypeScript)
+                    );
                     inherited
                         .as_deref()
-                        .map(|t| crate::imports::scoped(callee, t))
+                        .filter(|_| !bare_is_global || through_object)
+                        .filter(|_| registry.may_define(callee))
+                        .map(|t| {
+                            if chain_only {
+                                crate::imports::scoped(callee, &t.replacen('@', "@?", 1))
+                            } else {
+                                crate::imports::scoped(callee, t)
+                            }
+                        })
                 })
         } else {
             None
         };
-        let target = if !*has_receiver && !in_base && registry.contains(&local) {
+        // `super.run()` in `run` never means this `run`.
+        let target = if !*has_receiver && !names_base && registry.contains(&local) {
             registry.get_or_mint(&local)
         } else if let Some(scoped) = imported {
             let node = registry.get_or_mint(&scoped);
