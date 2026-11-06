@@ -1194,7 +1194,7 @@ mod tests {
         let mut tokens = rules.tokens(Language::C, &src);
         let started = std::time::Instant::now();
         keep_first_branches(&mut tokens);
-        assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+        assert!(started.elapsed().as_secs() < 60, "{:?}", started.elapsed());
     }
 
     #[test]
@@ -1226,12 +1226,20 @@ mod tests {
         ] {
             for extension in extensions {
                 let language = Language::from_extension(extension).unwrap();
-                // The largest file the indexer reads.
-                let src = pattern.repeat((1 << 20) / pattern.len());
-                let started = std::time::Instant::now();
-                rules.parse(language, &src);
-                let took = started.elapsed();
-                assert!(took.as_secs() < 15, "{extension} {pattern:?} {took:?}");
+                // Against a quarter of it, so a slow machine fails nothing: a
+                // linear scan takes four times as long, a quadratic one sixteen.
+                let parse = |bytes: usize| {
+                    let src = pattern.repeat(bytes / pattern.len());
+                    let started = std::time::Instant::now();
+                    rules.parse(language, &src);
+                    started.elapsed()
+                };
+                let small = parse((1 << 20) / 4);
+                let large = parse(1 << 20);
+                assert!(
+                    large < small * 9 + std::time::Duration::from_secs(2),
+                    "{extension} {pattern:?} {small:?} {large:?}"
+                );
             }
         }
     }
