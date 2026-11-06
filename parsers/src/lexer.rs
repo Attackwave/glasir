@@ -116,6 +116,16 @@ pub fn is_atom_or_member(tokens: &[Token<'_>], i: usize) -> bool {
         && tokens[i - 1].end == tokens[i].start
 }
 
+/// Where the lexer stands inside a JSX element.
+enum Jsx {
+    /// `<a b={c}`, up to its `>` or `/>`.
+    Tag { braces: u32 },
+    /// Text between tags, which is no code at all.
+    Children,
+    /// `{…}` among the children.
+    Expression { braces: u32 },
+}
+
 pub struct Lexer<'a, 's> {
     src: &'a str,
     bytes: &'a [u8],
@@ -147,6 +157,11 @@ pub struct Lexer<'a, 's> {
     pub template_literals: bool,
     /// `#` opens a comment only at the start of a word: `${#a[@]}` and `$#`.
     pub shell_words: bool,
+    /// JSX: the text of an element holds apostrophes and backticks freely.
+    pub jsx: bool,
+    jsx_open: Vec<Jsx>,
+    /// Where each element name is last closed: `<T>` is a tag only if one is.
+    jsx_closes: Option<std::collections::HashMap<&'a str, usize>>,
     /// A backslash between backticks escapes nothing, as in Go.
     pub raw_backticks: bool,
     interpolation_depth: u32,
@@ -172,6 +187,9 @@ impl<'a, 's> Lexer<'a, 's> {
             interpolation: false,
             template_literals: false,
             shell_words: false,
+            jsx: false,
+            jsx_open: Vec::new(),
+            jsx_closes: None,
             raw_backticks: false,
             interpolation_depth: 0,
             heredocs: Vec::new(),
@@ -227,7 +245,14 @@ impl<'a, 's> Lexer<'a, 's> {
     /// scanner then sliced the source there and panicked — the class this
     /// crate met eleven times, closed here once rather than per branch.
     pub fn next_token(&mut self) -> Token<'a> {
+        if self.jsx {
+            self.enter_jsx();
+            self.skip_jsx_text();
+        }
         let mut token = self.next_token_raw();
+        if self.jsx {
+            self.track_jsx(&token);
+        }
         let len = self.bytes.len();
         let settle = |mut at: usize| {
             at = at.min(len);
@@ -416,7 +441,7 @@ impl<'a, 's> Lexer<'a, 's> {
                 return tok;
             }
         }
-        if self.ruby_literals {
+        if self.ruby_literals || self.shell_words {
             self.note_heredoc(start);
         }
         if self.ruby_literals && self.bytes[start] == b'%' {
@@ -497,7 +522,9 @@ impl<'a, 's> Lexer<'a, 's> {
                     continue;
                 }
                 let cur = self.bytes[self.pos];
-                if cur == b'\\' && !(self.raw_backticks && quote == b'`') {
+                let raw =
+                    (self.raw_backticks && quote == b'`') || (self.shell_words && quote == b'\'');
+                if cur == b'\\' && !raw {
                     if self.pos + 1 < self.bytes.len()
                         && self.bytes[self.pos + 1] == b'\r'
                         && self.pos + 2 < self.bytes.len()
@@ -759,7 +786,7 @@ impl<'a, 's> Lexer<'a, 's> {
             return;
         };
         let dashed = rest.strip_prefix(['~', '-']);
-        let tag = dashed.unwrap_or(rest).trim_start_matches(['"', '\'']);
+        let tag = dashed.unwrap_or(rest).trim_start_matches(['"', '\'', '\\']);
         let end = tag
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(tag.len());
@@ -1029,6 +1056,118 @@ impl<'a, 's> Lexer<'a, 's> {
         })
     }
 
+    /// Whether the name after the `<` at `at` is closed later in the file.
+    fn closes_later(&mut self, at: usize) -> bool {
+        let src = self.src;
+        let closes = self.jsx_closes.get_or_insert_with(|| {
+            src.match_indices("</")
+                .map(|(close, _)| {
+                    let rest = &src[close + 2..];
+                    let end = rest.find(['>', ' ', '\n']).unwrap_or(rest.len());
+                    (&rest[..end], close)
+                })
+                .collect()
+        });
+        let rest = src.get(at + 1..).unwrap_or("");
+        let end = rest
+            .find(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | '_' | '-'))
+            .unwrap_or(rest.len());
+        closes.get(&rest[..end]).is_some_and(|&close| close > at)
+    }
+
+    /// Enters the element opening here, in code.
+    fn enter_jsx(&mut self) {
+        if matches!(self.jsx_open.last(), Some(Jsx::Children)) {
+            return;
+        }
+        let mut at = self.pos;
+        while matches!(self.bytes.get(at), Some(b' ' | b'\t')) {
+            at += 1;
+        }
+        if self.bytes.get(at) != Some(&b'<')
+            || !self
+                .bytes
+                .get(at + 1)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'>')
+            || !self.value_may_start(at)
+            || !self.closes_later(at)
+        {
+            return;
+        }
+        self.pos = at;
+        if self.bytes[at + 1] == b'>' {
+            self.pos += 2;
+            self.jsx_open.push(Jsx::Children);
+        } else {
+            self.jsx_open.push(Jsx::Tag { braces: 0 });
+        }
+    }
+
+    /// Past the text of an element, to the code or the tag after it.
+    fn skip_jsx_text(&mut self) {
+        while matches!(self.jsx_open.last(), Some(Jsx::Children)) {
+            let rest = self.bytes.get(self.pos..).unwrap_or(&[]);
+            let Some(next) = rest.iter().position(|b| matches!(b, b'<' | b'{')) else {
+                self.pos = self.bytes.len();
+                self.jsx_open.clear();
+                return;
+            };
+            self.pos += next;
+            if self.bytes[self.pos] == b'{' {
+                self.jsx_open.push(Jsx::Expression { braces: 0 });
+                return;
+            }
+            match self.bytes.get(self.pos + 1) {
+                Some(b'/') => {
+                    let rest = self.bytes.get(self.pos..).unwrap_or(&[]);
+                    let close = rest.iter().position(|b| *b == b'>');
+                    self.pos = close.map_or(self.bytes.len(), |c| self.pos + c + 1);
+                    self.jsx_open.pop();
+                }
+                Some(b'>') => {
+                    self.pos += 2;
+                    self.jsx_open.push(Jsx::Children);
+                }
+                Some(b) if b.is_ascii_alphabetic() => {
+                    self.jsx_open.push(Jsx::Tag { braces: 0 });
+                    return;
+                }
+                _ => self.pos += 1,
+            }
+        }
+    }
+
+    /// Follows the tag or the expression the lexer is in.
+    fn track_jsx(&mut self, token: &Token<'a>) {
+        let next = self.bytes.get(self.pos).copied();
+        match self.jsx_open.last_mut() {
+            Some(Jsx::Tag { braces }) => match token.kind {
+                TokenKind::Symbol('{') => *braces += 1,
+                TokenKind::Symbol('}') => *braces = braces.saturating_sub(1),
+                TokenKind::Symbol('>') if *braces == 0 => {
+                    self.jsx_open.pop();
+                    self.jsx_open.push(Jsx::Children);
+                }
+                TokenKind::Symbol('/') if *braces == 0 && next == Some(b'>') => {
+                    self.pos += 1;
+                    self.jsx_open.pop();
+                }
+                _ => {}
+            },
+            Some(Jsx::Expression { braces }) => match token.kind {
+                TokenKind::Symbol('{') => *braces += 1,
+                TokenKind::Symbol('}') => {
+                    *braces = braces.saturating_sub(1);
+                    if *braces == 0 {
+                        self.jsx_open.pop();
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
     /// The string whose three quotes open at `pos`.
     fn triple_quoted(&mut self, start: usize, interpolates: bool) -> Token<'a> {
         // Compared as bytes, never as `&str`: slicing a string at an
@@ -1093,6 +1232,8 @@ impl<'a, 's> Lexer<'a, 's> {
         }
         self.pos += 2;
         self.interpolation_depth += 1;
+        // Its braces are its own: the `}` here closes no JSX expression.
+        let outer = std::mem::take(&mut self.jsx_open);
         let mut depth = 1;
         while depth > 0 && self.pos < self.bytes.len() {
             match self.next_token().kind {
@@ -1101,6 +1242,7 @@ impl<'a, 's> Lexer<'a, 's> {
                 _ => {}
             }
         }
+        self.jsx_open = outer;
         self.interpolation_depth -= 1;
         true
     }

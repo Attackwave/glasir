@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/49";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/51";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -982,6 +982,22 @@ mod tests {
             ),
             (
                 Language::TypeScript,
+                "function m() {\n  x(<>use ``` {a} don't</>);\n  run();\n}\n",
+            ),
+            (
+                Language::TypeScript,
+                "function m() {\n  x(<p>{`a${b}`} ``` </p>);\n  run();\n}\n",
+            ),
+            (
+                Language::TypeScript,
+                "function m() {\n  x(<p a=\"b\" c={{ d: 1 }}>it's <b>`{e}</b> <i /> f</p>);\n  run();\n}\n",
+            ),
+            (
+                Language::TypeScript,
+                "function m() {\n  const f = <T>(x: T) => { return x; };\n  a < b;\n  run();\n}\n",
+            ),
+            (
+                Language::TypeScript,
                 "const o = {\n  m() {\n    f(c)\n    const { a } = b\n    run();\n  },\n}\n",
             ),
             (
@@ -1056,6 +1072,9 @@ mod tests {
         for src in [
             "m() {\n  if [[ ${#a[@]} -gt 0 ]]; then\n    run\n  fi\n}\n",
             "m() {\n  echo $# # }\n  run\n}\n",
+            "m() {\n  cat <<EOF\n  it's {\nEOF\n  run\n}\n",
+            "m() {\n  cat <<-'END'\n  } \"\n  END\n  run\n}\n",
+            "m() {\n  x='a\\'\n  y='{\n  }'\n  run\n}\n",
         ] {
             let facts = rules.parse(Language::Bash, src);
             assert!(!facts.had_errors, "{src}");
@@ -1200,6 +1219,8 @@ mod tests {
             (&["ml"], "let "),
             (&["css"], "alias a.{"),
             (&["css"], "."),
+            (&["ts"], "= <a>x</a>"),
+            (&["ts"], "= <a"),
             (&["html", "xml"], "<a"),
             (&["html", "xml"], "<!--"),
         ] {

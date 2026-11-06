@@ -11,6 +11,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut lexer = Lexer::new(src, style);
     lexer.regexes = true;
     lexer.template_literals = true;
+    lexer.jsx = true;
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
