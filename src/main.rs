@@ -8920,6 +8920,47 @@ fn demo_change_tools() {
         .map(|t| t["symbol"].as_str().unwrap())
         .collect();
     assert_eq!(found, ["src/cpu.rs#steps"]);
+    // A local of a method's name is no use of it; prose saying "let" is no
+    // local, and outside a language that declares with `let` nothing is.
+    std::fs::write(
+        dir.join("src/regs.rs"),
+        "pub struct Reg;\n\nimpl Reg {\n    pub fn is_spare(&self) -> bool {\n        true\n    }\n}\n\npub fn handler_x() {}\n\npub fn handler_y() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/decode.rs"),
+        "// Used to let handler_x know it was read; handler_x is wired by name.\nfn decode(ext: u16) -> bool {\n    let is_spare = ext & 1 != 0;\n    is_spare\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("notes.txt"),
+        "let handler_y = 1\nthen handler_y runs\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_unused", "arguments": {"path": "src/regs.rs"}}}),
+    )
+    .unwrap();
+    let unused = &r["result"]["structuredContent"]["unused"];
+    assert_eq!(unused, &json!(["src/regs.rs#is_spare"]), "{unused}");
+    // A definition that is itself a `let` is used where it is written bare.
+    std::fs::write(
+        dir.join("src/limits.swift"),
+        "let maxRetries = 3\n\nfunc retry() -> Int {\n    return maxRetries\n}\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_unused", "arguments": {"path": "src/limits.swift"}}}),
+    )
+    .unwrap();
+    let unused = r["result"]["structuredContent"]["unused"].to_string();
+    assert!(!unused.contains("maxRetries"), "{unused}");
     std::fs::remove_dir_all(&dir).unwrap();
 
     // pay -> charge -> log, a test two hops from log and one three hops out,
