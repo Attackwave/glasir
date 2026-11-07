@@ -79,11 +79,15 @@ never replaced, and nothing in your home directory is touched. With no
 assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.
 `--platform <name>` picks one explicitly.
 
-A server stays as long as its client keeps the connection. After ten minutes
-without a request it lets the graph go and stops watching, and the next request
-loads it again (`--sleep-after <minutes>`, `0` keeps it). A client that starts a
-new server without closing the old one leaves the old one running;
-`glasir servers --stop-replaced` ends those that have had no request since.
+Several assistants on one tree share one server. What a client starts is a
+small relay to that tree's backend, which it starts when none runs: one graph,
+one watcher, whatever number of assistants are open. The backend ends a minute
+after the last client closes, and is started again when one returns. After ten
+minutes without a request it lets the graph go and stops watching, and the next
+request loads it again (`--sleep-after <minutes>`, `0` keeps it). A relay a
+client forgets to close costs a few megabytes and no CPU. `glasir servers`
+lists what runs; `--stop-replaced` ends a server a client replaced without
+closing it. On Windows each client keeps its own server.
 
 Most assistants ask before they start a new server: Claude Code and Qwen Code
 want the server approved, Codex and Gemini CLI read project settings only in a
