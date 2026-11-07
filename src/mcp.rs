@@ -1976,7 +1976,7 @@ fn is_test_node(
     texts: &mut std::collections::HashMap<String, Option<String>>,
 ) -> bool {
     let name = served.name(node);
-    if is_test_symbol(&name) {
+    if runs_as_test(&name) {
         return true;
     }
     let (Some(root), Some((file, _)), Some((start, _))) = (
@@ -2946,6 +2946,17 @@ pub fn is_test_symbol(symbol: &str) -> bool {
     };
     let test_name = name.starts_with("test_") || after("Test") || after("test");
     in_test_dir || test_file || test_name
+}
+
+/// Whether a runner takes `symbol` for a test without an attribute: by its
+/// path, and by its name only where runners collect by name (Python, Ruby).
+/// A `test_bit` in a C or Rust source file is production code.
+pub fn runs_as_test(symbol: &str) -> bool {
+    let Some((file, _)) = symbol.split_once('#') else {
+        return false;
+    };
+    is_test_symbol(&format!("{file}#x"))
+        || (is_test_symbol(symbol) && [".py", ".rb"].iter().any(|e| file.ends_with(e)))
 }
 
 /// Hops a test may sit from what it covers. A test reaches code through

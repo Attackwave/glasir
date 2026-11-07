@@ -252,8 +252,9 @@ cheapest to act on:
 
 - `affected_tests` — the tests that reach a symbol or the uncommitted diff,
   nearest first, with the files to run. Recognises the test conventions of
-  each language (`tests/`, `spec/`, `__tests__/`, `test_x`, `x_test`,
-  `x.spec`, `FooTest`, `TestX`)
+  each language (`tests/`, `spec/`, `__tests__/`, `x_test`, `x.spec`,
+  `FooTest`, test attributes such as `#[test]` and `@Test`); a name such as
+  `test_x` alone counts only in Python and Ruby, whose runners collect by name
 - `co_changes` — the files that change in the same commits as one file, from
   the git history, marking those no edge in the graph connects: the hidden
   coupling — a template, a migration, a client in another language — that
