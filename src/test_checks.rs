@@ -213,6 +213,11 @@ fn incremental_classes() {
 }
 
 #[test]
+fn servers() {
+    crate::demo_servers();
+}
+
+#[test]
 fn index_scale() {
     crate::demo_index_scale();
 }

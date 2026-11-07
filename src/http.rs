@@ -975,6 +975,7 @@ fn handle_connection<S: Read + Write>(
         }
     };
 
+    crate::servers::touch();
     if req.path != "/mcp" {
         return respond(
             &mut stream,

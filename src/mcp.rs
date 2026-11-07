@@ -4939,6 +4939,7 @@ pub fn serve_swappable(state: &crate::published::Published<ServedState>) -> std:
         if line.trim().is_empty() {
             continue;
         }
+        crate::servers::touch();
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle(&state.load().as_served(), &msg),
             Err(e) => Some(error(Value::Null, -32700, format!("parse error: {e}"))),

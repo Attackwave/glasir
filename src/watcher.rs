@@ -1,9 +1,10 @@
 //! File system watcher.
 //!
 //! Editors emit a burst of writes while someone types. A portable polling
-//! watcher compares a compact file stamp every `DEBOUNCE` and reports one
-//! deduplicated batch. It has the same semantics on Linux, macOS and Windows,
-//! and avoids a platform-specific watcher dependency tree.
+//! watcher compares a compact file stamp and reports one deduplicated batch:
+//! every `DEBOUNCE` while files move, backing off to `IDLE` while they do not.
+//! It has the same semantics on Linux, macOS and Windows, and avoids a
+//! platform-specific watcher dependency tree.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,6 +12,23 @@ use std::time::Duration;
 /// Quiet period before a burst of file saves is reported as one batch, so
 /// editing does not start one rebuild per save.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// The longest wait between two polls of a quiet tree. A walk costs CPU in
+/// proportion to the tree, so an idle server walking every quarter second
+/// spent a steady share of a core for nothing.
+pub const IDLE: Duration = Duration::from_secs(2);
+
+/// The wait before the next poll: back to `DEBOUNCE` after a change, doubling
+/// while nothing moves, and never shorter than ten walks, so a tree too large
+/// to walk quickly costs at most a tenth of a core.
+pub fn next_wait(wait: Duration, walk: Duration, changed: bool) -> Duration {
+    let wanted = if changed {
+        DEBOUNCE
+    } else {
+        (wait * 2).min(IDLE)
+    };
+    wanted.max(walk * 10)
+}
 
 /// Whether a path is one the indexer must never read. See `ignored_under`,
 /// which this defers to without a tree to be relative to.
@@ -197,15 +215,33 @@ pub fn opted_in(root: &Path, path: &Path) -> bool {
 /// A file that leaves the scope — deleted, or newly ignored — is reported as
 /// gone even though it may still exist, so a caller must not read it. Blocks
 /// until the process ends.
-pub fn watch(root: &Path, mut on_batch: impl FnMut(Vec<(PathBuf, bool)>)) -> std::io::Result<()> {
+pub fn watch(root: &Path, on_batch: impl FnMut(Vec<(PathBuf, bool)>)) -> std::io::Result<()> {
+    watch_unless(root, || false, on_batch)
+}
+
+/// `watch`, not walking the tree while `paused` says so. What changed in the
+/// meantime is reported by the first walk after.
+pub fn watch_unless(
+    root: &Path,
+    paused: impl Fn() -> bool,
+    mut on_batch: impl FnMut(Vec<(PathBuf, bool)>),
+) -> std::io::Result<()> {
     let mut previous = file_stamps(root)?;
+    let mut wait = DEBOUNCE;
     loop {
-        std::thread::sleep(DEBOUNCE);
+        std::thread::sleep(wait);
+        if paused() {
+            wait = IDLE;
+            continue;
+        }
+        let started = std::time::Instant::now();
         // A tree that cannot be read right now is skipped, not reported empty.
         let Ok(current) = file_stamps(root) else {
             continue;
         };
+        let walk = started.elapsed();
         let changed = changes(&previous, &current);
+        wait = next_wait(wait, walk, !changed.is_empty());
         if !changed.is_empty() {
             on_batch(changed);
         }

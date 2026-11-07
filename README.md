@@ -79,6 +79,12 @@ never replaced, and nothing in your home directory is touched. With no
 assistant detected it writes a neutral `glasir-mcp.json` for any MCP client.
 `--platform <name>` picks one explicitly.
 
+A server stays as long as its client keeps the connection. After ten minutes
+without a request it lets the graph go and stops watching, and the next request
+loads it again (`--sleep-after <minutes>`, `0` keeps it). A client that starts a
+new server without closing the old one leaves the old one running;
+`glasir servers --stop-replaced` ends those that have had no request since.
+
 Most assistants ask before they start a new server: Claude Code and Qwen Code
 want the server approved, Codex and Gemini CLI read project settings only in a
 folder you have trusted, and Antigravity asks before its first use of an MCP
@@ -108,6 +114,7 @@ glasir why "your question"  # what the search saw, when an answer surprises you
 glasir view .               # the graph as a map in the browser, one region per subsystem
 glasir review               # the uncommitted change as a Markdown review: risk, dependents, tests
 glasir export . > graph.json  # the graph as node-link JSON, for another tool
+glasir servers              # running servers; --stop-replaced ends those a client replaced
 glasir uninstall .          # remove the registration and the hooks
 ```
 
