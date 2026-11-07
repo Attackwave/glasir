@@ -920,7 +920,8 @@ fn tool_list() -> Value {
             "title": "What nothing uses",
             "description": "Definitions nothing in the tree refers to: no call \
     reaches them, no call anywhere uses the name, and the name appears in no text \
-    file of the tree more often than it is defined. Tests, entry points, \
+    file of the tree more often than it is defined (a local bound by `let` of the \
+    same name does not count). Tests, entry points, \
     annotated or decorated definitions (a framework calls those), overrides, \
     generated files, headers, data formats, JavaBeans accessors, visitor and \
     event-handler conventions and Godot callbacks are left out. Not proof of \
@@ -3421,10 +3422,13 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     // served state; only the files holding a candidate are read here, for
     // what their own text says about it.
     let local = std::sync::OnceLock::new();
-    let counts = &served.mentions(&local).counts;
+    let mentions = served.mentions(&local);
     for (name, seen) in wanted.iter_mut() {
-        seen.1 = counts.get(*name).copied().unwrap_or(0);
+        seen.1 = mentions.counts.get(*name).copied().unwrap_or(0);
     }
+    // A definition that is itself a `let` (`let limit = 3` at top level) is
+    // written after `let` and used bare: there every occurrence counts.
+    let mut let_defined: Vec<&str> = Vec::new();
     for (&file, names) in &by_file {
         let Ok(bytes) = std::fs::read(root.join(file)) else {
             continue;
@@ -3442,6 +3446,26 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
             if generated || annotated || is_engine_callback(file, name) {
                 excused.insert((file, name));
             }
+            let start = served
+                .registry
+                .node_of(&format!("{file}#{name}"))
+                .and_then(|n| served.registry.span(n))
+                .map_or(0, |(start, _)| start as usize);
+            let line = text
+                .get(start.min(text.len())..)
+                .and_then(|rest| rest.lines().next())
+                .unwrap_or("");
+            if line
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|w| w == "let")
+            {
+                let_defined.push(name);
+            }
+        }
+    }
+    for name in let_defined {
+        if let Some(seen) = wanted.get_mut(name) {
+            seen.1 = mentions.raw.get(name).copied().unwrap_or(0);
         }
     }
     let mut unused: Vec<String> = uncalled
@@ -3566,6 +3590,9 @@ pub struct Mentions {
     /// How often each defined name is written anywhere in the tree, for
     /// `find_unused`: the same pass over every text file, taken once.
     counts: std::collections::HashMap<String, usize>,
+    /// Every occurrence, bindings and locals included: what counts for a
+    /// definition that is itself a `let`.
+    raw: std::collections::HashMap<String, usize>,
 }
 
 impl Mentions {
@@ -3595,6 +3622,7 @@ impl Served<'_> {
             struct Slot {
                 defs: usize,
                 count: usize,
+                raw: usize,
                 // Some definition is spelled `$` + this name.
                 sigil: bool,
                 postings: Vec<u32>,
@@ -3622,18 +3650,71 @@ impl Served<'_> {
                 };
                 let file = out.files.len() as u32;
                 let mut hit = false;
-                for word in String::from_utf8_lossy(&bytes)
+                let text = String::from_utf8_lossy(&bytes);
+                // Languages where `let` binds a local.
+                let declares = matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some(
+                        "rs" | "js"
+                            | "mjs"
+                            | "cjs"
+                            | "jsx"
+                            | "ts"
+                            | "mts"
+                            | "cts"
+                            | "tsx"
+                            | "swift"
+                    )
+                );
+                // Per name in this file: every use, the ones that cannot be a
+                // local (`.x`, `::x`, `fn x`), and whether `let` binds it here.
+                let mut here: std::collections::HashMap<&str, (usize, usize, bool)> =
+                    Default::default();
+                // The two words before this one: `let x`, `let mut x`.
+                let mut before: [&str; 2] = ["", ""];
+                for word in text
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .filter(|w| !w.is_empty())
                 {
+                    // `let x = …` or `let x: T`: not `let Space { .. } =` nor
+                    // "let x know" in a comment.
+                    let after = || {
+                        let end = word.as_ptr() as usize - text.as_ptr() as usize + word.len();
+                        let rest = text[end..].trim_start();
+                        (rest.starts_with('=') && !rest.starts_with("=="))
+                            || (rest.starts_with(':') && !rest.starts_with("::"))
+                    };
+                    let binding = declares
+                        && (before[0] == "let" || (before[0] == "mut" && before[1] == "let"))
+                        && after();
+                    let defining = matches!(before[0], "fn" | "func" | "function" | "def");
+                    before = [word, before[0]];
                     let Some((&name, slot)) = slots.get_key_value(word) else {
                         continue;
                     };
+                    let at = word.as_ptr() as usize - text.as_ptr() as usize;
+                    let qualified =
+                        defining || matches!(text[..at].chars().next_back(), Some('.' | ':'));
+                    let seen = here.entry(name).or_default();
+                    if binding {
+                        seen.2 = true;
+                        slots.get_mut(word).expect("just found").raw += 1;
+                        continue;
+                    }
+                    seen.0 += 1;
+                    seen.1 += usize::from(qualified);
                     let mention = mentionable(name, slot);
                     let slot = slots.get_mut(word).expect("just found");
-                    slot.count += 1;
+                    slot.raw += 1;
                     if mention && slot.postings.last() != Some(&file) {
                         slot.postings.push(file);
                         hit = true;
+                    }
+                }
+                // Where `let` binds the name, a bare use is the local.
+                for (name, (all, qualified, bound)) in here {
+                    if let Some(slot) = slots.get_mut(name) {
+                        slot.count += if bound { qualified } else { all };
                     }
                 }
                 if hit {
@@ -3647,6 +3728,7 @@ impl Served<'_> {
             for (name, slot) in slots {
                 if slot.defs > 0 {
                     *out.counts.entry(name.to_string()).or_default() += slot.count;
+                    *out.raw.entry(name.to_string()).or_default() += slot.raw;
                 }
                 // `x` written in the text also counts for a `$x` definition.
                 if slot.sigil {
