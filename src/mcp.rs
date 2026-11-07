@@ -4644,11 +4644,11 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .unwrap_or_default();
     let mut text = text;
     let mut truncated_at = None;
-    if let Some(limit) = args["max_lines"].as_u64().filter(|&n| n > 0) {
-        if let Some((cut, _)) = text.match_indices('\n').nth(limit as usize - 1) {
-            truncated_at = Some(line + limit as usize);
-            text.truncate(cut + 1);
-        }
+    if let Some(limit) = args["max_lines"].as_u64().filter(|&n| n > 0)
+        && let Some((cut, _)) = text.match_indices('\n').nth(limit as usize - 1)
+    {
+        truncated_at = Some(line + limit as usize);
+        text.truncate(cut + 1);
     }
     let mut answer = json!({
         "symbol": name,
