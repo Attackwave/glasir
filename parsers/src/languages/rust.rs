@@ -92,7 +92,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 // The whole path: `std::fs::read_dir` is not the tree's `fs`.
                 let mut path: Vec<&str> = Vec::new();
                 let mut k = i;
-                while let Some(TokenKind::Ident(segment)) = k.checked_sub(1).map(|p| &tokens[p].kind) {
+                while let Some(TokenKind::Ident(segment)) =
+                    k.checked_sub(1).map(|p| &tokens[p].kind)
+                {
                     path.push(segment);
                     match k.checked_sub(2).map(|p| &tokens[p].kind) {
                         Some(TokenKind::DoubleSymbol("::")) => k -= 2,
