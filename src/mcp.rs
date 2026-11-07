@@ -924,7 +924,8 @@ fn tool_list() -> Value {
     reaches them, no call anywhere uses the name, and the name appears in no text \
     file of the tree more often than it is defined (a local bound by `let` of the \
     same name does not count). Tests, entry points, \
-    annotated or decorated definitions (a framework calls those), overrides, \
+    annotated or decorated definitions (a framework calls those), overrides and \
+    methods of a Rust `impl Trait for Type`, \
     generated files, headers, data formats, JavaBeans accessors, visitor and \
     event-handler conventions and Godot callbacks are left out. Not proof of \
     dead code: a library's public API, or a name a library builds at run time \
@@ -3574,7 +3575,10 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
                 .registry
                 .node_of(&format!("{file}#{name}"))
                 .and_then(|n| served.registry.span(n))
-                .is_some_and(|(start, _)| is_annotated(&text, start as usize));
+                .is_some_and(|(start, _)| {
+                    is_annotated(&text, start as usize)
+                        || (file.ends_with(".rs") && in_trait_impl(&text, start as usize))
+                });
             if generated || annotated || is_engine_callback(file, name) {
                 excused.insert((file, name));
             }
@@ -3615,6 +3619,28 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     });
     next_offset(&mut value, offset, limit, unused.len());
     Ok(value)
+}
+
+/// Whether the Rust definition at `start` sits in `impl Trait for Type`:
+/// whoever holds the trait calls it, a framework's included, so no call in
+/// the tree names it. The block is the nearest line above indented less.
+fn in_trait_impl(text: &str, start: usize) -> bool {
+    let Some(before) = text.get(..start.min(text.len())) else {
+        return false;
+    };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    let own = indent(text[line_start..].lines().next().unwrap_or(""));
+    before[..line_start]
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .find(|l| indent(l) < own)
+        .is_some_and(|l| {
+            let head = l.trim_start();
+            let head = head.strip_prefix("unsafe ").unwrap_or(head);
+            head.starts_with("impl") && head.contains(" for ")
+        })
 }
 
 /// Whether an attribute or decorator sits on the definition starting at
