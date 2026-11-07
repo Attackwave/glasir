@@ -7650,6 +7650,10 @@ fn demo_imports() {
             "pub struct Twice;\n\nimpl Twice {\n    pub fn peek(&self) -> u8 {\n        1\n    }\n}\n\nimpl Reader for Twice {\n    fn peek(&self) -> u8 {\n        self.peek()\n    }\n}\n",
         ),
         (
+            "in/xl/esc.js",
+            "function escape_it(s) {\n  return s.replace(/[&<>\"']/g, (c) => c);\n}\n\n// The one after it.\nfunction after_escape() {\n  return 1;\n}\n",
+        ),
+        (
             "in/same.php",
             "<?php\nclass TwinA extends PayBase {\n  public function twin($x) { return $this->fetch($x); }\n}\nclass TwinB extends PayOther {\n  public function twin($x) { return $this->fetch($x); }\n}\n",
         ),
@@ -8271,6 +8275,9 @@ fn demo_imports() {
             .unwrap()
             .to_string()
     };
+    // Read with the language's regexps: a quote inside one opens no string.
+    let text = snippet(serde_json::json!({"symbol": "in/xl/esc.js#after_escape"}));
+    assert!(text.contains("// The one after it."), "{text}");
     let text = snippet(serde_json::json!({"symbol": "in/rs/twice.rs#peek"}));
     assert!(
         text.contains("defines this name again at line(s) 4"),
