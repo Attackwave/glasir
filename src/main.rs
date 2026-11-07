@@ -7827,6 +7827,10 @@ fn demo_imports() {
             "fn go_local(p: &mut AreaPath) {\n    p.grant();\n}\n\nfn go_let() {\n    let mut q = OtherPath::new();\n    q.grant();\n}\n\nfn go_built() {\n    let r = OtherPath::make();\n    r.grant();\n}\n",
         ),
         (
+            "in/rs/banks.rs",
+            "pub struct Banks {\n    data: AreaPath,\n    inst: AreaPath,\n    odd: OtherPath,\n}\n\nimpl Banks {\n    fn go_alias(&mut self) {\n        let bank = &mut self.data;\n        bank.grant();\n    }\n\n    fn go_each(&mut self) {\n        for each in [&mut self.data, &mut self.inst] {\n            each.grant();\n        }\n    }\n\n    fn go_mixed(&mut self) {\n        for mixed in [&mut self.data, &mut self.odd] {\n            mixed.grant();\n        }\n    }\n\n    fn go_shadow(&mut self) {\n        let s = &mut self.data;\n        s.grant();\n    }\n\n    fn go_split(&mut self) {\n        let later = self.data\n            .split_path();\n        later.grant();\n    }\n}\n\nfn go_text(s: &str) {\n    s.grant();\n}\n\nfn go_raw(raw: &str) {\n    let copy = raw;\n    copy.grant();\n}\n\nfn make_raw() {\n    let raw = AreaPath::new();\n}\n",
+        ),
+        (
             "in/rs/twin_a.rs",
             "pub struct TwinA;\n\nimpl TwinA {\n    pub fn both_call(&self) {}\n}\n",
         ),
@@ -8373,6 +8377,18 @@ fn demo_imports() {
         ("in/rs/local.rs#go_let", "in/rs/other.rs#grant", true),
         ("in/rs/local.rs#go_let", "in/rs/area.rs#grant", false),
         ("in/rs/local.rs#go_built", "in/rs/other.rs#grant", false),
+        // A name bound to a field, or looping over fields of one type.
+        ("in/rs/banks.rs#go_alias", "in/rs/area.rs#grant", true),
+        ("in/rs/banks.rs#go_alias", "in/rs/other.rs#grant", false),
+        ("in/rs/banks.rs#go_each", "in/rs/area.rs#grant", true),
+        ("in/rs/banks.rs#go_each", "in/rs/other.rs#grant", false),
+        ("in/rs/banks.rs#go_mixed", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_mixed", "in/rs/other.rs#grant", false),
+        // `s` is a `&str` elsewhere in the file; `later` is not `data` itself.
+        ("in/rs/banks.rs#go_shadow", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_text", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_split", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_raw", "in/rs/area.rs#grant", false),
         (
             "in/rs/chips.rs#tick_inner",
             "in/rs/copper.rs#tick_once",
