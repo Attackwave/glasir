@@ -1559,6 +1559,48 @@ impl LineStart {
     }
 }
 
+/// The string, comment and literal syntax `language` adds to its comment
+/// style. One place for the scanners and for every other reader of tokens, so
+/// that a tool sees the file the way its scanner does.
+pub fn configure(lexer: &mut Lexer<'_, '_>, language: crate::Language) {
+    use crate::Language as L;
+    match language {
+        L::TypeScript | L::JavaScript => {
+            lexer.regexes = true;
+            lexer.template_literals = true;
+            lexer.jsx = true;
+        }
+        L::Ruby => {
+            lexer.regexes = true;
+            lexer.ruby_literals = true;
+            lexer.multi_line_quotes = true;
+        }
+        L::Elixir => lexer.sigils = true,
+        L::Php => {
+            lexer.multi_line_quotes = true;
+            lexer.php = true;
+            lexer.starts_in_page();
+        }
+        L::Kotlin => {
+            lexer.nested_comments = true;
+            lexer.interpolation = true;
+            lexer.raw_triple_quotes = true;
+        }
+        L::Dart => {
+            lexer.nested_comments = true;
+            lexer.interpolation = true;
+        }
+        L::Rust | L::Swift | L::Scala => lexer.nested_comments = true,
+        L::Cpp => lexer.cpp_raw = true,
+        L::Bash => {
+            lexer.shell_words = true;
+            lexer.multi_line_quotes = true;
+        }
+        L::Go => lexer.raw_backticks = true,
+        _ => {}
+    }
+}
+
 /// The token after a `<` closing at `k` or later, one level in.
 pub fn after_angles(tokens: &[Token<'_>], mut k: usize) -> usize {
     let mut depth = 1;

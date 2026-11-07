@@ -7,7 +7,7 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
-    lexer.nested_comments = true;
+    crate::lexer::configure(&mut lexer, crate::Language::Rust);
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
@@ -156,7 +156,24 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                 // `const LIMIT: usize = compute_limit();` is not
                                 // a module-level call. Its scope ends at the `;`,
                                 // since it opens no brace of its own.
-                                if matches!(*ident, "const" | "static") {
+                                // `type A = B;`, `struct A;` and `struct A(u8);`
+                                // end at their `;` and open nothing.
+                                let ends_first = tokens[i + 2..]
+                                    .iter()
+                                    .take(crate::lexer::LOOKAHEAD)
+                                    .scan(0i32, |depth, t| {
+                                        match t.kind {
+                                            TokenKind::Symbol('(' | '[' | '<') => *depth += 1,
+                                            TokenKind::Symbol(')' | ']' | '>') => *depth -= 1,
+                                            _ => {}
+                                        }
+                                        Some((*depth, t.kind.clone()))
+                                    })
+                                    .find(|(depth, kind)| {
+                                        *depth <= 0 && matches!(kind, TokenKind::Symbol(';' | '{'))
+                                    })
+                                    .is_some_and(|(_, kind)| kind == TokenKind::Symbol(';'));
+                                if matches!(*ident, "const" | "static") || ends_first {
                                     scope.open_statement_definition(
                                         type_name,
                                         start_byte as usize,

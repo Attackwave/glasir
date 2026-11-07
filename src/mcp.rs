@@ -422,7 +422,8 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
-                    "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"}
+                    "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"},
+                    "max_lines": {"type": "integer", "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
                 },
                 "required": ["symbol"]
             },
@@ -436,7 +437,10 @@ fn tool_list() -> Value {
                         "description": "Start and end offset in the file"},
                     "source": {"type": "string"},
                     "continues_into": {"type": "string", "description": "An assembly routine that branches or falls into another: where it goes on"},
-                    "through": {"type": "string", "description": "With `following`: the last definition the source reaches"}
+                    "through": {"type": "string", "description": "With `following`: the last definition the source reaches"},
+                    "also_defined_at": {"type": "array", "items": {"type": "integer"},
+                        "description": "Lines of other definitions of the name in the file, which this one shadows"},
+                    "truncated_at_line": {"type": "integer", "description": "With `max_lines`: the first line left out"}
                 },
                 "required": ["symbol", "file", "line", "bytes", "source"]
             }
@@ -4620,6 +4624,32 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .iter()
         .filter(|&&b| b == b'\n')
         .count();
+    // One node holds every definition of a name in a file: an inherent and a
+    // trait method alike. Say where the others are rather than pick silently.
+    let line_of = |at: u32| {
+        1 + src.as_bytes()[..(at as usize).min(src.len())]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    };
+    let others_named: Vec<usize> = facts
+        .as_ref()
+        .map(|f| {
+            f.ranges
+                .iter()
+                .filter(|(n, r)| n == bare && r.0 != start && !(start <= r.0 && r.0 < end))
+                .map(|(_, r)| line_of(r.0))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut text = text;
+    let mut truncated_at = None;
+    if let Some(limit) = args["max_lines"].as_u64().filter(|&n| n > 0) {
+        if let Some((cut, _)) = text.match_indices('\n').nth(limit as usize - 1) {
+            truncated_at = Some(line + limit as usize);
+            text.truncate(cut + 1);
+        }
+    }
     let mut answer = json!({
         "symbol": name,
         "file": file,
@@ -4627,6 +4657,12 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         "bytes": [start, end],
         "source": text,
     });
+    if !others_named.is_empty() {
+        answer["also_defined_at"] = json!(others_named);
+    }
+    if let Some(at) = truncated_at {
+        answer["truncated_at_line"] = json!(at);
+    }
     // An entry point that branches or falls into a shared body is only a
     // stub on its own; say where it goes on.
     let last = through.as_ref().map_or(bare, |(n, _)| n.as_str());
@@ -4654,11 +4690,16 @@ fn with_comments(
     (start, end): (u32, u32),
     others: &[(u32, u32)],
 ) -> (u32, u32) {
+    let (s, e) = (start as usize, end as usize);
+    // A stored range from another version of the file: leave it for the caller
+    // to refuse rather than slicing past it.
+    if s > e || src.get(s..e).is_none() {
+        return (start, end);
+    }
     let code = native_parsers::rules::active().tokens(lang, src);
     if code.is_empty() {
         return (start, end);
     }
-    let (s, e) = (start as usize, end as usize);
     // From the start of the definition's line, so a modifier the range leaves
     // out (`pub` before `fn`) comes with it.
     // ponytail: a definition sharing its line with earlier code brings that code.
@@ -4679,9 +4720,11 @@ fn with_comments(
     let own = |t: &&native_parsers::lexer::Token<'_>| {
         !others.iter().any(|&(a, b)| t.start >= a && t.start < b)
     };
+    // A token may run past the definition: a string or a comment left open.
     let tail = match code[first..last].iter().rfind(own) {
-        Some(t) => src[t.end as usize..e]
-            .find('\n')
+        Some(t) => src
+            .get(t.end as usize..e)
+            .and_then(|rest| rest.find('\n'))
             .map_or(e, |i| t.end as usize + i + 1),
         None => e,
     };
@@ -4698,6 +4741,16 @@ fn render_get_code_snippet(v: &Value) -> String {
     );
     if let Some(last) = v["through"].as_str() {
         out.push_str(&format!("\nthrough {last}\n"));
+    }
+    if let Some(at) = v["truncated_at_line"].as_u64() {
+        out.push_str(&format!("\n… cut here; it goes on at line {at}\n"));
+    }
+    if let Some(lines) = v["also_defined_at"].as_array() {
+        let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        out.push_str(&format!(
+            "\nthe file defines this name again at line(s) {}\n",
+            lines.join(", ")
+        ));
     }
     if let Some(to) = v["continues_into"].as_str() {
         out.push_str(&format!(

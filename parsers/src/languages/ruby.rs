@@ -33,9 +33,7 @@ fn is_endless(tokens: &[Token<'_>], i: usize) -> bool {
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
-    lexer.regexes = true;
-    lexer.ruby_literals = true;
-    lexer.multi_line_quotes = true;
+    crate::lexer::configure(&mut lexer, crate::Language::Ruby);
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;

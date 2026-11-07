@@ -452,15 +452,29 @@ impl SymbolRegistry {
     /// names defined twice are most of them. Run once the batch's definitions
     /// are all known. A Markdown section is not a definition.
     pub fn prune_refs(&mut self) {
-        let mut defs: HashMap<&str, u32> = HashMap::new();
+        // Languages that read each other's names: a script and its typings, C
+        // and C++, the JVM. A name elsewhere is a coincidence, not a use.
+        let family = |file: &str| {
+            use crate::parse_ast::LangExt;
+            let lang = Lang::from_path(Path::new(file));
+            match lang {
+                Some(Lang::TypeScript) => Some(Lang::JavaScript),
+                Some(Lang::Cpp) => Some(Lang::C),
+                Some(Lang::Kotlin | Lang::Scala) => Some(Lang::Java),
+                other => other,
+            }
+        };
+        let mut defs: HashMap<&str, (u32, Option<Lang>)> = HashMap::new();
         for key in self.by_name.keys() {
             if let Some((file, name)) = key.split_once('#')
                 && !crate::docs::is_markdown(Path::new(file))
             {
-                *defs.entry(name).or_default() += 1;
+                let entry = defs.entry(name).or_insert((0, family(file)));
+                entry.0 += 1;
             }
         }
-        for refs in self.refs.values_mut() {
+        for (file, refs) in self.refs.iter_mut() {
+            let own = family(file);
             for (_, name) in refs.iter_mut() {
                 // An import naming a file that does not define the name — a
                 // re-export — decides nothing; the plain rule applies.
@@ -473,7 +487,7 @@ impl SymbolRegistry {
             }
             refs.retain(|(_, name)| match crate::imports::unscope(name) {
                 Some(_) => true,
-                None => defs.get(name.as_str()) == Some(&1),
+                None => defs.get(name.as_str()) == Some(&(1, own)),
             });
         }
         self.refs.retain(|_, refs| !refs.is_empty());

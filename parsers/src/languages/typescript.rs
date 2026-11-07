@@ -9,9 +9,7 @@ use crate::scope::ScopeStack;
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
-    lexer.regexes = true;
-    lexer.template_literals = true;
-    lexer.jsx = true;
+    crate::lexer::configure(&mut lexer, crate::Language::TypeScript);
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
