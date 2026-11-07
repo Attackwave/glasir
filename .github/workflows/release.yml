@@ -338,3 +338,33 @@ jobs:
           )
           publish homebrew-glasir Formula/glasir.rb packages/glasir.rb
           publish scoop-glasir bucket/glasir.json packages/glasir.json
+
+  # The MCP registry keeps what is published to it; it never follows releases.
+  # GitHub's OIDC token proves the namespace, so no secret is involved.
+  registry:
+    needs: [publish]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PUBLISHER: v1.8.8
+      PUBLISHER_SHA256: 09f1fa70ee146b640584274a1a6b2b8a0310b05d4321fa9224e6df6a016d67f4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: check server.json names this release
+        run: |
+          version=$(jq -r .version server.json)
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "server.json says ${version}"; exit 1; }
+      - name: publish to the MCP registry
+        run: |
+          dir=$(mktemp -d)
+          curl -fsSL -o "$dir/p.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${PUBLISHER_SHA256}  $dir/p.tar.gz" | sha256sum -c -
+          tar xzf "$dir/p.tar.gz" -C "$dir" mcp-publisher
+          "$dir/mcp-publisher" login github-oidc
+          "$dir/mcp-publisher" publish
