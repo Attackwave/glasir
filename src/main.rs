@@ -44,6 +44,7 @@ mod resolve;
 mod routes;
 mod scip_wire;
 mod search;
+mod servers;
 mod snapshot;
 mod store;
 #[cfg(test)]
@@ -87,6 +88,7 @@ fn main() -> std::io::Result<()> {
         "impact-of" => run_impact_of(&args),
         "review" => run_review(&args),
         "export" => run_export(&args),
+        "servers" => run_servers(&args),
         "guard" => run_guard(&args),
         // Refreshes the stored snapshot and exits. What the git hooks run, and
         // useful by hand: it moves the cost of a cold analysis off the moment
@@ -825,7 +827,7 @@ struct Analysed {
 /// `HOME`, so reading `HOME` alone made `--user` refuse and every client's
 /// home-directory marker invisible there. `HOME` first, which is what the
 /// checks set.
-fn home() -> Option<std::path::PathBuf> {
+pub(crate) fn home() -> Option<std::path::PathBuf> {
     home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
 }
 
@@ -2534,6 +2536,38 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
         prepare_plugin_tree(root)?;
     }
     let state = Arc::new(published::Published::from_pointee(served_state(root)?));
+    // Removed again when serving ends; see `glasir servers`.
+    let _registration = servers::register(root);
+    // Minutes without a request before the graph leaves memory; 0 keeps it.
+    let sleep_after = match args.value("sleep-after").map(str::parse::<u64>) {
+        None => 10,
+        Some(Ok(minutes)) => minutes,
+        Some(Err(_)) => {
+            eprintln!("--sleep-after must be a whole number of minutes.");
+            std::process::exit(2);
+        }
+    } * 60;
+    let sleeper = {
+        let root = root.clone();
+        Arc::new(servers::Sleeper::new(
+            state.clone(),
+            asleep_state,
+            move || served_state(&root).ok(),
+        ))
+    };
+    {
+        let sleeper = sleeper.clone();
+        servers::on_request(move || sleeper.wake());
+    }
+    if sleep_after > 0 {
+        let sleeper = sleeper.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                sleeper.sleep_if_idle(servers::idle_for(now()), sleep_after);
+            }
+        });
+    }
     {
         let s = state.load();
         eprintln!(
@@ -2568,8 +2602,10 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     if args.has("watch") {
         let (root, state, reindex_error) = (root.clone(), state.clone(), reindex_error.clone());
         let reindexed = reindexed.clone();
+        let sleeper = sleeper.clone();
         std::thread::spawn(move || {
-            let _ = watcher::watch(&root, |_paths| match served_state(&root) {
+            let paused = || sleeper.is_asleep();
+            let _ = watcher::watch_unless(&root, paused, |_paths| match served_state(&root) {
                 // Published whole: a reader holds the old state until its
                 // request ends and the next one sees the new one. No reader
                 // ever observes a partly re-indexed graph.
@@ -2704,6 +2740,65 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
             mcp::serve_swappable(&state)
         }
     }
+}
+
+/// `glasir servers [--stop-replaced]` — the running servers, and the ones a
+/// client replaced without closing them.
+fn run_servers(args: &cli::Args) -> std::io::Result<()> {
+    let Some(dir) = servers::directory() else {
+        eprintln!("glasir: no state directory for this user");
+        std::process::exit(2);
+    };
+    let all = servers::read(&dir);
+    let (live, gone): (Vec<_>, Vec<_>) = all.into_iter().partition(servers::is_server);
+    for status in &gone {
+        let _ = std::fs::remove_file(dir.join(format!("{}.json", status.pid)));
+    }
+    let replaced = servers::replaced(&live);
+    let now = now();
+    for s in &live {
+        println!(
+            "{:>8}  parent {:>8}  glasir {:<8} up {:>6}m  last request {:>6}m ago  {}{}",
+            s.pid,
+            s.parent,
+            s.version,
+            now.saturating_sub(s.started) / 60,
+            now.saturating_sub(s.last_request) / 60,
+            s.root,
+            if replaced.contains(&s.pid) {
+                "  (replaced)"
+            } else {
+                ""
+            },
+        );
+    }
+    if live.is_empty() {
+        println!("no glasir server is running");
+    }
+    if !args.has("stop-replaced") {
+        if !replaced.is_empty() {
+            println!(
+                "\n{} replaced: a newer server for the same tree and client took over. \
+                 `glasir servers --stop-replaced` ends them.",
+                replaced.len()
+            );
+        }
+        return Ok(());
+    }
+    for pid in replaced {
+        let stopped = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .is_ok_and(|s| s.success());
+        if stopped {
+            let _ = std::fs::remove_file(dir.join(format!("{pid}.json")));
+        }
+        println!(
+            "{} {pid}",
+            if stopped { "stopped" } else { "could not stop" }
+        );
+    }
+    Ok(())
 }
 
 /// `glasir impact-of <rev>` — what a change reaches, from a git diff.
@@ -3857,6 +3952,32 @@ fn tree_name(root: &std::path::Path) -> String {
 
 /// The analysed tree in the form a server holds it: owning its parts, so it can
 /// be swapped under readers when the tree changes.
+/// What a sleeping server holds: nothing, until a request wakes it.
+fn asleep_state() -> mcp::ServedState {
+    let g = graph::Graph::new(csr::CsrBuilder::new().build());
+    let snap = g.load();
+    let registry = ingest::SymbolRegistry::new(0);
+    mcp::ServedState {
+        embeddings: embed::embed(&snap, 1),
+        search: search::SearchIndex::build_with_docs(&registry, registry.docs()),
+        snap,
+        names: Vec::new(),
+        defined: Default::default(),
+        registry,
+        communities: community::Communities {
+            of_node: Vec::new(),
+            hubs: Vec::new(),
+            pendants: Vec::new(),
+        },
+        physics: physics::Physics::default(),
+        now: now(),
+        files: std::sync::OnceLock::new(),
+        mentions: std::sync::OnceLock::new(),
+        references: std::sync::OnceLock::new(),
+        root: std::path::PathBuf::new(),
+    }
+}
+
 fn served_state(root: &std::path::Path) -> std::io::Result<mcp::ServedState> {
     let a = analyse(root)?;
     let embeddings = embed::embed(&a.snap, 4);
@@ -4541,6 +4662,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     demo_parallel_ingest();
     demo_incremental();
     demo_incremental_classes();
+    demo_servers();
     demo_index_scale();
     demo_cohesion_scale();
     demo_subsystem_scale();
@@ -13075,6 +13197,69 @@ fn demo_index_scale() {
 /// on them; community ids are checked as a *partition* rather than by label,
 /// because the numbers are assigned by walking the graph and carry no meaning —
 /// every use in the codebase compares them for equality, never against a value.
+fn demo_servers() {
+    use std::time::Duration;
+    // Quick while files move, slower while they do not, never a tight loop
+    // over a tree too large to walk quickly.
+    let ms = Duration::from_millis;
+    assert_eq!(watcher::next_wait(ms(250), ms(5), true), watcher::DEBOUNCE);
+    assert_eq!(watcher::next_wait(ms(250), ms(5), false), ms(500));
+    assert_eq!(watcher::next_wait(ms(1500), ms(5), false), watcher::IDLE);
+    assert_eq!(watcher::next_wait(ms(250), ms(400), true), ms(4000));
+
+    // Replaced: same tree and parent, nothing asked since the newer started.
+    let status = |pid, parent, root: &str, started, last_request| servers::Status {
+        pid,
+        parent,
+        root: root.to_string(),
+        version: String::new(),
+        started,
+        last_request,
+    };
+    let live = [
+        status(1, 9, "/a", 100, 150),
+        status(2, 9, "/a", 200, 200),
+        status(3, 9, "/a", 120, 260),
+        status(4, 8, "/a", 50, 50),
+        status(5, 9, "/b", 10, 10),
+        status(6, 0, "/c", 10, 10),
+        status(7, 0, "/c", 20, 20),
+    ];
+    assert_eq!(servers::replaced(&live), vec![1]);
+
+    // Asleep the graph is gone; a request brings it back first. A load that
+    // fails keeps the server asleep for the next request to retry.
+    let state = std::sync::Arc::new(published::Published::from_pointee(7u32));
+    let loads = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = loads.clone();
+    let sleeper = servers::Sleeper::new(
+        state.clone(),
+        || 0,
+        move || {
+            let n = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (n > 0).then_some(7)
+        },
+    );
+    sleeper.sleep_if_idle(599, 600);
+    assert_eq!(*state.load(), 7, "not idle long enough");
+    sleeper.sleep_if_idle(601, 0);
+    assert_eq!(*state.load(), 7, "0 keeps the graph");
+    sleeper.sleep_if_idle(601, 600);
+    assert_eq!(*state.load(), 0);
+    assert!(sleeper.is_asleep());
+    sleeper.wake();
+    assert!(sleeper.is_asleep(), "a failed load stays asleep");
+    sleeper.wake();
+    assert!(!sleeper.is_asleep());
+    assert_eq!(*state.load(), 7);
+    sleeper.wake();
+    assert_eq!(
+        loads.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "awake loads nothing"
+    );
+}
+
 fn demo_incremental_classes() {
     let dir = std::env::temp_dir().join(format!("glasir-inc-classes-{}", fixture_id()));
     let _ = std::fs::remove_dir_all(&dir);
