@@ -228,6 +228,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         .entries()
         .filter_map(|(s, &n)| s.split_once('#').map(|(f, _)| (n, f)))
         .collect();
+    let impls = registry.methods_by_type();
     let mut links = Vec::new();
     for (symbol, &placeholder) in registry.entries() {
         // Unqualified symbols are the placeholders tier 2 minted.
@@ -245,7 +246,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         if let Some(target) = target {
             let mut chain_known = false;
             let found: Vec<NodeId> = if let Some(module) = target.strip_prefix('@') {
-                let module = module.strip_prefix(['!', '?']).unwrap_or(module);
+                let module = module.strip_prefix(['!', '?', '.']).unwrap_or(module);
                 let (found, known) = inherited(registry, &by_name, &file_of, module, bare);
                 chain_known = known;
                 found
@@ -283,6 +284,20 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                     .into_iter()
                     .collect()
             };
+            // The receiver's type has the method in an `impl` elsewhere.
+            let found = match (found.is_empty(), target.strip_prefix("@.")) {
+                (true, Some(types)) => types
+                    .split('+')
+                    .map(|t| t.split('^').next().unwrap_or(t))
+                    .map(|t| t.rsplit("::").next().unwrap_or(t))
+                    .flat_map(|t| impls.get(t).into_iter().flatten())
+                    .flat_map(|names| names.get(bare).into_iter().flatten())
+                    .filter_map(|file| registry.node_of(&format!("{file}#{bare}")))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                _ => found,
+            };
             if let [definition] = found[..] {
                 links.push(Link {
                     placeholder,
@@ -292,7 +307,20 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 });
                 continue;
             }
-            if target.starts_with("@!") || (target.starts_with("@?") && chain_known) {
+            // `@.`, the receiver's type: strict as `@?` once its chain is known.
+            if target.starts_with("@!")
+                || ((target.starts_with("@?") || target.starts_with("@.")) && chain_known)
+            {
+                continue;
+            }
+            // `labels.get()` with `labels: HashMap`: the type is known and
+            // none of it is in the tree, so no definition here is meant.
+            if let Some(types) = target.strip_prefix("@.")
+                && types.split('+').all(|t| {
+                    let own = t.split('^').next().unwrap_or(t);
+                    !by_name.contains_key(own.rsplit("::").next().unwrap_or(own))
+                })
+            {
                 continue;
             }
         }
@@ -309,12 +337,13 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // question by carrying the scheme in the symbol; the registry carries
         // it beside the node instead, so the name a caller sees is unchanged.
         //
-        // A placeholder reached from two languages has no language, and then
-        // nothing is refused: it is genuinely shared, and the pre-existing
-        // behaviour is the safe one.
-        let want = registry.placeholder_lang(placeholder);
+        // A placeholder reached from two languages links only into one of
+        // them: `fill` called in Rust and in assembly is no Rust call of an
+        // assembly label.
+        let want = registry.placeholder_langs(placeholder);
         if let Some(&definition) = defs.iter().find(|&&d| {
-            d != placeholder && want.is_none_or(|w| lang_of(&file_of, d).is_none_or(|l| l == w))
+            d != placeholder
+                && (want.is_empty() || lang_of(&file_of, d).is_none_or(|l| want.contains(&l)))
         }) {
             // Assembly has no namespaces: a label is global to the unit the
             // assembler builds, and a unit defining it twice does not
@@ -327,7 +356,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 placeholder,
                 definition,
                 candidates: defs.len(),
-                exact: want == Some(crate::parse_ast::Lang::Assembly),
+                exact: want == [crate::parse_ast::Lang::Assembly],
             });
         }
     }

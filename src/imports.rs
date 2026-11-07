@@ -89,7 +89,13 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
             contracts(src, "interface"),
         ]
         .concat(),
-        Lang::Rust => [rust_traits(src), rust_methods(src), rust_types(src)].concat(),
+        Lang::Rust => [
+            rust_uses(src),
+            rust_traits(src),
+            rust_methods(src),
+            rust_types(src),
+        ]
+        .concat(),
         Lang::Swift => [
             colon_heads(src, &["class", "struct", "enum", "actor", "extension"]),
             contracts(src, "protocol"),
@@ -616,11 +622,140 @@ fn constructed(value: &str) -> Option<&str> {
     }
 }
 
+/// `use crate::a::b;`, `use super::{c, d as e};`: names this crate defines.
+/// A glob, `self` in a list and another crate's path are left out.
+fn rust_uses(src: &str) -> Vec<Import> {
+    fn expand(prefix: &str, body: &str, out: &mut Vec<Import>) {
+        let body = body.trim();
+        if let Some(open) = body.find('{') {
+            let head = format!("{prefix}{}", &body[..open]);
+            let inner = body[open + 1..]
+                .strip_suffix('}')
+                .unwrap_or(&body[open + 1..]);
+            let (mut depth, mut start) = (0, 0);
+            for (at, c) in inner.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        expand(&head, &inner[start..at], out);
+                        start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            expand(&head, &inner[start..], out);
+            return;
+        }
+        let (path, alias) = match body.split_once(" as ") {
+            Some((p, a)) => (p.trim(), Some(a.trim())),
+            None => (body, None),
+        };
+        let full = format!("{prefix}{path}");
+        let Some((spec, name)) = full.rsplit_once("::") else {
+            return;
+        };
+        let ours = ["crate", "self", "super"].contains(&spec.split("::").next().unwrap_or(""));
+        if ours && !matches!(name, "*" | "self" | "") && alias != Some("_") {
+            out.push(Import::Name {
+                local: alias.unwrap_or(name).to_string(),
+                spec: spec.to_string(),
+                name: name.to_string(),
+            });
+        }
+    }
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let text = line.trim_start();
+        let text = text.strip_prefix("pub ").unwrap_or(text);
+        let text = match text.strip_prefix("pub(") {
+            Some(rest) => rest.split_once(')').map_or(text, |(_, r)| r.trim_start()),
+            None => text,
+        };
+        let Some(rest) = text.strip_prefix("use ") else {
+            continue;
+        };
+        let start = offset(src, rest) as usize;
+        let statement = src.get(start..).unwrap_or("");
+        let lines = statement.split_inclusive('\n').take(STATEMENT_LINES);
+        let statement = &statement[..lines.map(str::len).sum()];
+        if let Some((body, _)) = statement.split_once(';') {
+            let body: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            expand(
+                "",
+                &body.replace(":: ", "::").replace(" ::", "::"),
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
+/// The file a Rust path inside the crate names: `crate::a::b` from any file,
+/// `super::c` and `self::d` from `file`'s own module. `None` outside `src/`.
+pub fn rust_path_target(file: &str, spec: &str, root: &Path) -> Option<String> {
+    let path = Path::new(file);
+    let crate_root = path
+        .parent()?
+        .ancestors()
+        .find(|a| root.join(a).join("Cargo.toml").is_file())?;
+    let src = crate_root.join("src");
+    let mut module: Vec<String> = path
+        .strip_prefix(&src)
+        .ok()?
+        .with_extension("")
+        .iter()
+        .map(|c| c.to_string_lossy().into_owned())
+        .collect();
+    if module.last().is_some_and(|m| m == "mod") || module == ["lib"] || module == ["main"] {
+        module.pop();
+    }
+    for segment in spec.split("::") {
+        match segment {
+            "crate" => module.clear(),
+            "self" => {}
+            "super" => {
+                module.pop()?;
+            }
+            name => module.push(name.to_string()),
+        }
+    }
+    let candidates = if module.is_empty() {
+        vec![src.join("lib.rs"), src.join("main.rs")]
+    } else {
+        let joined = module.join("/");
+        vec![
+            src.join(format!("{joined}.rs")),
+            src.join(joined).join("mod.rs"),
+        ]
+    };
+    candidates
+        .into_iter()
+        .find(|p| root.join(p).is_file())
+        .map(|p| slash(&p))
+}
+
+/// The plain name a value refers to: `&mut self.data`, `&a`, `b`.
+fn named(value: &str) -> Option<&str> {
+    let text = value.trim().trim_start_matches('&').trim_start();
+    let text = text.strip_prefix("mut ").unwrap_or(text).trim();
+    let text = text.strip_prefix("self.").unwrap_or(text);
+    let plain = !text.is_empty()
+        && text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    plain.then_some(text)
+}
+
 /// `name: Type` in fields, parameters and `let`, and `let name = Type::new()`.
 /// A name declared with two types is left out, as for Java.
 fn rust_types(src: &str) -> Vec<Import> {
-    let mut types: std::collections::BTreeMap<&str, Option<&str>> = Default::default();
-    let mut seen: Vec<(&str, &str)> = Vec::new();
+    type Seen<'a> = Vec<(&'a str, Option<&'a str>)>;
+    let mut seen: Seen = Vec::new();
+    // Names written with a type that is no receiver (`s: &str`): an alias of
+    // or to such a name elsewhere in the file stays untyped.
+    let mut written: Vec<&str> = Vec::new();
+    // A name bound to other names, typed once those are.
+    let mut aliases: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut in_struct = false;
     for line in src.lines() {
         let text = line.split("//").next().unwrap_or("").trim();
@@ -634,7 +769,10 @@ fn rust_types(src: &str) -> Vec<Import> {
                 None => text.strip_prefix("pub ").unwrap_or(text),
             };
             if let Some((name, ty)) = field.split_once(':') {
-                seen.extend(rust_type(ty.trim_end_matches(',')).map(|t| (name.trim(), t)));
+                match rust_type(ty.trim_end_matches(',')) {
+                    Some(t) => seen.push((name.trim(), Some(t))),
+                    None => written.push(name.trim()),
+                }
             }
         } else if text.split_whitespace().any(|w| w == "struct") && text.ends_with('{') {
             in_struct = true;
@@ -643,28 +781,75 @@ fn rust_types(src: &str) -> Vec<Import> {
             let Some((name, value)) = rest.split_once('=') else {
                 continue;
             };
-            let (name, ty) = match name.split_once(':') {
+            // A written type counts even when it is no receiver (`n: u32`);
+            // an unwritten one only when the value names it.
+            let written_type = name.split_once(':');
+            let (name, ty) = match written_type {
                 Some((name, ty)) => (name.trim(), rust_type(ty)),
                 None => (name.trim(), constructed(value)),
             };
-            seen.extend(ty.map(|t| (name, t)));
+            // An alias only when the statement ends here: `let set = b` may
+            // go on with `.build()` on the next line.
+            let alias = value.trim().strip_suffix(';').and_then(named);
+            match (ty, alias) {
+                (Some(t), _) => seen.push((name, Some(t))),
+                (None, Some(source)) if written_type.is_none() && named(name).is_some() => {
+                    aliases.push((name, vec![source]))
+                }
+                _ if written_type.is_some() => written.push(name),
+                _ => {}
+            }
+        } else if let Some((pattern, list)) =
+            text.strip_prefix("for ").and_then(|r| r.split_once(" in "))
+        {
+            // `for bank in [&mut self.data, &mut self.inst]`.
+            let list = list.trim_end_matches('{').trim();
+            let items = list
+                .strip_prefix('[')
+                .and_then(|l| l.strip_suffix(']'))
+                .and_then(|items| items.split(',').map(named).collect::<Option<Vec<_>>>());
+            let name = pattern.trim().trim_start_matches("mut ");
+            if let Some(items) = items.filter(|_| named(name).is_some()) {
+                aliases.push((name, items));
+            }
         } else if let Some(at) = text.find("fn ") {
             let list = text[at..].split_once('(').map_or("", |(_, l)| l);
             let list = list.rsplit_once(')').map_or(list, |(l, _)| l);
             for parameter in list.split(',') {
                 if let Some((name, ty)) = parameter.split_once(':') {
                     let name = name.trim().trim_start_matches("mut ");
-                    seen.extend(rust_type(ty).map(|t| (name, t)));
+                    match rust_type(ty) {
+                        Some(t) => seen.push((name, Some(t))),
+                        None => written.push(name),
+                    }
                 }
             }
         }
     }
-    for (name, ty) in seen {
-        let known = types.entry(name).or_insert(Some(ty));
-        if *known != Some(ty) {
-            *known = None;
+    fn merge<'a>(types: &mut std::collections::BTreeMap<&'a str, Option<&'a str>>, seen: Seen<'a>) {
+        for (name, ty) in seen {
+            let known = types.entry(name).or_insert(ty);
+            if *known != ty {
+                *known = None;
+            }
         }
     }
+    let mut types = std::collections::BTreeMap::new();
+    merge(&mut types, seen);
+    // Typed only where every source has the same known type.
+    let typed: Seen = aliases
+        .iter()
+        .filter(|(name, sources)| {
+            !written.contains(name) && !sources.iter().any(|s| written.contains(s))
+        })
+        .filter_map(|(name, sources)| {
+            let mut tys = sources.iter().map(|s| types.get(s).copied().flatten());
+            let first = tys.next().flatten()?;
+            tys.all(|t| t == Some(first))
+                .then_some((*name, Some(first)))
+        })
+        .collect();
+    merge(&mut types, typed);
     types
         .into_iter()
         .filter_map(|(alias, ty)| {
@@ -1408,6 +1593,12 @@ pub fn module_target(lang: Lang, file: &str, module: &str, root: &Path) -> Optio
     if lang != Lang::Rust {
         return module_file(lang, module);
     }
+    // `crate::a::b`, `super::c`: the path from the crate root or this module.
+    if ["crate", "self", "super"].contains(&module.split("::").next().unwrap_or("")) {
+        return rust_path_target(file, module, root);
+    }
+    // Otherwise the last module, beside the caller or under `src/`.
+    let module = module.rsplit("::").next().unwrap_or(module);
     let dir = Path::new(file).parent().unwrap_or(Path::new(""));
     let mut bases = vec![dir.to_path_buf()];
     if let Some(crate_root) = dir

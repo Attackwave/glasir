@@ -322,13 +322,16 @@ merely plausible.
 
 **Every edge says how it was resolved.** `extracted` is compiler-verified
 (SCIP/LSP), `inferred` is syntax from native scanners, `ambiguous` is a name match.
-An answer is therefore citable: a caller can tell what the tool knows from what
-it guessed. In Python, Go and JavaScript/TypeScript a call through an import —
+A method called on a value whose type is unknown is `ambiguous` too, however
+unique its name: `x.is_empty()` may be the standard library's. An answer is
+therefore citable: a caller can tell what the tool knows from what it guessed. In Python, Go and JavaScript/TypeScript a call through an import —
 `util.Do()`, `from pkg.b import helper as h; h()`, `import * as x from './x'` —
 resolves to the file or package the import names, so a name defined in several
 places still links to the right one instead of to none. Erlang and Elixir
 resolve a call through its module, and Java a call through a variable to the
-class its declared type names.
+class its declared type names. Rust reads `use crate::…`, `super::…` and
+`self::…` the same way, and a method on a typed value finds the `impl` that
+defines it wherever it is; a type outside the tree (`HashMap`) holds its own.
 
 **A request reaches its handler.** A client's HTTP call is an edge to the
 server handler whose route it names: routes from Spring annotations, NestJS

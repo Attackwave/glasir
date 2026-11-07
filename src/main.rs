@@ -7827,6 +7827,48 @@ fn demo_imports() {
             "fn go_local(p: &mut AreaPath) {\n    p.grant();\n}\n\nfn go_let() {\n    let mut q = OtherPath::new();\n    q.grant();\n}\n\nfn go_built() {\n    let r = OtherPath::make();\n    r.grant();\n}\n",
         ),
         (
+            "in/rs/banks.rs",
+            "pub struct Banks {\n    data: AreaPath,\n    inst: AreaPath,\n    odd: OtherPath,\n}\n\nimpl Banks {\n    fn go_alias(&mut self) {\n        let bank = &mut self.data;\n        bank.grant();\n    }\n\n    fn go_each(&mut self) {\n        for each in [&mut self.data, &mut self.inst] {\n            each.grant();\n        }\n    }\n\n    fn go_mixed(&mut self) {\n        for mixed in [&mut self.data, &mut self.odd] {\n            mixed.grant();\n        }\n    }\n\n    fn go_shadow(&mut self) {\n        let s = &mut self.data;\n        s.grant();\n    }\n\n    fn go_split(&mut self) {\n        let later = self.data\n            .split_path();\n        later.grant();\n    }\n}\n\nfn go_text(s: &str) {\n    s.grant();\n}\n\nfn go_raw(raw: &str) {\n    let copy = raw;\n    copy.grant();\n}\n\nfn make_raw() {\n    let raw = AreaPath::new();\n}\n",
+        ),
+        // A known type outside the tree, a value of unknown type, a type in
+        // the tree: only the last decides which method.
+        (
+            "in/rs/lines.rs",
+            "pub struct Lines;\n\nimpl Lines {\n    pub fn lookup_line(&self) -> u8 {\n        0\n    }\n}\n",
+        ),
+        (
+            "in/rs/uses_lines.rs",
+            "fn by_map(labels: &HashMap<u32, u8>) {\n    labels.lookup_line();\n}\n\nfn by_value(v: Vec<u8>) {\n    v.iter().lookup_line();\n}\n\nfn by_lines(l: &Lines) {\n    l.lookup_line();\n}\n\nfn by_path() {\n    far::free_far();\n}\n\nfn by_std() {\n    std::fs::free_far();\n}\n\nfn by_call(l: &Lines) {\n    wrap(l).lookup_line();\n}\n",
+        ),
+        ("in/rs/far.rs", "pub fn free_far() {}\n"),
+        // An `impl` in another directory than its type.
+        ("in/rs/disk/kind.rs", "pub struct Disk;\n"),
+        (
+            "in/rs/img/image.rs",
+            "impl Disk {\n    pub fn load_image(&self) {}\n}\n",
+        ),
+        ("in/rs/load_other.rs", "pub fn load_image() {}\n"),
+        (
+            "in/rs/drive.rs",
+            "fn go_drive(d: &Disk) {\n    d.load_image();\n}\n",
+        ),
+        // A variant or a tuple struct is built, not called.
+        (
+            "in/rs/shape.rs",
+            "pub enum Shape {\n    Ring(u8),\n    Dot,\n}\n\nfn go_shape(n: u8) -> Shape {\n    Shape::Ring(n)\n}\n",
+        ),
+        ("in/rs/ring.rs", "pub struct Ring;\n"),
+        // Reached from Rust and Python, defined only in assembly.
+        ("in/rs/probe.s", "fill_probe:\n    rts\n"),
+        (
+            "in/rs/probe_user.rs",
+            "fn go_probe(v: Vec<u8>) {\n    v.iter().fill_probe();\n}\n",
+        ),
+        (
+            "in/rs/probe_user.py",
+            "def go_probe_py(o):\n    o.fill_probe()\n",
+        ),
+        (
             "in/rs/twin_a.rs",
             "pub struct TwinA;\n\nimpl TwinA {\n    pub fn both_call(&self) {}\n}\n",
         ),
@@ -7965,6 +8007,29 @@ fn demo_imports() {
         // name is refused; the module qualifier decides, beside the caller,
         // under the crate's src/, or as a mod.rs. `crate::` is dropped.
         ("rs/Cargo.toml", "[package]\nname = \"rs\"\n"),
+        // `use` names the file; the bare name is defined twice.
+        ("rs/src/encode.rs", "pub fn encode_op() {}\n"),
+        ("rs/src/other_encode.rs", "pub fn encode_op() {}\n"),
+        (
+            "rs/src/deep_call.rs",
+            "fn go_deep() {\n    crate::sub::near::changes();\n}\n",
+        ),
+        (
+            "rs/src/pathval.rs",
+            "pub struct Coder;\n\npub struct Holder {\n    encode: Coder,\n}\n\nfn go_pathval() {\n    encode::encode_op();\n}\n",
+        ),
+        (
+            "rs/src/user_enc.rs",
+            "use crate::encode::encode_op;\n\nfn go_enc() {\n    encode_op();\n}\n",
+        ),
+        (
+            "rs/src/user_list.rs",
+            "use crate::{\n    encode::{encode_op as enc},\n    commits,\n};\n\nfn go_list() {\n    enc();\n}\n",
+        ),
+        (
+            "rs/src/sub/user_super.rs",
+            "use super::super::encode::encode_op;\n\nfn go_super() {\n    encode_op();\n}\n",
+        ),
         (
             "rs/src/commits.rs",
             "pub fn changes() {}\npub fn get() {}\n",
@@ -8373,6 +8438,76 @@ fn demo_imports() {
         ("in/rs/local.rs#go_let", "in/rs/other.rs#grant", true),
         ("in/rs/local.rs#go_let", "in/rs/area.rs#grant", false),
         ("in/rs/local.rs#go_built", "in/rs/other.rs#grant", false),
+        // A name bound to a field, or looping over fields of one type.
+        ("in/rs/banks.rs#go_alias", "in/rs/area.rs#grant", true),
+        ("in/rs/banks.rs#go_alias", "in/rs/other.rs#grant", false),
+        ("in/rs/banks.rs#go_each", "in/rs/area.rs#grant", true),
+        ("in/rs/banks.rs#go_each", "in/rs/other.rs#grant", false),
+        ("in/rs/banks.rs#go_mixed", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_mixed", "in/rs/other.rs#grant", false),
+        // `s` is a `&str` elsewhere in the file; `later` is not `data` itself.
+        ("in/rs/banks.rs#go_shadow", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_text", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_split", "in/rs/area.rs#grant", false),
+        ("in/rs/banks.rs#go_raw", "in/rs/area.rs#grant", false),
+        (
+            "rs/src/deep_call.rs#go_deep",
+            "rs/src/sub/near.rs#changes",
+            true,
+        ),
+        // A path names the module even beside a field of that name.
+        (
+            "rs/src/pathval.rs#go_pathval",
+            "rs/src/encode.rs#encode_op",
+            true,
+        ),
+        (
+            "rs/src/user_enc.rs#go_enc",
+            "rs/src/encode.rs#encode_op",
+            true,
+        ),
+        (
+            "rs/src/user_enc.rs#go_enc",
+            "rs/src/other_encode.rs#encode_op",
+            false,
+        ),
+        (
+            "rs/src/user_list.rs#go_list",
+            "rs/src/encode.rs#encode_op",
+            true,
+        ),
+        (
+            "rs/src/sub/user_super.rs#go_super",
+            "rs/src/encode.rs#encode_op",
+            true,
+        ),
+        (
+            "in/rs/uses_lines.rs#by_map",
+            "in/rs/lines.rs#lookup_line",
+            false,
+        ),
+        (
+            "in/rs/uses_lines.rs#by_lines",
+            "in/rs/lines.rs#lookup_line",
+            true,
+        ),
+        (
+            "in/rs/drive.rs#go_drive",
+            "in/rs/img/image.rs#load_image",
+            true,
+        ),
+        (
+            "in/rs/drive.rs#go_drive",
+            "in/rs/load_other.rs#load_image",
+            false,
+        ),
+        ("in/rs/shape.rs#Shape", "in/rs/ring.rs#Ring", false),
+        ("in/rs/shape.rs#go_shape", "in/rs/ring.rs#Ring", false),
+        (
+            "in/rs/probe_user.rs#go_probe",
+            "in/rs/probe.s#fill_probe",
+            false,
+        ),
         (
             "in/rs/chips.rs#tick_inner",
             "in/rs/copper.rs#tick_once",
@@ -8440,6 +8575,27 @@ fn demo_imports() {
         assert_eq!(reaches(from, to), want, "{from} -> {to}");
     }
     let state = served_state(&dir).unwrap();
+    // A method on a value of unknown type is a guess, below a rule's floor;
+    // a call through a module path is not.
+    let ruled = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "check_architecture", "arguments": {
+                    "rules": "deny in/rs/uses_lines.rs -> in/rs/lines.rs\ndeny in/rs/uses_lines.rs -> in/rs/far.rs"}}}),
+    )
+    .unwrap();
+    let text = ruled["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("by_lines") && text.contains("by_path"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("by_value")
+            && !text.contains("by_map")
+            && !text.contains("by_call")
+            && !text.contains("by_std"),
+        "{text}"
+    );
     let overview = mcp::handle_for_test(
         &state.as_served(),
         &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",

@@ -139,7 +139,7 @@ pub struct SymbolRegistry {
     ///
     /// A name reached from two languages has none: it is then shared, and the
     /// safe reading is to link it nowhere rather than to guess a side.
-    placeholder_lang: HashMap<NodeId, Option<Lang>>,
+    placeholder_lang: HashMap<NodeId, Vec<Lang>>,
     /// Per file, the names each of its definitions uses without calling:
     /// (definition, name). Resolved against the whole tree when served, since
     /// only then is it known which names are defined exactly once. Keyed by
@@ -284,6 +284,18 @@ impl SymbolRegistry {
     }
 
     /// The files of `directory` that define `name` as a method of `class`.
+    /// Each type's methods, in every directory that holds an `impl` of it:
+    /// Rust may put one anywhere in the crate.
+    pub fn methods_by_type(&self) -> HashMap<&str, Vec<&BTreeMap<String, Vec<String>>>> {
+        let mut out: HashMap<&str, Vec<_>> = HashMap::new();
+        for (key, names) in &self.classes.methods {
+            if let Some((_, class)) = key.split_once('#') {
+                out.entry(class).or_default().push(names);
+            }
+        }
+        out
+    }
+
     pub fn method_files(&self, directory: &str, class: &str, name: &str) -> &[String] {
         self.classes
             .methods
@@ -503,20 +515,15 @@ impl SymbolRegistry {
     /// Called once per call site, so a name reached from two languages ends up
     /// with `None` — shared, and not safely linkable to either side.
     pub fn note_placeholder_lang(&mut self, node: NodeId, lang: Lang) {
-        match self.placeholder_lang.get(&node) {
-            Some(Some(seen)) if *seen == lang => {}
-            Some(_) => {
-                self.placeholder_lang.insert(node, None);
-            }
-            None => {
-                self.placeholder_lang.insert(node, Some(lang));
-            }
+        let langs = self.placeholder_lang.entry(node).or_default();
+        if !langs.contains(&lang) {
+            langs.push(lang);
         }
     }
 
-    /// The language a placeholder was reached from, if exactly one.
-    pub fn placeholder_lang(&self, node: NodeId) -> Option<Lang> {
-        self.placeholder_lang.get(&node).copied().flatten()
+    /// The languages a placeholder was reached from; empty when unknown.
+    pub fn placeholder_langs(&self, node: NodeId) -> &[Lang] {
+        self.placeholder_lang.get(&node).map_or(&[], Vec::as_slice)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -905,7 +912,11 @@ fn prepare_facts(
                     }
                 }
                 crate::imports::Import::Name { local, spec, name } => {
-                    if let Some(t) = crate::imports::resolve(lang, &file, spec, root) {
+                    let target = match lang {
+                        Lang::Rust => crate::imports::rust_path_target(&file, spec, root),
+                        _ => crate::imports::resolve(lang, &file, spec, root),
+                    };
+                    if let Some(t) = target {
                         names.entry(local).or_insert((t, name));
                     }
                 }
@@ -1094,8 +1105,12 @@ fn prepare_facts(
             module
                 .and_then(|m| {
                     let value = m.strip_prefix('.');
+                    // A Rust path names a module, never a typed value of
+                    // that name: `physics::expand` beside `physics: Physics`.
+                    let path = lang == Some(Lang::Rust) && value.is_none();
                     modules
                         .get(value.unwrap_or(m))
+                        .filter(|_| !path)
                         .cloned()
                         .or_else(|| {
                             // `alias Shop.Billing` then `Billing.Tax.rate()`.
@@ -1107,7 +1122,14 @@ fn prepare_facts(
                             lang.and_then(|l| crate::imports::module_target(l, &file, m, root))
                         })
                 })
-                .map(|t| crate::imports::scoped(callee, &t))
+                // `.`: the receiver's own type, which a type outside the
+                // tree holds rather than a definition sharing the name.
+                .map(|t| match t.strip_prefix('@') {
+                    Some(rest) if !rest.starts_with(['!', '?']) => {
+                        crate::imports::scoped(callee, &format!("@.{rest}"))
+                    }
+                    _ => crate::imports::scoped(callee, &t),
+                })
         } else if !registry.contains(&local) {
             names
                 .get(callee.as_str())
@@ -1134,6 +1156,19 @@ fn prepare_facts(
         } else {
             None
         };
+        // A method on a receiver whose type is unknown may be any type's,
+        // the standard library's first: the name alone decides nothing.
+        // A Rust path into the tree (`regs::bpu()`, `crate::a::f()`, `Type::new()`)
+        // names a module or type, not a value; `std::fs::read_dir` names none.
+        let path_call = lang == Some(Lang::Rust)
+            && module.is_some_and(|m| {
+                let head = m.split("::").next().unwrap_or(m);
+                !m.starts_with('.')
+                    && (["crate", "self", "super"].contains(&head)
+                        || head.starts_with(|c: char| c.is_ascii_uppercase())
+                        || crate::imports::module_target(Lang::Rust, &file, head, root).is_some())
+            });
+        let unknown_receiver = *has_receiver && imported.is_none() && !path_call;
         // `super.run()` in `run` never means this `run`.
         let target = if !*has_receiver && !names_base && registry.contains(&local) {
             registry.get_or_mint(&local)
@@ -1161,7 +1196,11 @@ fn prepare_facts(
                 timestamp: now,
                 authority: crate::physics::SOURCE_CODE,
                 edge_kind: 0,
-                confidence: parse_ast::TIER_CONFIDENCE,
+                confidence: if unknown_receiver {
+                    crate::csr::Confidence::Ambiguous
+                } else {
+                    parse_ast::TIER_CONFIDENCE
+                },
             },
         ));
     }

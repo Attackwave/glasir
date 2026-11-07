@@ -639,7 +639,7 @@ fn tool_list() -> Value {
                     "min_confidence": {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
-                        "description": "Weakest edge to trust (default extracted: name-matched edges invent cycles between unrelated files)"
+                        "description": "Weakest edge to trust (default extracted where the tree has compiler-resolved edges, otherwise inferred: name-matched edges invent cycles between unrelated files)"
                     }
                 },
                 "required": []
