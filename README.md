@@ -50,6 +50,10 @@ macOS is not yet notarized, so macOS refuses its first start; clear the flag
 once, after checking the checksum: `xattr -d com.apple.quarantine glasir`.
 Homebrew installs are not affected.
 
+Clients that read the [MCP registry](https://registry.modelcontextprotocol.io)
+list Glasir as `io.github.Attackwave/glasir`; that entry runs the container
+image with the repository mounted read-only.
+
 Then, in the repository you want to ask about:
 
 ```sh
