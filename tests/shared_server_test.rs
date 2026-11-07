@@ -17,7 +17,11 @@ impl Client {
     }
 
     fn start_with(tree: &Path, state: &Path, extra: &[&std::ffi::OsStr]) -> Client {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_glasir"))
+        Client::start_exe(Path::new(env!("CARGO_BIN_EXE_glasir")), tree, state, extra)
+    }
+
+    fn start_exe(exe: &Path, tree: &Path, state: &Path, extra: &[&std::ffi::OsStr]) -> Client {
+        let mut child = Command::new(exe)
             .args(["serve"])
             .arg(tree)
             .args(["--linger", "1"])
@@ -234,6 +238,48 @@ fn edited_rules_get_a_backend_of_their_own() {
     )
     .unwrap();
     let mut second = Client::start_with(&tree, &state, &extra);
+    second.ask(1, "initialize", init);
+    assert_eq!(backends(&tree).len(), 2);
+    first.close();
+    second.close();
+}
+
+#[test]
+fn a_rebuilt_binary_gets_a_backend_of_its_own() {
+    let base = PathBuf::from(format!("/tmp/gls-{}-bin", std::process::id()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for pid in backends(&self.0.join("t")) {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(base.clone());
+    let (tree, state, exe) = (base.join("t"), base.join("s"), base.join("glasir"));
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(tree.join("src/lib.rs"), "pub fn shared() {}\n").unwrap();
+    // Copied by a child and renamed over, as a package manager installs: a
+    // file this process held open for writing could be inherited by a child
+    // another test forks, and executing it would then fail as busy.
+    let install = || {
+        let next = base.join("glasir.next");
+        let copied = Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_glasir"))
+            .arg(&next)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        std::fs::rename(&next, &exe).unwrap();
+    };
+    let init = serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}});
+
+    install();
+    let mut first = Client::start_exe(&exe, &tree, &state, &[]);
+    first.ask(1, "initialize", init.clone());
+    install();
+    let mut second = Client::start_exe(&exe, &tree, &state, &[]);
     second.ask(1, "initialize", init);
     assert_eq!(backends(&tree).len(), 2);
     first.close();
