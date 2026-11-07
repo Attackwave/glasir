@@ -72,16 +72,37 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 // `community.get(i)` is a value's method: only `::` names a
                 // module, so a variable sharing a file's name is no module.
                 // `x.f()` names a value, never a module: marked so.
+                // `fields(register).iter()`: the receiver is what the call
+                // returns, not the last name inside its parentheses.
+                let after_expression = tokens[..i]
+                    .iter()
+                    .rev()
+                    .find(|t| t.kind != TokenKind::Newline)
+                    .is_some_and(|t| matches!(t.kind, TokenKind::Symbol(')' | ']' | '?')));
                 scope.module_receiver = scope
                     .module_receiver
                     .take()
-                    .filter(|_| scope.had_receiver)
+                    .filter(|_| scope.had_receiver && !after_expression)
                     .map(|name| format!(".{name}"));
                 i += 1;
                 continue;
             }
             TokenKind::DoubleSymbol("::") => {
                 scope.on_receiver();
+                // The whole path: `std::fs::read_dir` is not the tree's `fs`.
+                let mut path: Vec<&str> = Vec::new();
+                let mut k = i;
+                while let Some(TokenKind::Ident(segment)) = k.checked_sub(1).map(|p| &tokens[p].kind) {
+                    path.push(segment);
+                    match k.checked_sub(2).map(|p| &tokens[p].kind) {
+                        Some(TokenKind::DoubleSymbol("::")) => k -= 2,
+                        _ => break,
+                    }
+                }
+                if scope.module_receiver.is_some() && path.len() > 1 {
+                    path.reverse();
+                    scope.module_receiver = Some(path.join("::"));
+                }
                 i += 1;
                 continue;
             }
@@ -206,6 +227,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                         if j < tokens.len()
                             && tokens[j].kind == TokenKind::Symbol('(')
                             && calls.allows(ident)
+                            // `Operand::Memory(x)` and `Wrapper(x)` build or
+                            // match a value: a function is named in snake case.
+                            && !ident.starts_with(|c: char| c.is_ascii_uppercase())
                         {
                             scope.record_call(ident, &mut facts);
                         }

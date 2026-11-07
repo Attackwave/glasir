@@ -89,7 +89,13 @@ pub fn read(lang: Lang, src: &str) -> Vec<Import> {
             contracts(src, "interface"),
         ]
         .concat(),
-        Lang::Rust => [rust_traits(src), rust_methods(src), rust_types(src)].concat(),
+        Lang::Rust => [
+            rust_uses(src),
+            rust_traits(src),
+            rust_methods(src),
+            rust_types(src),
+        ]
+        .concat(),
         Lang::Swift => [
             colon_heads(src, &["class", "struct", "enum", "actor", "extension"]),
             contracts(src, "protocol"),
@@ -614,6 +620,119 @@ fn constructed(value: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// `use crate::a::b;`, `use super::{c, d as e};`: names this crate defines.
+/// A glob, `self` in a list and another crate's path are left out.
+fn rust_uses(src: &str) -> Vec<Import> {
+    fn expand(prefix: &str, body: &str, out: &mut Vec<Import>) {
+        let body = body.trim();
+        if let Some(open) = body.find('{') {
+            let head = format!("{prefix}{}", &body[..open]);
+            let inner = body[open + 1..]
+                .strip_suffix('}')
+                .unwrap_or(&body[open + 1..]);
+            let (mut depth, mut start) = (0, 0);
+            for (at, c) in inner.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        expand(&head, &inner[start..at], out);
+                        start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            expand(&head, &inner[start..], out);
+            return;
+        }
+        let (path, alias) = match body.split_once(" as ") {
+            Some((p, a)) => (p.trim(), Some(a.trim())),
+            None => (body, None),
+        };
+        let full = format!("{prefix}{path}");
+        let Some((spec, name)) = full.rsplit_once("::") else {
+            return;
+        };
+        let ours = ["crate", "self", "super"].contains(&spec.split("::").next().unwrap_or(""));
+        if ours && !matches!(name, "*" | "self" | "") && alias != Some("_") {
+            out.push(Import::Name {
+                local: alias.unwrap_or(name).to_string(),
+                spec: spec.to_string(),
+                name: name.to_string(),
+            });
+        }
+    }
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let text = line.trim_start();
+        let text = text.strip_prefix("pub ").unwrap_or(text);
+        let text = match text.strip_prefix("pub(") {
+            Some(rest) => rest.split_once(')').map_or(text, |(_, r)| r.trim_start()),
+            None => text,
+        };
+        let Some(rest) = text.strip_prefix("use ") else {
+            continue;
+        };
+        let start = offset(src, rest) as usize;
+        let statement = src.get(start..).unwrap_or("");
+        let lines = statement.split_inclusive('\n').take(STATEMENT_LINES);
+        let statement = &statement[..lines.map(str::len).sum()];
+        if let Some((body, _)) = statement.split_once(';') {
+            let body: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            expand(
+                "",
+                &body.replace(":: ", "::").replace(" ::", "::"),
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
+/// The file a Rust path inside the crate names: `crate::a::b` from any file,
+/// `super::c` and `self::d` from `file`'s own module. `None` outside `src/`.
+pub fn rust_path_target(file: &str, spec: &str, root: &Path) -> Option<String> {
+    let path = Path::new(file);
+    let crate_root = path
+        .parent()?
+        .ancestors()
+        .find(|a| root.join(a).join("Cargo.toml").is_file())?;
+    let src = crate_root.join("src");
+    let mut module: Vec<String> = path
+        .strip_prefix(&src)
+        .ok()?
+        .with_extension("")
+        .iter()
+        .map(|c| c.to_string_lossy().into_owned())
+        .collect();
+    if module.last().is_some_and(|m| m == "mod") || module == ["lib"] || module == ["main"] {
+        module.pop();
+    }
+    for segment in spec.split("::") {
+        match segment {
+            "crate" => module.clear(),
+            "self" => {}
+            "super" => {
+                module.pop()?;
+            }
+            name => module.push(name.to_string()),
+        }
+    }
+    let candidates = if module.is_empty() {
+        vec![src.join("lib.rs"), src.join("main.rs")]
+    } else {
+        let joined = module.join("/");
+        vec![
+            src.join(format!("{joined}.rs")),
+            src.join(joined).join("mod.rs"),
+        ]
+    };
+    candidates
+        .into_iter()
+        .find(|p| root.join(p).is_file())
+        .map(|p| slash(&p))
 }
 
 /// The plain name a value refers to: `&mut self.data`, `&a`, `b`.
@@ -1474,6 +1593,12 @@ pub fn module_target(lang: Lang, file: &str, module: &str, root: &Path) -> Optio
     if lang != Lang::Rust {
         return module_file(lang, module);
     }
+    // `crate::a::b`, `super::c`: the path from the crate root or this module.
+    if ["crate", "self", "super"].contains(&module.split("::").next().unwrap_or("")) {
+        return rust_path_target(file, module, root);
+    }
+    // Otherwise the last module, beside the caller or under `src/`.
+    let module = module.rsplit("::").next().unwrap_or(module);
     let dir = Path::new(file).parent().unwrap_or(Path::new(""));
     let mut bases = vec![dir.to_path_buf()];
     if let Some(crate_root) = dir
