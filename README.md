@@ -1,5 +1,9 @@
 # Glasir
 
+[![ci](https://github.com/Attackwave/glasir/actions/workflows/ci.yml/badge.svg)](https://github.com/Attackwave/glasir/actions/workflows/ci.yml)
+[![codeql](https://github.com/Attackwave/glasir/actions/workflows/codeql.yml/badge.svg)](https://github.com/Attackwave/glasir/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Attackwave/glasir/badge)](https://scorecard.dev/viewer/?uri=github.com/Attackwave/glasir)
+
 **Deterministic code intelligence for repositories.** Glasir builds a local,
 queryable graph of definitions, references, dependencies, and change impact,
 then serves bounded evidence over [MCP](https://modelcontextprotocol.io).
