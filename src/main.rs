@@ -9619,6 +9619,70 @@ fn demo_change_tools() {
     assert!(text.contains("breaks no caller"), "{text}");
 
     std::fs::remove_dir_all(&dir).unwrap();
+
+    // A graph already up to date, as a watched one is: a renamed definition
+    // is gone from it, and its callers are what the change breaks. A new
+    // file is all change.
+    let live = std::env::temp_dir().join(format!("glasir-removed-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&live);
+    std::fs::create_dir_all(live.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&live)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    let quotes = "pub fn strip_marks(s: &str) -> &str {\n    s\n}\n";
+    std::fs::write(live.join("src/quotes.rs"), quotes).unwrap();
+    std::fs::write(
+        live.join("src/reader.rs"),
+        "fn read_name(s: &str) -> &str {\n    strip_marks(s)\n}\n",
+    )
+    .unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "c"]);
+    std::fs::write(
+        live.join("src/quotes.rs"),
+        quotes.replace("strip_marks", "strip_marks_renamed"),
+    )
+    .unwrap();
+    std::fs::write(live.join("src/fresh.rs"), "pub fn fresh_one() {}\n").unwrap();
+    let state = served_state(&live).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "detect_changes", "arguments": {}}}),
+    )
+    .unwrap();
+    let v = &r["result"]["structuredContent"];
+    assert_eq!(
+        v["removed_symbols"],
+        json!(["src/quotes.rs#strip_marks"]),
+        "{v}"
+    );
+    assert_eq!(
+        v["risk"]["dangling_callers"],
+        json!(["src/reader.rs#read_name"]),
+        "{v}"
+    );
+    assert_eq!(v["risk"]["level"], "high", "{v}");
+    let changed = v["changed_symbols"].to_string();
+    assert!(changed.contains("src/fresh.rs#fresh_one"), "{v}");
+    std::fs::remove_dir_all(&live).unwrap();
     println!("changes ok: tests to run, what changes with it, which rule breaks");
 }
 

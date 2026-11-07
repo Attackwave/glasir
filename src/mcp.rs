@@ -768,9 +768,10 @@ fn tool_list() -> Value {
                 "properties": {
                     "risk": {
                         "type": "object",
-                        "description": "high: a changed symbol has callers and no test reaches it, or a file history says usually changes too is left out. medium: something depends on the change. low: nothing does.",
+                        "description": "high: a changed symbol has callers and no test reaches it, or a removed or renamed definition is still called. medium: something depends on the change, or a file history says usually changes too is left out. low: nothing does.",
                         "properties": {
                             "level": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "dangling_callers": {"type": "array", "items": {"type": "string"}, "description": "Definitions that still call one the change removed"},
                             "untested": {"type": "array", "items": {"type": "string"}},
                             "evaluated": {"type": "integer", "description": "Changed symbols checked for a reaching test"},
                             "missed_partners": {"type": "array", "items": {
@@ -789,6 +790,7 @@ fn tool_list() -> Value {
                     "changed_files": {"type": "integer"},
                     "changed_symbols": {"type": "array", "items": {"type": "string"}},
                     "files_without_known_symbols": {"type": "array", "items": {"type": "string"}},
+                    "removed_symbols": {"type": "array", "items": {"type": "string"}, "description": "Definitions the base had and the change removed or renamed"},
                     "dependents": {"type": "integer"},
                     "hops": {"type": "array", "items": {
                         "type": "object",
@@ -1875,7 +1877,7 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
     let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
     let seeds: Vec<NodeId> = diff.touched.iter().map(|&(_, n)| n).collect();
     let levels = reverse_levels(served, &seeds, depth, Confidence::Ambiguous);
-    let dependents: usize = levels.iter().map(Vec::len).sum();
+    let dependents: usize = levels.iter().map(Vec::len).sum::<usize>() + diff.dangling.len();
     let risk = assess(served, &diff, dependents);
 
     Ok(json!({
@@ -1886,6 +1888,7 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
         // case where "nothing depends on this" is a wrong answer, so the
         // caller has to see which files those are.
         "files_without_known_symbols": diff.unknown,
+        "removed_symbols": diff.removed,
         "dependents": dependents,
         "hops": levels
             .iter()
@@ -1953,7 +1956,7 @@ fn assess(served: &Served, diff: &Diff, dependents: usize) -> Value {
 
     // A caller with no test is evidence; a file history says usually changes
     // too is a reminder, worth a look and not a blocked merge on its own.
-    let level = if !untested.is_empty() {
+    let level = if !untested.is_empty() || !diff.dangling.is_empty() {
         "high"
     } else if !missed.is_empty() || dependents > 0 {
         "medium"
@@ -1962,6 +1965,7 @@ fn assess(served: &Served, diff: &Diff, dependents: usize) -> Value {
     };
     json!({
         "level": level,
+        "dangling_callers": diff.dangling,
         "untested": untested,
         "evaluated": candidates.len().min(RISK_SYMBOL_LIMIT),
         "missed_partners": missed,
@@ -2034,6 +2038,24 @@ fn reaches_test(served: &Served, node: NodeId) -> bool {
 fn render_risk(v: &Value) -> String {
     let level = v["level"].as_str().unwrap_or("low");
     let mut out = format!("risk: {level}\n");
+    let dangling = v["dangling_callers"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !dangling.is_empty() {
+        out.push_str(&format!(
+            "  {} definition(s) still call one this change removed or renamed:\n",
+            dangling.len()
+        ));
+        for s in dangling.iter().take(CHANGE_LIST_LIMIT) {
+            out.push_str(&format!("    {}\n", s.as_str().unwrap_or("")));
+        }
+        if dangling.len() > CHANGE_LIST_LIMIT {
+            out.push_str(&format!(
+                "    … and {} more\n",
+                dangling.len() - CHANGE_LIST_LIMIT
+            ));
+        }
+    }
     let untested = v["untested"].as_array().map_or(&[][..], Vec::as_slice);
     if !untested.is_empty() {
         out.push_str(&format!(
@@ -2072,6 +2094,10 @@ struct Diff {
     touched: Vec<(String, NodeId)>,
     /// Changed files that define nothing the graph knows.
     unknown: Vec<String>,
+    /// Definitions the base had that are gone now, `file#name`.
+    removed: Vec<String>,
+    /// What still calls one of them: the build breaks there.
+    dangling: Vec<String>,
 }
 
 /// Refuses a revision git would read as an option. `rev` reaches `git diff`
@@ -2120,8 +2146,8 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
             .map(str::to_string)
             .collect()
     };
-    // (tree-relative path, repository, path inside it).
-    let mut located: Vec<(String, &crate::repos::Repo, String)> = Vec::new();
+    // (tree-relative path, repository, path inside it, untracked).
+    let mut located: Vec<(String, &crate::repos::Repo, String, bool)> = Vec::new();
     let mut resolved = 0;
     let mut last_error = String::new();
     for repo in &repos {
@@ -2137,13 +2163,16 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
             continue;
         }
         resolved += 1;
-        let mut local = lines_of(&out.stdout);
+        let mut local: Vec<(String, bool)> = lines_of(&out.stdout)
+            .into_iter()
+            .map(|f| (f, false))
+            .collect();
         if working && let Ok(new) = git(&repo.root, &["ls-files", "--others", "--exclude-standard"])
         {
-            local.extend(lines_of(&new.stdout));
+            local.extend(lines_of(&new.stdout).into_iter().map(|f| (f, true)));
         }
-        for f in local {
-            located.push((format!("{}{f}", repo.prefix), repo, f));
+        for (f, untracked) in local {
+            located.push((format!("{}{f}", repo.prefix), repo, f, untracked));
         }
     }
     if resolved == 0 {
@@ -2152,7 +2181,13 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
 
     let mut narrowed: std::collections::HashMap<String, std::collections::HashSet<String>> =
         Default::default();
-    for (file, repo, local) in &located {
+    let base = against[0];
+    let mut removed: Vec<(String, String)> = Vec::new();
+    for (file, repo, local, untracked) in &located {
+        // A new file has no diff to narrow by: all of it is the change.
+        if *untracked {
+            continue;
+        }
         let new_src = if working {
             std::fs::read_to_string(root.join(file)).ok()
         } else {
@@ -2167,13 +2202,23 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         )
         .ok()
         .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
+        let old_src = git(&repo.root, &["show", &format!("{base}:{local}")])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        removed.extend(
+            removed_names(served, file, old_src.as_deref(), new_src.as_deref())
+                .into_iter()
+                .map(|name| (file.clone(), name)),
+        );
         if let (Some(src), Some(hunks)) = (new_src, hunks)
             && let Some(names) = touched_names(served, file, &src, &hunks)
         {
             narrowed.insert(file.clone(), names);
         }
     }
-    let files: Vec<String> = located.into_iter().map(|(f, _, _)| f).collect();
+    let files: Vec<String> = located.into_iter().map(|(f, _, _, _)| f).collect();
+    let dangling = dangling_callers(served, &removed);
 
     // Symbols defined in a changed file. The file is the name's prefix, so no
     // file-to-node map is needed — the property incremental indexing relies on.
@@ -2198,11 +2243,83 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         .filter(|f| !known.contains(f.as_str()))
         .cloned()
         .collect();
+    let mut removed: Vec<String> = removed.iter().map(|(f, n)| format!("{f}#{n}")).collect();
+    removed.sort();
     Ok(Diff {
         files,
         touched,
         unknown,
+        removed,
+        dangling,
     })
+}
+
+/// What `old` defines that `new` no longer does and the graph does not hold
+/// either: with a watched graph the definition is gone from it already.
+fn removed_names(served: &Served, file: &str, old: Option<&str>, new: Option<&str>) -> Vec<String> {
+    use crate::parse_ast::LangExt;
+    let path = std::path::Path::new(file);
+    let (Some(old), Some(lang)) = (old, crate::parse_ast::Lang::from_path(path)) else {
+        return Vec::new();
+    };
+    if crate::docs::is_markdown(path) {
+        return Vec::new();
+    }
+    let defines = |src: &str| {
+        crate::parse_ast::parse_file(path, src, lang)
+            .map(|f| f.defines)
+            .unwrap_or_default()
+    };
+    let now: std::collections::HashSet<String> =
+        new.map(defines).unwrap_or_default().into_iter().collect();
+    let mut gone: Vec<String> = defines(old)
+        .into_iter()
+        .filter(|name| name != "<module>" && !now.contains(name))
+        .filter(|name| {
+            served
+                .registry
+                .node_of(&format!("{file}#{name}"))
+                .is_none_or(|n| !served.defined.contains(&n))
+        })
+        .collect();
+    gone.sort();
+    gone.dedup();
+    gone
+}
+
+/// Definitions that call a removed one: through a placeholder of its name,
+/// bare, scoped to its file or to a type, that now links to no definition.
+fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String> {
+    if removed.is_empty() {
+        return Vec::new();
+    }
+    let reverse = served.snap.reverse();
+    let mut out = std::collections::BTreeSet::new();
+    for (symbol, &placeholder) in served.registry.entries() {
+        if symbol.contains('#') {
+            continue;
+        }
+        let (bare, target) = match crate::imports::unscope(symbol) {
+            Some((name, target)) => (name, Some(target)),
+            None => (symbol.as_str(), None),
+        };
+        let named = removed.iter().any(|(file, name)| {
+            name == bare && target.is_none_or(|t| t == file || t.starts_with('@'))
+        });
+        let resolves = served
+            .snap
+            .neighbors(placeholder)
+            .any(|e| served.defined.contains(&e.target));
+        if !named || resolves {
+            continue;
+        }
+        for (caller, _) in reverse.callers(placeholder) {
+            if served.defined.contains(&caller) {
+                out.insert(served.name(caller));
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// New-side line ranges of `git diff -U0`, 1-based and inclusive. A pure
@@ -2862,6 +2979,15 @@ fn render_detect_changes(v: &Value) -> String {
         syms.len()
     );
     out.push_str(&render_risk(&v["risk"]));
+    let removed = v["removed_symbols"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !removed.is_empty() {
+        out.push_str("\nremoved or renamed:\n");
+        for s in removed.iter().take(CHANGE_LIST_LIMIT) {
+            out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
+        }
+    }
     if !unknown.is_empty() {
         out.push_str(&format!(
             "\n{} changed file(s) define nothing this graph knows — a file added \
@@ -2981,9 +3107,15 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
         None => {
             let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
             let target = format!("{} changed file(s)", diff.files.len());
+            // A caller of a removed definition breaks with the change: it is
+            // a seed like a changed definition.
+            let broken = diff
+                .dangling
+                .iter()
+                .filter_map(|s| served.registry.node_of(s));
             (
                 target,
-                diff.touched.iter().map(|&(_, n)| n).collect(),
+                diff.touched.iter().map(|&(_, n)| n).chain(broken).collect(),
                 diff.unknown,
             )
         }

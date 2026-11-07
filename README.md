@@ -244,8 +244,9 @@ agent:
   touches (a document's sections likewise, new files included) and what
   depends on them, with a risk level
   and its reasons: `high` when changed code has callers and no test reaching
-  it, `medium` when it has dependents or when files the history says usually
-  change too are left out, `low` otherwise
+  it or a removed or renamed definition is still called (those callers are
+  listed), `medium` when it has dependents or when files the history says
+  usually change too are left out, `low` otherwise
 
 Three answer what to do *before* a commit, which is when an answer is
 cheapest to act on:
