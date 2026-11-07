@@ -11,10 +11,26 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-/// What decides that two clients may share a backend: the version, the tree
-/// and the options that change what it answers.
+/// What decides that two clients may share a backend: the binary, the tree
+/// and the options that change what it answers. The binary by its size and
+/// modification time beside the version: a build installed over one of the
+/// same version must not reach a backend still running the old code.
 pub fn key(root: &Path, options: &[String]) -> String {
-    let mut key = format!("{}\0{}", env!("CARGO_PKG_VERSION"), root.display());
+    let binary = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|m| {
+            let at = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+            format!("{}:{}", m.len(), at.map_or(0, |d| d.as_nanos()))
+        })
+        .unwrap_or_default();
+    let mut key = format!(
+        "{}\0{binary}\0{}",
+        env!("CARGO_PKG_VERSION"),
+        root.display()
+    );
     for option in options {
         key.push('\0');
         key.push_str(option);
