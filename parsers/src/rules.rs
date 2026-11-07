@@ -1101,6 +1101,25 @@ mod tests {
     }
 
     #[test]
+    fn tools_read_tokens_with_the_language_syntax() {
+        let rules = RuleSet::load(None).unwrap();
+        let words = |language, src: &str| -> Vec<String> {
+            rules
+                .tokens(language, src)
+                .iter()
+                .filter_map(|t| match t.kind {
+                    crate::lexer::TokenKind::Ident(w) => Some(w.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let js = words(Language::JavaScript, "a.replace(/[\"']/g, b);\nafter();\n");
+        assert!(js.iter().any(|w| w == "after"), "{js:?}");
+        let rb = words(Language::Ruby, "x = <<~EOT\n  it's\nEOT\nafter\n");
+        assert!(rb.iter().any(|w| w == "after"), "{rb:?}");
+    }
+
+    #[test]
     fn plain_names_declare_nothing() {
         let rules = RuleSet::load(None).unwrap();
         let facts = rules.parse(
