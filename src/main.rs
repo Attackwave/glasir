@@ -9102,6 +9102,24 @@ fn demo_change_tools() {
     .unwrap();
     let unused = &r["result"]["structuredContent"]["unused"];
     assert_eq!(unused, &json!(["src/regs.rs#is_spare"]), "{unused}");
+    // A trait's methods are called by whoever holds the trait.
+    std::fs::write(
+        dir.join("src/server.rs"),
+        "pub struct Backend;\n\n#[async_trait]\nimpl LanguageServer for Backend {\n    async fn did_open(&self) {}\n}\n\nimpl Backend {\n    fn lonely(&self) {}\n}\n\nfn wire(b: Backend) -> Backend {\n    b\n}\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_unused", "arguments": {"path": "src/server.rs"}}}),
+    )
+    .unwrap();
+    let unused = r["result"]["structuredContent"]["unused"].to_string();
+    assert!(
+        unused.contains("src/server.rs#lonely") && !unused.contains("did_open"),
+        "{unused}"
+    );
     // A definition that is itself a `let` is used where it is written bare.
     std::fs::write(
         dir.join("src/limits.swift"),
