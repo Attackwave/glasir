@@ -137,6 +137,26 @@ certificate and key, the listener requires mutual TLS and verifies the control
 plane's client certificate against that CA. Token, network range and client
 certificate are checked independently.
 
+## Threat model
+
+Glasir is a local, read-only index. It defends the machine against the tree it
+reads: no MCP tool edits the tree or runs a command a client chooses, a
+repository whose git configuration names a command is refused, files are
+bounded in size and depth, and a stored graph is validated before use.
+
+It cannot defend the model against the tree. Tools return source, comments and
+documentation verbatim, so text written to steer an assistant ("ignore previous
+instructions …") reaches the model exactly as it would through reading the file
+directly. Treat answers about a tree you do not trust as untrusted input, and
+do not give an assistant working on such a tree permission to run commands or
+write files unattended. Glasir neither detects nor filters such text: any
+filter would also hide real code.
+
+Trust in the binary rests on what can be checked rather than on the author:
+build provenance and SHA-256 per archive (`gh attestation verify <archive>
+--repo Attackwave/glasir`), a signed container image, a CycloneDX SBOM, pinned
+dependencies audited on every build, and the source under Apache-2.0.
+
 ## Known limits
 
 Stated rather than discovered during an evaluation:
