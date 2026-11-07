@@ -7624,6 +7624,35 @@ fn demo_imports() {
             "in/rs/unknown.rs",
             "fn go_unknown(x: u32) {\n    x.both_call();\n}\n",
         ),
+        ("in/rs/Doc.md", "# CopperPath\n\nAbout it.\n"),
+        (
+            "in/rs/copper.rs",
+            "pub struct CopperPath {\n    n: u8,\n}\n\nimpl CopperPath {\n    pub fn tick_once(&mut self) {}\n}\n",
+        ),
+        (
+            "in/rs/other_tick.rs",
+            "pub struct OtherTick;\n\nimpl OtherTick {\n    pub fn tick_once(&self) {}\n}\n",
+        ),
+        (
+            "in/rs/chips.rs",
+            "pub type Entry = (u16, u16);\n\npub struct Unit;\n\npub struct Chips {\n    pub copper:    CopperPath,\n}\n\nimpl Chips {\n    fn tick_inner(&mut self) {\n        self.copper.tick_once();\n    }\n}\n",
+        ),
+        (
+            "in/xl/app.js",
+            "let timing_value = 1;\nfunction show_timing() {\n  return timing_value;\n}\n",
+        ),
+        (
+            "in/xl/drive.rs",
+            "pub fn uses_name() -> u32 {\n    let timing_value = 2;\n    timing_value\n}\n",
+        ),
+        (
+            "in/rs/twice.rs",
+            "pub struct Twice;\n\nimpl Twice {\n    pub fn peek(&self) -> u8 {\n        1\n    }\n}\n\nimpl Reader for Twice {\n    fn peek(&self) -> u8 {\n        self.peek()\n    }\n}\n",
+        ),
+        (
+            "in/xl/esc.js",
+            "function escape_it(s) {\n  return s.replace(/[&<>\"']/g, (c) => c);\n}\n\n// The one after it.\nfunction after_escape() {\n  return 1;\n}\n",
+        ),
         (
             "in/same.php",
             "<?php\nclass TwinA extends PayBase {\n  public function twin($x) { return $this->fetch($x); }\n}\nclass TwinB extends PayOther {\n  public function twin($x) { return $this->fetch($x); }\n}\n",
@@ -8130,6 +8159,16 @@ fn demo_imports() {
         ("in/rs/local.rs#go_let", "in/rs/other.rs#grant", true),
         ("in/rs/local.rs#go_let", "in/rs/area.rs#grant", false),
         ("in/rs/local.rs#go_built", "in/rs/other.rs#grant", false),
+        (
+            "in/rs/chips.rs#tick_inner",
+            "in/rs/copper.rs#tick_once",
+            true,
+        ),
+        (
+            "in/rs/chips.rs#tick_inner",
+            "in/rs/other_tick.rs#tick_once",
+            false,
+        ),
         ("in/same.php#twin", "in/base.php#fetch", true),
         ("in/same.php#twin", "in/other.php#fetch", true),
         ("in/stop.dart#go_stop", "in/wide_base.dart#pull", true),
@@ -8216,6 +8255,37 @@ fn demo_imports() {
     assert!(text.contains("could mean another definition"), "{text}");
     assert!(text.contains("in/rs/unknown.rs#go_unknown"), "{text}");
     assert!(!mcp::without_undecided(text).contains("in/rs/unknown.rs#go_unknown"));
+    let users = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_callers",
+                           "arguments": {"symbol": "in/xl/app.js#timing_value"}}}),
+    )
+    .unwrap();
+    let found = &users["result"]["structuredContent"]["callers"];
+    assert!(!found.to_string().contains("in/xl/drive.rs"), "{found}");
+    let snippet = |args: serde_json::Value| {
+        mcp::handle_for_test(
+            &state.as_served(),
+            &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "get_code_snippet", "arguments": args}}),
+        )
+        .unwrap()["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // Read with the language's regexps: a quote inside one opens no string.
+    let text = snippet(serde_json::json!({"symbol": "in/xl/esc.js#after_escape"}));
+    assert!(text.contains("// The one after it."), "{text}");
+    let text = snippet(serde_json::json!({"symbol": "in/rs/twice.rs#peek"}));
+    assert!(
+        text.contains("defines this name again at line(s) 4"),
+        "{text}"
+    );
+    let text = snippet(serde_json::json!({"symbol": "in/rs/chips.rs#tick_inner", "max_lines": 1}));
+    assert!(text.contains("goes on at line 11"), "{text}");
+    assert!(!text.contains("tick_once"), "{text}");
     let impact = |symbol: &str| -> String {
         let r = mcp::handle_for_test(
             &state.as_served(),

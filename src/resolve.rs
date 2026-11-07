@@ -92,7 +92,14 @@ fn defining_module(
         None => (module, None),
     };
     let last = module.rsplit("::").next()?;
-    let defs = by_name.get(last)?;
+    // A heading in the documentation names a class it is not.
+    let code = |d: &NodeId| {
+        file_of
+            .get(d)
+            .is_some_and(|f| !crate::docs::is_markdown(std::path::Path::new(f)))
+    };
+    let defs: Vec<NodeId> = by_name.get(last)?.iter().copied().filter(code).collect();
+    let defs = &defs;
     if let Some(packages) = beside.and_then(|b| b.strip_prefix('/')) {
         return in_package(defs, file_of, packages);
     }

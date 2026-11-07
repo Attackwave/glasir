@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/51";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/52";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -403,7 +403,11 @@ impl RuleFile {
     /// What a file names besides what it calls: a type in a signature, a
     /// constant read, a class it extends — and `util` in `util.Primitive`,
     /// which says through which import.
-    fn identifiers<'a>(&self, src: &'a str) -> Vec<(u32, &'a str, Option<&'a str>)> {
+    fn identifiers<'a>(
+        &self,
+        language: Language,
+        src: &'a str,
+    ) -> Vec<(u32, &'a str, Option<&'a str>)> {
         let (line, docs, block) = self.comment_parts();
         let style = CommentStyle {
             line_comment_prefix: &line,
@@ -415,7 +419,9 @@ impl RuleFile {
             quote_identifiers: self.lexical.quote_identifiers,
             raw_escapes: self.lexical.raw_string_escapes,
         };
-        let tokens = crate::lexer::Lexer::new(src, style).collect_all_tokens();
+        let mut lexer = crate::lexer::Lexer::new(src, style);
+        crate::lexer::configure(&mut lexer, language);
+        let tokens = lexer.collect_all_tokens();
         let significant: Vec<&crate::lexer::Token> =
             tokens.iter().filter(|t| significant(&t.kind)).collect();
         let mut out = Vec::new();
@@ -440,7 +446,7 @@ impl RuleFile {
         out
     }
 
-    fn tokens<'a>(&self, src: &'a str) -> Vec<crate::lexer::Token<'a>> {
+    fn tokens<'a>(&self, language: Language, src: &'a str) -> Vec<crate::lexer::Token<'a>> {
         let (line, docs, block) = self.comment_parts();
         let style = CommentStyle {
             line_comment_prefix: &line,
@@ -452,7 +458,9 @@ impl RuleFile {
             quote_identifiers: self.lexical.quote_identifiers,
             raw_escapes: self.lexical.raw_string_escapes,
         };
-        crate::lexer::Lexer::new(src, style)
+        let mut lexer = crate::lexer::Lexer::new(src, style);
+        crate::lexer::configure(&mut lexer, language);
+        lexer
             .collect_all_tokens()
             .into_iter()
             .filter(|t| significant(&t.kind))
@@ -589,7 +597,7 @@ impl RuleSet {
     /// rule file.
     pub fn tokens<'a>(&self, language: Language, src: &'a str) -> Vec<crate::lexer::Token<'a>> {
         match BUILTINS.iter().find(|b| b.language == language) {
-            Some(b) => self.files[b.name].tokens(src),
+            Some(b) => self.files[b.name].tokens(language, src),
             None => Vec::new(),
         }
     }
@@ -602,7 +610,7 @@ impl RuleSet {
         src: &'a str,
     ) -> Vec<(u32, &'a str, Option<&'a str>)> {
         match BUILTINS.iter().find(|b| b.language == language) {
-            Some(b) => self.files[b.name].identifiers(src),
+            Some(b) => self.files[b.name].identifiers(language, src),
             None => Vec::new(),
         }
     }
@@ -1079,6 +1087,36 @@ mod tests {
             let facts = rules.parse(Language::Bash, src);
             assert!(!facts.had_errors, "{src}");
         }
+    }
+
+    #[test]
+    fn a_rust_alias_or_unit_struct_ends_at_its_semicolon() {
+        let rules = RuleSet::load(None).unwrap();
+        let src = "pub type Entry = (u16, u16);\npub struct Unit;\npub struct Pair(u8, u8);\nimpl Chips {\n    fn run() {}\n}\n";
+        let facts = rules.parse(Language::Rust, src);
+        let end = |name: &str| facts.ranges.iter().find(|r| r.0 == name).map(|r| r.1 .1);
+        assert_eq!(end("Entry"), Some(28), "{:?}", facts.ranges);
+        assert_eq!(end("Unit"), Some(45), "{:?}", facts.ranges);
+        assert_eq!(end("Pair"), Some(70), "{:?}", facts.ranges);
+    }
+
+    #[test]
+    fn tools_read_tokens_with_the_language_syntax() {
+        let rules = RuleSet::load(None).unwrap();
+        let words = |language, src: &str| -> Vec<String> {
+            rules
+                .tokens(language, src)
+                .iter()
+                .filter_map(|t| match t.kind {
+                    crate::lexer::TokenKind::Ident(w) => Some(w.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let js = words(Language::JavaScript, "a.replace(/[\"']/g, b);\nafter();\n");
+        assert!(js.iter().any(|w| w == "after"), "{js:?}");
+        let rb = words(Language::Ruby, "x = <<~EOT\n  it's\nEOT\nafter\n");
+        assert!(rb.iter().any(|w| w == "after"), "{rb:?}");
     }
 
     #[test]

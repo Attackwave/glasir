@@ -36,9 +36,7 @@ fn declared_name<'a>(tokens: &[Token<'a>], mut j: usize) -> (Option<&'a str>, us
 pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Calls) -> FileFacts {
     let mut facts = FileFacts::new();
     let mut lexer = Lexer::new(src, style);
-    lexer.nested_comments = true;
-    lexer.interpolation = true;
-    lexer.raw_triple_quotes = true;
+    crate::lexer::configure(&mut lexer, crate::Language::Kotlin);
     let tokens = lexer.collect_all_tokens();
 
     let mut i = 0;
