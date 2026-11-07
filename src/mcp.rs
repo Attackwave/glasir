@@ -1473,14 +1473,15 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
     outgoing.sort();
     outgoing.dedup();
 
-    // The CSR stores outgoing edges only, so callers come from the reverse
-    // index built from this snapshot.
-    let mut incoming: Vec<(String, String)> = served
-        .snap
-        .reverse()
-        .callers(node)
-        .filter(|&(n, _)| n != node)
-        .map(|(n, e)| (confidence_label(e.confidence).to_string(), served.name(n)))
+    // The callers `find_callers` names: through the placeholders a call goes
+    // by, one entry per caller at its strongest confidence.
+    let mut callers = direct_callers(served, served.snap.reverse(), node, Confidence::Ambiguous);
+    callers.retain(|&(n, _)| n != node);
+    callers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    callers.dedup_by_key(|&mut (n, _)| n);
+    let mut incoming: Vec<(String, String)> = callers
+        .into_iter()
+        .map(|(n, c)| (confidence_label(c).to_string(), served.name(n)))
         .collect();
     incoming.sort();
 
@@ -1530,6 +1531,9 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
             .into_iter()
             .map(|other| (other, served.embeddings.similarity(node, other))),
     );
+    // Definitions only, most alike first: a placeholder is no definition.
+    similar.retain(|&(n, _)| served.defined.contains(&n));
+    similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
     Ok(json!({
         "symbol": served.name(node),

@@ -8945,6 +8945,32 @@ fn demo_references() {
         !text.contains("noise"),
         "a comment or a string is not a use: {text}"
     );
+    // `explain_node` names the callers `find_callers` does, through the
+    // placeholder a call goes by, once each; the alike ones most alike first.
+    let state = served_state(&dir).unwrap();
+    let explained = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "explain_node", "arguments": {"symbol": "src/settle.rs#settle"}}}),
+    )
+    .unwrap();
+    let v = &explained["result"]["structuredContent"];
+    let by: Vec<&str> = v["called_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["symbol"].as_str().unwrap())
+        .collect();
+    assert!(by.contains(&"src/top.rs#top"), "{v}");
+    assert!(by.iter().all(|s| s.contains('#')), "{v}");
+    assert!(by.windows(2).all(|w| w[0] != w[1]), "{v}");
+    let scores: Vec<f64> = v["structurally_similar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["score"].as_f64().unwrap())
+        .collect();
+    assert!(scores.windows(2).all(|w| w[0] >= w[1]), "{v}");
     let text = ask("find_callers", "src/model.rs#LIMIT");
     assert!(text.contains("src/settle.rs#settle"), "{text}");
     let text = ask("impact", "src/twin_a.rs#Twin");
