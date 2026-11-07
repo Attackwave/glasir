@@ -2543,7 +2543,7 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
             Some(socket) if !alone && !args.has("backend") => {
                 let (exe, root) = (std::env::current_exe()?, root.clone());
                 let log = socket.with_extension("log");
-                return shared::relay(&socket, move || {
+                let mut start = move || {
                     use std::os::unix::process::CommandExt;
                     std::process::Command::new(&exe)
                         .arg("serve")
@@ -2556,7 +2556,16 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
                         .process_group(0)
                         .spawn()
                         .map(drop)
-                });
+                };
+                // Nothing is read from the client before this, so a backend
+                // that cannot be reached leaves serving to this process.
+                match shared::connect(&socket, &mut start) {
+                    Ok(stream) => return shared::relay(&socket, stream, start),
+                    Err(e) => {
+                        eprintln!("glasir: no shared backend ({e}); serving alone");
+                        None
+                    }
+                }
             }
             Some(socket) if args.has("backend") => match shared::bind(&socket)? {
                 Some(listener) => Some((listener, socket)),

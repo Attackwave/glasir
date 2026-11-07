@@ -41,14 +41,16 @@ could reach:
   repository indexes that repository.
 - **It makes no network connections of its own.** No telemetry, no model API, no
   update check. The only network sockets are the ones you ask it to listen on.
-- **`serve` over stdio shares one local backend per tree.** On Unix the
-  process a client starts relays to a backend on a Unix socket under
+- **`serve` over stdio shares one local backend per tree.** On Unix the process
+  a client starts relays to a backend on a Unix socket under
   `~/.local/state/glasir/sockets/` (or `$XDG_STATE_HOME`): the directory is
   mode 0700 and the socket 0600, so only the same user can connect. The backend
   runs detached, logs beside its socket, and ends a minute after its last
   client. Each server also records its tree, parent and last request under
-  `~/.local/state/glasir/servers/` for `glasir servers`. `--own-process` keeps
-  the old one-server-per-client behaviour; Windows always does.
+  `~/.local/state/glasir/servers/` for `glasir servers`. Where the socket
+  cannot be reached, as in a container without a writable home, `serve` serves
+  the client itself. `--own-process` keeps the old one-server-per-client
+  behaviour; Windows always does.
 - **No model anywhere in the index or query path**, so no code is sent anywhere
   for embedding or completion. This holds for documentation too, not only code.
 - **It does start three external programs**, all from the system path: `git`
