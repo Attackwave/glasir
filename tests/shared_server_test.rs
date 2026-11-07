@@ -260,10 +260,17 @@ fn a_rebuilt_binary_gets_a_backend_of_its_own() {
     let (tree, state, exe) = (base.join("t"), base.join("s"), base.join("glasir"));
     std::fs::create_dir_all(tree.join("src")).unwrap();
     std::fs::write(tree.join("src/lib.rs"), "pub fn shared() {}\n").unwrap();
+    // Copied by a child and renamed over, as a package manager installs: a
+    // file this process held open for writing could be inherited by a child
+    // another test forks, and executing it would then fail as busy.
     let install = || {
-        // Beside, then renamed over: how a package manager replaces a binary.
         let next = base.join("glasir.next");
-        std::fs::copy(env!("CARGO_BIN_EXE_glasir"), &next).unwrap();
+        let copied = Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_glasir"))
+            .arg(&next)
+            .status()
+            .unwrap();
+        assert!(copied.success());
         std::fs::rename(&next, &exe).unwrap();
     };
     let init = serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}});
@@ -271,7 +278,6 @@ fn a_rebuilt_binary_gets_a_backend_of_its_own() {
     install();
     let mut first = Client::start_exe(&exe, &tree, &state, &[]);
     first.ask(1, "initialize", init.clone());
-    std::thread::sleep(Duration::from_millis(20));
     install();
     let mut second = Client::start_exe(&exe, &tree, &state, &[]);
     second.ask(1, "initialize", init);

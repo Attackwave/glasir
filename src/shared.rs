@@ -12,9 +12,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// What decides that two clients may share a backend: the binary, the tree
-/// and the options that change what it answers. The binary by its size and
-/// modification time beside the version: a build installed over one of the
-/// same version must not reach a backend still running the old code.
+/// and the options that change what it answers. The binary by its file
+/// identity beside the version: a build installed over one of the same
+/// version must not reach a backend still running the old code. A copy may
+/// keep the source's time (macOS does), so the inode counts too; an install
+/// by rename always makes a new one.
 pub fn key(root: &Path, options: &[String]) -> String {
     let binary = std::env::current_exe()
         .and_then(std::fs::metadata)
@@ -23,7 +25,11 @@ pub fn key(root: &Path, options: &[String]) -> String {
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-            format!("{}:{}", m.len(), at.map_or(0, |d| d.as_nanos()))
+            #[cfg(unix)]
+            let inode = std::os::unix::fs::MetadataExt::ino(&m);
+            #[cfg(not(unix))]
+            let inode = 0;
+            format!("{inode}:{}:{}", m.len(), at.map_or(0, |d| d.as_nanos()))
         })
         .unwrap_or_default();
     let mut key = format!(
