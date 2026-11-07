@@ -616,11 +616,27 @@ fn constructed(value: &str) -> Option<&str> {
     }
 }
 
+/// The plain name a value refers to: `&mut self.data`, `&a`, `b`.
+fn named(value: &str) -> Option<&str> {
+    let text = value.trim().trim_start_matches('&').trim_start();
+    let text = text.strip_prefix("mut ").unwrap_or(text).trim();
+    let text = text.strip_prefix("self.").unwrap_or(text);
+    let plain = !text.is_empty()
+        && text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    plain.then_some(text)
+}
+
 /// `name: Type` in fields, parameters and `let`, and `let name = Type::new()`.
 /// A name declared with two types is left out, as for Java.
 fn rust_types(src: &str) -> Vec<Import> {
-    let mut types: std::collections::BTreeMap<&str, Option<&str>> = Default::default();
-    let mut seen: Vec<(&str, &str)> = Vec::new();
+    type Seen<'a> = Vec<(&'a str, Option<&'a str>)>;
+    let mut seen: Seen = Vec::new();
+    // Names written with a type that is no receiver (`s: &str`): an alias of
+    // or to such a name elsewhere in the file stays untyped.
+    let mut written: Vec<&str> = Vec::new();
+    // A name bound to other names, typed once those are.
+    let mut aliases: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut in_struct = false;
     for line in src.lines() {
         let text = line.split("//").next().unwrap_or("").trim();
@@ -634,7 +650,10 @@ fn rust_types(src: &str) -> Vec<Import> {
                 None => text.strip_prefix("pub ").unwrap_or(text),
             };
             if let Some((name, ty)) = field.split_once(':') {
-                seen.extend(rust_type(ty.trim_end_matches(',')).map(|t| (name.trim(), t)));
+                match rust_type(ty.trim_end_matches(',')) {
+                    Some(t) => seen.push((name.trim(), Some(t))),
+                    None => written.push(name.trim()),
+                }
             }
         } else if text.split_whitespace().any(|w| w == "struct") && text.ends_with('{') {
             in_struct = true;
@@ -643,28 +662,75 @@ fn rust_types(src: &str) -> Vec<Import> {
             let Some((name, value)) = rest.split_once('=') else {
                 continue;
             };
-            let (name, ty) = match name.split_once(':') {
+            // A written type counts even when it is no receiver (`n: u32`);
+            // an unwritten one only when the value names it.
+            let written_type = name.split_once(':');
+            let (name, ty) = match written_type {
                 Some((name, ty)) => (name.trim(), rust_type(ty)),
                 None => (name.trim(), constructed(value)),
             };
-            seen.extend(ty.map(|t| (name, t)));
+            // An alias only when the statement ends here: `let set = b` may
+            // go on with `.build()` on the next line.
+            let alias = value.trim().strip_suffix(';').and_then(named);
+            match (ty, alias) {
+                (Some(t), _) => seen.push((name, Some(t))),
+                (None, Some(source)) if written_type.is_none() && named(name).is_some() => {
+                    aliases.push((name, vec![source]))
+                }
+                _ if written_type.is_some() => written.push(name),
+                _ => {}
+            }
+        } else if let Some((pattern, list)) =
+            text.strip_prefix("for ").and_then(|r| r.split_once(" in "))
+        {
+            // `for bank in [&mut self.data, &mut self.inst]`.
+            let list = list.trim_end_matches('{').trim();
+            let items = list
+                .strip_prefix('[')
+                .and_then(|l| l.strip_suffix(']'))
+                .and_then(|items| items.split(',').map(named).collect::<Option<Vec<_>>>());
+            let name = pattern.trim().trim_start_matches("mut ");
+            if let Some(items) = items.filter(|_| named(name).is_some()) {
+                aliases.push((name, items));
+            }
         } else if let Some(at) = text.find("fn ") {
             let list = text[at..].split_once('(').map_or("", |(_, l)| l);
             let list = list.rsplit_once(')').map_or(list, |(l, _)| l);
             for parameter in list.split(',') {
                 if let Some((name, ty)) = parameter.split_once(':') {
                     let name = name.trim().trim_start_matches("mut ");
-                    seen.extend(rust_type(ty).map(|t| (name, t)));
+                    match rust_type(ty) {
+                        Some(t) => seen.push((name, Some(t))),
+                        None => written.push(name),
+                    }
                 }
             }
         }
     }
-    for (name, ty) in seen {
-        let known = types.entry(name).or_insert(Some(ty));
-        if *known != Some(ty) {
-            *known = None;
+    fn merge<'a>(types: &mut std::collections::BTreeMap<&'a str, Option<&'a str>>, seen: Seen<'a>) {
+        for (name, ty) in seen {
+            let known = types.entry(name).or_insert(ty);
+            if *known != ty {
+                *known = None;
+            }
         }
     }
+    let mut types = std::collections::BTreeMap::new();
+    merge(&mut types, seen);
+    // Typed only where every source has the same known type.
+    let typed: Seen = aliases
+        .iter()
+        .filter(|(name, sources)| {
+            !written.contains(name) && !sources.iter().any(|s| written.contains(s))
+        })
+        .filter_map(|(name, sources)| {
+            let mut tys = sources.iter().map(|s| types.get(s).copied().flatten());
+            let first = tys.next().flatten()?;
+            tys.all(|t| t == Some(first))
+                .then_some((*name, Some(first)))
+        })
+        .collect();
+    merge(&mut types, typed);
     types
         .into_iter()
         .filter_map(|(alias, ty)| {
