@@ -45,6 +45,7 @@ mod routes;
 mod scip_wire;
 mod search;
 mod servers;
+mod shared;
 mod snapshot;
 mod store;
 #[cfg(test)]
@@ -2532,6 +2533,38 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     use std::sync::Arc;
 
     let root = &canonical(std::path::Path::new(&args.path))?;
+    // Over stdio, one backend per tree serves every client; see `shared`.
+    #[cfg(unix)]
+    let backend = {
+        let options = shared_options(args);
+        let socket = shared::socket(&shared::key(root, &options));
+        let alone = args.value("http").is_some() || args.has("own-process");
+        match socket {
+            Some(socket) if !alone && !args.has("backend") => {
+                let (exe, root) = (std::env::current_exe()?, root.clone());
+                let log = socket.with_extension("log");
+                return shared::relay(&socket, move || {
+                    use std::os::unix::process::CommandExt;
+                    std::process::Command::new(&exe)
+                        .arg("serve")
+                        .arg(&root)
+                        .arg("--backend")
+                        .args(&options)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::fs::File::create(&log)?)
+                        .process_group(0)
+                        .spawn()
+                        .map(drop)
+                });
+            }
+            Some(socket) if args.has("backend") => match shared::bind(&socket)? {
+                Some(listener) => Some((listener, socket)),
+                None => return Ok(()),
+            },
+            _ => None,
+        }
+    };
     if args.has("plugin") {
         prepare_plugin_tree(root)?;
     }
@@ -2700,6 +2733,32 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
             std::process::exit(2);
         }
     };
+    #[cfg(unix)]
+    if let Some((listener, socket)) = backend {
+        let linger = match args.value("linger").map(str::parse::<u64>) {
+            None => 60,
+            Some(Ok(seconds)) => seconds,
+            Some(Err(_)) => {
+                eprintln!("--linger must be a whole number of seconds.");
+                std::process::exit(2);
+            }
+        };
+        let state = state.clone();
+        let answer = move |line: &str| {
+            servers::touch();
+            let reply = match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(msg) => mcp::handle(&state.load().as_served(), &msg),
+                Err(e) => Some(mcp::parse_error(&e)),
+            };
+            reply.map(|r| r.to_string())
+        };
+        return shared::serve(
+            listener,
+            &socket,
+            std::time::Duration::from_secs(linger),
+            Arc::new(answer),
+        );
+    }
     match args.value("http") {
         // Loopback by default: a graph of someone's source on 0.0.0.0 is a
         // disclosure, and the spec says to bind locally unless told otherwise.
@@ -3952,6 +4011,24 @@ fn tree_name(root: &std::path::Path) -> String {
 
 /// The analysed tree in the form a server holds it: owning its parts, so it can
 /// be swapped under readers when the tree changes.
+/// The `serve` options a backend is started with, which also decide which
+/// clients may share it.
+fn shared_options(args: &cli::Args) -> Vec<String> {
+    let mut options = Vec::new();
+    for flag in ["watch", "plugin"] {
+        if args.has(flag) {
+            options.push(format!("--{flag}"));
+        }
+    }
+    for key in ["sleep-after", "language-rules", "linger"] {
+        if let Some(value) = args.value(key) {
+            options.push(format!("--{key}"));
+            options.push(value.to_string());
+        }
+    }
+    options
+}
+
 /// What a sleeping server holds: nothing, until a request wakes it.
 fn asleep_state() -> mcp::ServedState {
     let g = graph::Graph::new(csr::CsrBuilder::new().build());

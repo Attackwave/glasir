@@ -4925,6 +4925,11 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
     Some(response)
 }
 
+/// The answer to a line that is no JSON.
+pub fn parse_error(e: &serde_json::Error) -> Value {
+    error(Value::Null, -32700, format!("parse error: {e}"))
+}
+
 /// Serves from a state that may be replaced under it, loading per request.
 ///
 /// The stdio counterpart to the HTTP loop. A long-lived borrow would pin the
@@ -4942,7 +4947,7 @@ pub fn serve_swappable(state: &crate::published::Published<ServedState>) -> std:
         crate::servers::touch();
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle(&state.load().as_served(), &msg),
-            Err(e) => Some(error(Value::Null, -32700, format!("parse error: {e}"))),
+            Err(e) => Some(parse_error(&e)),
         };
         if let Some(reply) = reply {
             writeln!(stdout, "{reply}")?;

@@ -21,6 +21,7 @@ pub struct Args {
 /// here is accepted and silently ignored, which is how `--fail-on high` once
 /// gated nothing. `demo_cli` checks every key the code reads is listed.
 pub const VALUE_OPTIONS: &[&str] = &[
+    "linger",
     "sleep-after",
     "platform",
     "output",
