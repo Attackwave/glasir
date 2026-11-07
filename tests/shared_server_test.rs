@@ -13,10 +13,15 @@ struct Client {
 
 impl Client {
     fn start(tree: &Path, state: &Path) -> Client {
+        Client::start_with(tree, state, &[])
+    }
+
+    fn start_with(tree: &Path, state: &Path, extra: &[&std::ffi::OsStr]) -> Client {
         let mut child = Command::new(env!("CARGO_BIN_EXE_glasir"))
             .args(["serve"])
             .arg(tree)
             .args(["--linger", "1"])
+            .args(extra)
             .env("XDG_STATE_HOME", state)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -175,4 +180,62 @@ fn a_backend_out_of_reach_leaves_serving_to_the_relay() {
     assert_eq!(client.callers(2), 2);
     assert!(backends(&tree).is_empty());
     client.close();
+}
+
+#[test]
+fn a_bad_option_fails_before_a_backend_is_started() {
+    let base = PathBuf::from(format!("/tmp/gls-{}-opt", std::process::id()));
+    std::fs::create_dir_all(base.join("t")).unwrap();
+    let started = Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_glasir"))
+        .args(["serve"])
+        .arg(base.join("t"))
+        .args(["--linger", "soon"])
+        .env("XDG_STATE_HOME", base.join("s"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn edited_rules_get_a_backend_of_their_own() {
+    let base = PathBuf::from(format!("/tmp/gls-{}-rules", std::process::id()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for pid in backends(&self.0.join("t")) {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(base.clone());
+    let (tree, state, rules) = (base.join("t"), base.join("s"), base.join("r"));
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(
+        tree.join("main.go"),
+        "package p\nfunc Run() { notify() }\nfunc notify() {}\n",
+    )
+    .unwrap();
+    let original = include_str!("../parsers/languages/go.toml");
+    std::fs::write(rules.join("go.toml"), original).unwrap();
+    let extra = [std::ffi::OsStr::new("--language-rules"), rules.as_os_str()];
+    let init = serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}});
+
+    let mut first = Client::start_with(&tree, &state, &extra);
+    first.ask(1, "initialize", init.clone());
+    std::fs::write(
+        rules.join("go.toml"),
+        original.replace("exclude = [", "exclude = [\"notify\", "),
+    )
+    .unwrap();
+    let mut second = Client::start_with(&tree, &state, &extra);
+    second.ask(1, "initialize", init);
+    assert_eq!(backends(&tree).len(), 2);
+    first.close();
+    second.close();
 }
