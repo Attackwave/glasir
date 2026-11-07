@@ -8876,6 +8876,45 @@ fn demo_change_tools() {
     ] {
         assert_eq!(mcp::is_test_symbol(symbol), want, "{symbol}");
     }
+    // What runs as a test without an attribute: a name alone only where
+    // runners collect by name.
+    for (symbol, want) in [
+        ("tests/pay.rs#charges", true),
+        ("pay/pay_test.go#TestPay", true),
+        ("src/checks.py#test_refund", true),
+        ("lib/checks.rb#test_refund", true),
+        ("src/pay.rs#test_refund", false),
+        ("src/pay.go#TestPay", false),
+        ("src/bitops.c#test_bit", false),
+        ("src/Pay.java#testRefund", false),
+    ] {
+        assert_eq!(mcp::runs_as_test(symbol), want, "{symbol}");
+    }
+    // Through a real tree: the helper is production code, the test is the
+    // one its attribute names.
+    let dir = std::env::temp_dir().join(format!("glasir-named-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src/cpu.rs"),
+        "pub fn test_flag(f: u8) -> bool {\n    f == 1\n}\n\npub fn step(f: u8) -> bool {\n    test_flag(f)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn steps() {\n        assert!(super::step(1));\n    }\n}\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "affected_tests", "arguments": {"symbol": "src/cpu.rs#test_flag"}}}),
+    )
+    .unwrap();
+    let found: Vec<&str> = r["result"]["structuredContent"]["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["symbol"].as_str().unwrap())
+        .collect();
+    assert_eq!(found, ["src/cpu.rs#steps"]);
+    std::fs::remove_dir_all(&dir).unwrap();
 
     // pay -> charge -> log, a test two hops from log and one three hops out,
     // and a test elsewhere that must not be named.
@@ -8913,7 +8952,7 @@ fn demo_change_tools() {
         "tests/pay.rs#pays_once",
         "src/util.rs#unrelated",
         "tests/util.rs#unrelated_works",
-        "src/charge.rs#test_charge_twice",
+        "src/charge.py#test_charge_twice",
         "src/report.rs#render",
         "src/report.rs#export",
         "src/calc.rs#add",
@@ -9077,7 +9116,7 @@ fn demo_change_tools() {
     assert_eq!(
         tests,
         vec![
-            ("src/charge.rs#test_charge_twice", 2),
+            ("src/charge.py#test_charge_twice", 2),
             ("tests/pay.rs#pays_once", 3)
         ],
         "{text}"
