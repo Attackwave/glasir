@@ -2533,11 +2533,34 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     use std::sync::Arc;
 
     let root = &canonical(std::path::Path::new(&args.path))?;
+    // Checked before a backend is started: one would only exit on them.
+    // Minutes without a request before the graph leaves memory; 0 keeps it.
+    let sleep_after = match args.value("sleep-after").map(str::parse::<u64>) {
+        None => 10,
+        Some(Ok(minutes)) => minutes,
+        Some(Err(_)) => {
+            eprintln!("--sleep-after must be a whole number of minutes.");
+            std::process::exit(2);
+        }
+    } * 60;
+    #[cfg(unix)]
+    let linger = match args.value("linger").map(str::parse::<u64>) {
+        None => 60,
+        Some(Ok(seconds)) => seconds,
+        Some(Err(_)) => {
+            eprintln!("--linger must be a whole number of seconds.");
+            std::process::exit(2);
+        }
+    };
     // Over stdio, one backend per tree serves every client; see `shared`.
     #[cfg(unix)]
     let backend = {
         let options = shared_options(args);
-        let socket = shared::socket(&shared::key(root, &options));
+        // The rules as read, so an edited rule file gets a backend of its own.
+        let mut key = shared::key(root, &options);
+        key.push('\0');
+        key.push_str(native_parsers::rules::active().identity());
+        let socket = shared::socket(&key);
         let alone = args.value("http").is_some() || args.has("own-process");
         match socket {
             Some(socket) if !alone && !args.has("backend") => {
@@ -2580,15 +2603,6 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     let state = Arc::new(published::Published::from_pointee(served_state(root)?));
     // Removed again when serving ends; see `glasir servers`.
     let _registration = servers::register(root);
-    // Minutes without a request before the graph leaves memory; 0 keeps it.
-    let sleep_after = match args.value("sleep-after").map(str::parse::<u64>) {
-        None => 10,
-        Some(Ok(minutes)) => minutes,
-        Some(Err(_)) => {
-            eprintln!("--sleep-after must be a whole number of minutes.");
-            std::process::exit(2);
-        }
-    } * 60;
     let sleeper = {
         let root = root.clone();
         Arc::new(servers::Sleeper::new(
@@ -2744,14 +2758,6 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
     };
     #[cfg(unix)]
     if let Some((listener, socket)) = backend {
-        let linger = match args.value("linger").map(str::parse::<u64>) {
-            None => 60,
-            Some(Ok(seconds)) => seconds,
-            Some(Err(_)) => {
-                eprintln!("--linger must be a whole number of seconds.");
-                std::process::exit(2);
-            }
-        };
         let state = state.clone();
         let answer = move |line: &str| {
             servers::touch();
