@@ -46,7 +46,9 @@ could reach:
   `~/.local/state/glasir/sockets/` (or `$XDG_STATE_HOME`): the directory is
   mode 0700 and the socket 0600, so only the same user can connect. The backend
   runs detached, logs beside its socket, and ends a minute after its last
-  client. Each server also records its tree, parent and last request under
+  client. It runs with the environment, `PATH` included, of the client that
+  started it, so a language server or indexer is found where that client finds
+  it. Each server also records its tree, parent and last request under
   `~/.local/state/glasir/servers/` for `glasir servers`. Where the socket
   cannot be reached, as in a container without a writable home, `serve` serves
   the client itself. `--own-process` keeps the old one-server-per-client

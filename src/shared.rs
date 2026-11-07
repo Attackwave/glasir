@@ -161,16 +161,28 @@ mod unix {
             let (clients, last_left, socket) =
                 (clients.clone(), last_left.clone(), socket.to_path_buf());
             std::thread::spawn(move || {
+                let mut unlinked = false;
                 loop {
                     std::thread::sleep(Duration::from_millis(250).min(linger));
                     let idle = last_left
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .elapsed();
-                    if clients.load(Ordering::SeqCst) == 0 && idle >= linger {
-                        // Gone from the path first: a relay arriving now starts a
-                        // new backend instead of reaching this one as it ends.
+                    if clients.load(Ordering::SeqCst) != 0 || idle < linger {
+                        continue;
+                    }
+                    // Gone from the path first: a relay arriving now starts a
+                    // new backend instead of reaching this one as it ends. Only
+                    // once, since a new backend may hold the path afterwards.
+                    if !unlinked {
                         let _ = std::fs::remove_file(&socket);
+                        unlinked = true;
+                        // ponytail: a fixed grace for connections made before
+                        // the unlink to be accepted; a stall longer than this
+                        // still ends one of them.
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    if clients.load(Ordering::SeqCst) == 0 {
                         std::process::exit(0);
                     }
                 }
