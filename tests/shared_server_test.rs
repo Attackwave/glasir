@@ -147,3 +147,32 @@ fn clients_of_one_tree_share_one_backend() {
             .any(|e| e.path().extension().is_some_and(|x| x == "sock"))
     );
 }
+
+#[test]
+fn a_backend_out_of_reach_leaves_serving_to_the_relay() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = PathBuf::from(format!("/tmp/gls-{}-ro", std::process::id()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(base.clone());
+    let (tree, state): (PathBuf, PathBuf) = (base.join("t"), base.join("s"));
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(
+        tree.join("src/lib.rs"),
+        "pub fn shared() {}\npub fn first() { shared(); }\npub fn second() { shared(); }\n",
+    )
+    .unwrap();
+    // A state directory nobody may write, as in a container without a home.
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let mut client = Client::start(&tree, &state);
+    client.ask(1, "initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    assert_eq!(client.callers(2), 2);
+    assert!(backends(&tree).is_empty());
+    client.close();
+}

@@ -97,29 +97,30 @@ mod unix {
     /// and the line that found it gone is sent anew.
     pub fn relay(
         socket: &Path,
+        first: UnixStream,
         mut start: impl FnMut() -> std::io::Result<()>,
     ) -> std::io::Result<()> {
         let stdout = Arc::new(std::sync::Mutex::new(std::io::stdout()));
-        let open = |start: &mut dyn FnMut() -> std::io::Result<()>| -> std::io::Result<(UnixStream, std::thread::JoinHandle<()>)> {
-            let stream = connect(socket, start)?;
-            let reader = stream.try_clone()?;
-            let stdout = stdout.clone();
-            let answers = std::thread::spawn(move || {
-                for line in BufReader::new(reader).lines().map_while(Result::ok) {
-                    let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
-                    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-                        break;
+        let open =
+            |stream: UnixStream| -> std::io::Result<(UnixStream, std::thread::JoinHandle<()>)> {
+                let reader = stream.try_clone()?;
+                let stdout = stdout.clone();
+                let answers = std::thread::spawn(move || {
+                    for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                        let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
+                        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
-            Ok((stream, answers))
-        };
-        let (mut stream, mut answers) = open(&mut start)?;
+                });
+                Ok((stream, answers))
+            };
+        let (mut stream, mut answers) = open(first)?;
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let line = line?;
             if writeln!(stream, "{line}").is_err() {
-                (stream, answers) = open(&mut start)?;
+                (stream, answers) = open(connect(socket, &mut start)?)?;
                 writeln!(stream, "{line}")?;
             }
         }
@@ -208,4 +209,4 @@ mod unix {
 }
 
 #[cfg(unix)]
-pub use unix::{bind, relay, serve};
+pub use unix::{bind, connect, relay, serve};
