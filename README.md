@@ -333,6 +333,10 @@ resolve a call through its module, and Java a call through a variable to the
 class its declared type names. Rust reads `use crate::…`, `super::…` and
 `self::…` the same way, and a method on a typed value finds the `impl` that
 defines it wherever it is; a type outside the tree (`HashMap`) holds its own.
+A Rust call matched by name alone reaches only its own crate and the crates
+its `Cargo.toml` depends on by path, and a standard method (`len`,
+`is_empty`, `iter`, …) on a value of unknown type reaches nothing in the tree;
+`find_callers` lists such calls from the definition's crate as undecided.
 
 **A request reaches its handler.** A client's HTTP call is an edge to the
 server handler whose route it names: routes from Spring annotations, NestJS

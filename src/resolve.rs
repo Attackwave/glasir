@@ -243,6 +243,41 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
             Some((name, target)) => (name, Some(target)),
             None => (symbol.as_str(), None),
         };
+        // `~dirs`: a Rust name reaches only these crates, and an empty list
+        // none. The crates only take away: a name defined once in the tree,
+        // outside them, stays unlinked, and one defined twice stays refused
+        // even when one of the two is out of reach — a local closure `run` is
+        // no call of the crate's only `run`.
+        if let Some(dirs) = target.and_then(|t| t.strip_prefix('~')) {
+            let defs: Vec<NodeId> = by_name
+                .get(bare)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|d| *d != placeholder)
+                .collect();
+            let found: Vec<NodeId> = defs
+                .iter()
+                .copied()
+                .filter(|_| defs.len() == 1)
+                .filter(|d| {
+                    file_of.get(d).is_some_and(|file| {
+                        dirs.split('|').filter(|dir| !dir.is_empty()).any(|dir| {
+                            dir == "." || file.strip_prefix(dir).is_some_and(|r| r.starts_with('/'))
+                        })
+                    })
+                })
+                .collect();
+            if let [definition] = found[..] {
+                links.push(Link {
+                    placeholder,
+                    definition,
+                    candidates: 1,
+                    exact: false,
+                });
+            }
+            continue;
+        }
         if let Some(target) = target {
             let mut chain_known = false;
             let found: Vec<NodeId> = if let Some(module) = target.strip_prefix('@') {

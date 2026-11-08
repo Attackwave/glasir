@@ -5618,8 +5618,9 @@ def pay(self):
         "only the bare `now()` may bind locally; `Instant::now()` must not"
     );
     assert!(
-        r2.contains("now"),
-        "`Instant::now()` must land on the bare placeholder instead"
+        r2.entries()
+            .any(|(n, _)| n == "now" || n.starts_with("now from ~")),
+        "`Instant::now()` must land on a placeholder instead"
     );
 
     println!(
@@ -8007,6 +8008,46 @@ fn demo_imports() {
         // name is refused; the module qualifier decides, beside the caller,
         // under the crate's src/, or as a mod.rs. `crate::` is dropped.
         ("rs/Cargo.toml", "[package]\nname = \"rs\"\n"),
+        // A workspace: `asm` and `floppy` depend on `core`, `core` on nothing.
+        (
+            "ws/Cargo.toml",
+            "[workspace]\nmembers = [\"core\", \"asm\", \"floppy\"]\n\n[workspace.dependencies]\ncore = { path = \"core\" }\n",
+        ),
+        ("ws/core/Cargo.toml", "[package]\nname = \"core\"\n"),
+        (
+            "ws/asm/Cargo.toml",
+            "[package]\nname = \"asm\"\n\n[dependencies]\ncore = { path = \"../core\" }\n\n[patch.crates-io]\nfloppy = { path = \"../floppy\" }\n",
+        ),
+        (
+            "ws/floppy/Cargo.toml",
+            "[package]\nname = \"floppy\"\n\n[dependencies]\ncore.workspace = true\n",
+        ),
+        (
+            "ws/asm/src/sect.rs",
+            "pub struct Sect;\n\nimpl Sect {\n    pub fn is_empty(&self) -> bool {\n        true\n    }\n\n    pub fn shrink_sect(&self) {}\n}\n",
+        ),
+        (
+            "ws/core/src/user.rs",
+            "fn core_user(v: Vec<u8>) {\n    v.iter().shrink_sect();\n}\n\nfn call_run() {\n    run_it();\n}\n",
+        ),
+        (
+            "ws/asm/src/user.rs",
+            "fn asm_user(v: Vec<u8>) -> bool {\n    v.first().shrink_sect();\n    out_line();\n    floppy_only();\n    make_v().is_empty()\n}\n",
+        ),
+        (
+            "ws/core/src/help.rs",
+            "pub fn core_helper() {}\n\npub fn r#match_it() {}\n\nfn go_raw() {\n    r#match_it();\n}\n",
+        ),
+        (
+            "ws/floppy/src/user.rs",
+            "fn floppy_user() {\n    core_helper();\n}\n",
+        ),
+        ("ws/floppy/src/only.rs", "pub fn floppy_only() {}\n"),
+        // Defined twice: one out of `core`'s reach does not make the other its.
+        ("ws/core/src/runner.rs", "pub fn run_it() {}\n"),
+        ("ws/asm/src/runner.rs", "pub fn run_it() {}\n"),
+        ("ws/asm/tests/lines.rs", "fn out_line() {}\n"),
+        ("ws/NOTES.md", "# Notes\n\nUse `out_line` here.\n"),
         // `use` names the file; the bare name is defined twice.
         ("rs/src/encode.rs", "pub fn encode_op() {}\n"),
         ("rs/src/other_encode.rs", "pub fn encode_op() {}\n"),
@@ -8450,6 +8491,43 @@ fn demo_imports() {
         ("in/rs/banks.rs#go_text", "in/rs/area.rs#grant", false),
         ("in/rs/banks.rs#go_split", "in/rs/area.rs#grant", false),
         ("in/rs/banks.rs#go_raw", "in/rs/area.rs#grant", false),
+        // Crates reach only themselves and their dependencies.
+        (
+            "ws/core/src/user.rs#core_user",
+            "ws/asm/src/sect.rs#shrink_sect",
+            false,
+        ),
+        (
+            "ws/asm/src/user.rs#asm_user",
+            "ws/asm/src/sect.rs#shrink_sect",
+            true,
+        ),
+        (
+            "ws/asm/src/user.rs#asm_user",
+            "ws/asm/src/sect.rs#is_empty",
+            false,
+        ),
+        (
+            "ws/floppy/src/user.rs#floppy_user",
+            "ws/core/src/help.rs#core_helper",
+            true,
+        ),
+        (
+            "ws/core/src/user.rs#call_run",
+            "ws/core/src/runner.rs#run_it",
+            false,
+        ),
+        (
+            "ws/core/src/help.rs#go_raw",
+            "ws/core/src/help.rs#match_it",
+            true,
+        ),
+        ("ws/NOTES.md#Notes", "ws/asm/tests/lines.rs#out_line", false),
+        (
+            "ws/asm/src/user.rs#asm_user",
+            "ws/floppy/src/only.rs#floppy_only",
+            false,
+        ),
         (
             "rs/src/deep_call.rs#go_deep",
             "rs/src/sub/near.rs#changes",
@@ -8584,6 +8662,19 @@ fn demo_imports() {
                     "rules": "deny in/rs/uses_lines.rs -> in/rs/lines.rs\ndeny in/rs/uses_lines.rs -> in/rs/far.rs"}}}),
     )
     .unwrap();
+    // A standard method on an unknown value links nowhere, and from the
+    // definition's own crate it is named as a caller that may be this one.
+    let maybe = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_callers", "arguments": {"symbol": "ws/asm/src/sect.rs#is_empty"}}}),
+    )
+    .unwrap();
+    let undecided = maybe["result"]["structuredContent"]["undecided_callers"].to_string();
+    assert!(
+        undecided.contains("ws/asm/src/user.rs#asm_user"),
+        "{undecided}"
+    );
     let text = ruled["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
         text.contains("by_lines") && text.contains("by_path"),

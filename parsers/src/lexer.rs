@@ -684,7 +684,9 @@ impl<'a, 's> Lexer<'a, 's> {
                     break;
                 }
             }
-            let word = self.slice(start, self.pos);
+            // The name is what follows `r#`: `r#async` calls `async`, and
+            // a name with `#` would read as a qualified symbol.
+            let word = self.slice(start + 2, self.pos);
             return Token {
                 kind: TokenKind::Ident(word),
                 start: start as u32,

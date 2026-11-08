@@ -735,6 +735,94 @@ pub fn rust_path_target(file: &str, spec: &str, root: &Path) -> Option<String> {
         .map(|p| slash(&p))
 }
 
+/// The directories a Rust call in `file` can reach by a bare name: its own
+/// crate and the crates its `Cargo.toml` names by `path`, directly or through
+/// `[workspace.dependencies]`, `|` joined and relative to `root`. `None`
+/// outside a crate.
+pub fn rust_crate_scope(root: &Path, file: &str) -> Option<String> {
+    let crate_dir = Path::new(file)
+        .parent()?
+        .ancestors()
+        .find(|a| {
+            std::fs::read_to_string(root.join(a).join("Cargo.toml"))
+                .is_ok_and(|t| t.lines().any(|l| l.trim() == "[package]"))
+        })?
+        .to_path_buf();
+    // `name = { path = "…" }` per dependency section; `name.workspace = true`
+    // and `name = { workspace = true }` defer to the workspace's table.
+    fn paths(toml: &str, sections: impl Fn(&str) -> bool) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in toml.lines().map(str::trim) {
+            if line.starts_with('[') {
+                inside = sections(line);
+                continue;
+            }
+            let Some((name, value)) = line.split_once('=').filter(|_| inside) else {
+                continue;
+            };
+            let name = name
+                .trim()
+                .trim_end_matches(".workspace")
+                .trim()
+                .to_string();
+            let path = value
+                .split_once("path")
+                .and_then(|(_, rest)| rest.split('"').nth(1))
+                .map(str::to_string);
+            let deferred = line.contains("workspace");
+            if path.is_some() || deferred {
+                out.push((name, path));
+            }
+        }
+        out
+    }
+    let own = std::fs::read_to_string(root.join(&crate_dir).join("Cargo.toml")).ok()?;
+    let mut dirs = vec![crate_dir.clone()];
+    let workspace = crate_dir
+        .ancestors()
+        .skip(1)
+        .find(|a| {
+            std::fs::read_to_string(root.join(a).join("Cargo.toml"))
+                .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+        })
+        .map(Path::to_path_buf);
+    let shared = workspace
+        .as_ref()
+        .and_then(|w| std::fs::read_to_string(root.join(w).join("Cargo.toml")).ok())
+        .map(|t| paths(&t, |h| h == "[workspace.dependencies]"))
+        .unwrap_or_default();
+    for (name, path) in paths(&own, |h| h.ends_with("dependencies]")) {
+        let dir = match path {
+            Some(p) => Some(crate_dir.join(p)),
+            None => shared
+                .iter()
+                .find(|(n, _)| *n == name)
+                .and_then(|(_, p)| Some(workspace.as_ref()?.join(p.as_ref()?))),
+        };
+        if let Some(dir) = dir {
+            // `crates/a/../b` as `crates/b`, without touching the disk.
+            let mut clean = std::path::PathBuf::new();
+            for part in dir.components() {
+                match part {
+                    std::path::Component::ParentDir => {
+                        clean.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => clean.push(other),
+                }
+            }
+            dirs.push(clean);
+        }
+    }
+    // The tree's root as `.`: an empty list means no crate at all.
+    let named = |d: &std::path::PathBuf| match slash(d) {
+        root if root.is_empty() => ".".to_string(),
+        dir => dir,
+    };
+    Some(dirs.iter().map(named).collect::<Vec<_>>().join("|"))
+}
+
 /// The plain name a value refers to: `&mut self.data`, `&a`, `b`.
 fn named(value: &str) -> Option<&str> {
     let text = value.trim().trim_start_matches('&').trim_start();
