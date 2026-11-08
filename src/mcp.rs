@@ -4330,12 +4330,6 @@ fn render_check_architecture(v: &Value) -> String {
                 evidence.len() - CHANGE_LIST_LIMIT
             ));
         }
-        if v["rule"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("no-cycles"))
-        {
-            out.push_str("  (the first cycle found; `cycles` lists every one)\n");
-        }
     }
     out
 }

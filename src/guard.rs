@@ -208,10 +208,11 @@ pub fn check(
             }
             Rule::NoCycles(floor) => {
                 let floor = &floor.unwrap_or_else(|| cycle_default(snap));
-                if let Some(cycle) = first_cycle(snap, &file, &stands_for, *floor) {
+                let found = cycles_of(snap, &file, &stands_for, *floor, 10);
+                if !found.is_empty() {
                     out.push(Violation {
                         rule: format!("no-cycles {}", confidence_name(*floor)),
-                        evidence: vec![cycle.join(" -> ")],
+                        evidence: found.iter().map(|c| c.join(" -> ")).collect(),
                     });
                 }
             }
@@ -243,14 +244,14 @@ fn confidence_name(c: Confidence) -> &'static str {
     }
 }
 
-/// One dependency cycle, or `None`. Only the first: a gate answers whether the
-/// contract holds, and `cycles` is what lists them all, ranked.
-fn first_cycle(
+/// Up to `limit` dependency cycles, each closed on its first file.
+fn cycles_of(
     snap: &GraphSnapshot,
     file: &HashMap<NodeId, String>,
     stands_for: &HashMap<NodeId, String>,
     floor: Confidence,
-) -> Option<Vec<String>> {
+    limit: usize,
+) -> Vec<Vec<String>> {
     let mut files: Vec<&str> = file.values().map(String::as_str).collect();
     files.sort_unstable();
     files.dedup();
@@ -276,16 +277,29 @@ fn first_cycle(
     // twice and the first hit is stable rather than whichever came up first.
     let mut stack = Vec::new();
     let mut on_stack = vec![false; files.len()];
+    let mut found = Vec::new();
     for start in 0..files.len() {
+        if found.len() >= limit {
+            break;
+        }
         stack.push(start);
         on_stack[start] = true;
-        if let Some(found) = dfs(start, start, &adj, &mut stack, &mut on_stack, 8) {
-            return Some(found.iter().map(|&i| files[i].to_string()).collect());
-        }
+        dfs(
+            start,
+            start,
+            &adj,
+            &mut stack,
+            &mut on_stack,
+            limit,
+            &mut found,
+        );
         on_stack[start] = false;
         stack.pop();
     }
-    None
+    found
+        .into_iter()
+        .map(|c| c.iter().map(|&i| files[i].to_string()).collect())
+        .collect()
 }
 
 fn dfs(
@@ -294,30 +308,31 @@ fn dfs(
     adj: &[BTreeSet<usize>],
     stack: &mut Vec<usize>,
     on_stack: &mut [bool],
-    depth: usize,
-) -> Option<Vec<usize>> {
-    if stack.len() > depth {
-        return None;
+    limit: usize,
+    found: &mut Vec<Vec<usize>>,
+) {
+    if stack.len() > 8 {
+        return;
     }
     for &next in &adj[node] {
+        if found.len() >= limit {
+            return;
+        }
         if next == start {
             let mut cycle = stack.clone();
             cycle.push(start);
-            return Some(cycle);
+            found.push(cycle);
+            continue;
         }
         if next < start || on_stack[next] {
             continue;
         }
         stack.push(next);
         on_stack[next] = true;
-        let found = dfs(start, next, adj, stack, on_stack, depth);
+        dfs(start, next, adj, stack, on_stack, limit, found);
         on_stack[next] = false;
         stack.pop();
-        if found.is_some() {
-            return found;
-        }
     }
-    None
 }
 
 /// Every file the graph knows, so a rule covering none can be reported: it

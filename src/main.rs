@@ -3576,6 +3576,16 @@ fn demo_guard() {
          pub fn driver_wait() -> u32 { 1 }\n",
     )
     .unwrap();
+    std::fs::write(
+        dir.join("src/pump.rs"),
+        "use crate::valve;\npub fn pump_run() -> u32 { valve::valve_open() }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/valve.rs"),
+        "use crate::pump;\npub fn valve_open() -> u32 { pump::pump_run() }\n",
+    )
+    .unwrap();
     let _ = std::fs::remove_file(dir.join(".glasir-graph"));
     let b = analyse(&dir).unwrap();
     let names_b = mcp::name_table(&b.registry, b.snap.width());
@@ -3587,6 +3597,12 @@ fn demo_guard() {
         &guard::parse("no-cycles inferred\n").unwrap(),
     );
     assert_eq!(cyc.len(), 1, "a mutual dependency is a broken contract");
+    assert_eq!(
+        cyc[0].evidence.len(),
+        2,
+        "every cycle: {:?}",
+        cyc[0].evidence
+    );
     // Without a confidence, the default of `cycles`: this tree has no
     // compiler-resolved edge, so `extracted` would hold vacuously.
     let plain = guard::check(
