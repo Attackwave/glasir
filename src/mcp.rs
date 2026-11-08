@@ -2300,6 +2300,13 @@ fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String
     }
     let reverse = served.snap.reverse();
     let mut out = std::collections::BTreeSet::new();
+    let mut callers_of = |node: NodeId| {
+        for (caller, _) in reverse.callers(node) {
+            if served.defined.contains(&caller) && caller != node {
+                out.insert(served.name(caller));
+            }
+        }
+    };
     for (symbol, &placeholder) in served.registry.entries() {
         if symbol.contains('#') {
             continue;
@@ -2318,11 +2325,7 @@ fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String
         if !named || resolves {
             continue;
         }
-        for (caller, _) in reverse.callers(placeholder) {
-            if served.defined.contains(&caller) {
-                out.insert(served.name(caller));
-            }
-        }
+        callers_of(placeholder);
     }
     out.into_iter().collect()
 }

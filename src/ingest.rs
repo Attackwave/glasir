@@ -1052,6 +1052,9 @@ fn prepare_facts(
     };
     let mut inherited_of: HashMap<(&str, Option<u32>), Option<String>> = HashMap::new();
 
+    // What this file defines now. The registry may still hold a name the file
+    // defined before it was read again: a call to it is no local call.
+    let defined_here: HashSet<&str> = facts.defines.iter().map(String::as_str).collect();
     let mut edges: Vec<(NodeId, Edge)> = Vec::with_capacity(facts.calls.len());
     for (i, (caller, callee, has_receiver)) in facts.calls.iter().enumerate() {
         let source_node = registry.get_or_mint(&qualify(&file, caller));
@@ -1130,7 +1133,7 @@ fn prepare_facts(
                     }
                     _ => crate::imports::scoped(callee, &t),
                 })
-        } else if !registry.contains(&local) {
+        } else if !defined_here.contains(callee.as_str()) {
             names
                 .get(callee.as_str())
                 .map(|(t, n)| crate::imports::scoped(n, t))
@@ -1170,7 +1173,7 @@ fn prepare_facts(
             });
         let unknown_receiver = *has_receiver && imported.is_none() && !path_call;
         // `super.run()` in `run` never means this `run`.
-        let target = if !*has_receiver && !names_base && registry.contains(&local) {
+        let target = if !*has_receiver && !names_base && defined_here.contains(callee.as_str()) {
             registry.get_or_mint(&local)
         } else if let Some(scoped) = imported {
             let node = registry.get_or_mint(&scoped);

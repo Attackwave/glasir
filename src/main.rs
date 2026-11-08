@@ -9689,7 +9689,7 @@ fn demo_change_tools() {
             .success();
         assert!(ok, "git {args:?}");
     };
-    let quotes = "pub fn strip_marks(s: &str) -> &str {\n    s\n}\n";
+    let quotes = "pub fn strip_marks(s: &str) -> &str {\n    s\n}\n\nfn use_marks(s: &str) -> &str {\n    strip_marks(s)\n}\n";
     std::fs::write(live.join("src/quotes.rs"), quotes).unwrap();
     std::fs::write(
         live.join("src/reader.rs"),
@@ -9699,9 +9699,21 @@ fn demo_change_tools() {
     git(&["init", "-q"]);
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "c"]);
+    // Enough files that two changed ones are read again rather than rebuilt.
+    for i in 0..10 {
+        std::fs::write(
+            live.join(format!("src/fill_{i}.rs")),
+            format!("fn fill_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "fill"]);
+    // Stored first, so the edit is read again into that graph, as a watch does.
+    drop(served_state(&live).unwrap());
     std::fs::write(
         live.join("src/quotes.rs"),
-        quotes.replace("strip_marks", "strip_marks_renamed"),
+        quotes.replace("fn strip_marks(", "fn strip_marks_renamed("),
     )
     .unwrap();
     std::fs::write(live.join("src/fresh.rs"), "pub fn fresh_one() {}\n").unwrap();
@@ -9720,7 +9732,7 @@ fn demo_change_tools() {
     );
     assert_eq!(
         v["risk"]["dangling_callers"],
-        json!(["src/reader.rs#read_name"]),
+        json!(["src/quotes.rs#use_marks", "src/reader.rs#read_name"]),
         "{v}"
     );
     assert_eq!(v["risk"]["level"], "high", "{v}");
