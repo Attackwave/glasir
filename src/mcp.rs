@@ -378,7 +378,24 @@ name, which is not the same as nothing depending on it"
         // A question, not an identifier: score it against symbol words and
         // carry that confidence into the expansion, normalised against the best
         // hit so scores stay comparable across queries.
-        let hits = self.search.search(query, SEED_LIMIT);
+        let mut hits = self.search.search(query, SEED_LIMIT);
+        // An implementation before the tests of it, unless the question asks
+        // about tests: a test repeats the words of what it tests.
+        let about_tests = query.split(|c: char| !c.is_alphanumeric()).any(|w| {
+            matches!(
+                w.to_ascii_lowercase().as_str(),
+                "test" | "tests" | "testing" | "spec" | "specs"
+            )
+        });
+        if !about_tests {
+            let mut texts = std::collections::HashMap::new();
+            for (node, score) in &mut hits {
+                if is_test_node(self, *node, &mut texts) {
+                    *score *= TEST_SEED_WEIGHT;
+                }
+            }
+            hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        }
         let best = hits
             .first()
             .map(|(_, s)| *s)
@@ -389,6 +406,10 @@ name, which is not the same as nothing depending on it"
             .collect()
     }
 }
+
+/// What a test's text score counts for against an implementation's when the
+/// question is not about tests.
+const TEST_SEED_WEIGHT: f32 = 0.8;
 
 /// The tools this server exposes. Every one reads the graph or the working
 /// tree and changes nothing, so a client in a read-only mode may call them all.
@@ -472,7 +493,7 @@ fn tool_list() -> Value {
         "type": "object",
         "properties": {
             "returned": {"type": "integer"},
-            "total": {"type": "integer", "description": "Nodes in the graph"},
+            "total": {"type": "integer", "description": "Nodes in the graph: definitions, document sections and the placeholders calls to names outside the tree land on; `overview` counts definitions only"},
             "filtered_out_percent": {"type": "number"},
             "nodes": {"type": "array", "items": {
                 "type": "object",
@@ -1282,7 +1303,7 @@ fn render_query_graph(v: &Value) -> String {
         format!("{filtered:.1}")
     };
     let mut out = format!(
-        "{returned} of {} nodes ({filtered}% filtered out)\n\n",
+        "{returned} of {} graph nodes, placeholders included ({filtered}% filtered out)\n\n",
         v["total"].as_u64().unwrap_or(0),
     );
     for n in v["nodes"].as_array().into_iter().flatten() {
