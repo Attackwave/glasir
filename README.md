@@ -268,7 +268,9 @@ cheapest to act on:
   the working tree, so a change is checked before it is committed
 - `find_unused` — definitions nothing in the tree refers to, confirmed against
   every text file rather than the call graph alone, with tests, annotated and
-  generated code, overrides and framework conventions left out. On six real
+  generated code, overrides and framework conventions left out. Definitions in
+  a Rust file no `mod` reaches from a crate root are listed apart, as code the
+  compiler never builds; `overview` names those files. On six real
   repositories in five languages, every name it reported appeared nowhere but
   in its own definition; what it cannot see — a library's public API, a name
   built at run time — is stated in each answer

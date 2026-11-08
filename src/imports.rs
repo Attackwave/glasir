@@ -823,6 +823,160 @@ pub fn rust_crate_scope(root: &Path, file: &str) -> Option<String> {
     Some(dirs.iter().map(named).collect::<Vec<_>>().join("|"))
 }
 
+/// The Rust files among `files` no crate builds: no `mod` from a crate's
+/// roots (`src/lib.rs`, `src/main.rs`, `src/bin/`, `tests/`, `examples/`,
+/// `benches/`, `build.rs`, a target's `path`) reaches them. `#[path]`,
+/// inline `mod x { mod y; }` and `include!("…")` are followed; a module named
+/// by a macro is not, so such a file shows here although it is built.
+pub fn rust_outside_modules(root: &Path, files: &[&str]) -> Vec<String> {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    let mut crates: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut crate_of: std::collections::HashMap<String, Option<String>> = Default::default();
+    for &file in files.iter().filter(|f| f.ends_with(".rs")) {
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+        let found = crate_of
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                Path::new(&dir)
+                    .ancestors()
+                    .find(|a| {
+                        std::fs::read_to_string(root.join(a).join("Cargo.toml"))
+                            .is_ok_and(|t| t.lines().any(|l| l.trim() == "[package]"))
+                    })
+                    .map(slash)
+            })
+            .clone();
+        if let Some(c) = found {
+            crates.entry(c).or_default().push(file);
+        }
+    }
+    let mut outside = Vec::new();
+    for (krate, members) in crates {
+        let at = |rel: &str| {
+            if krate.is_empty() {
+                rel.to_string()
+            } else {
+                format!("{krate}/{rel}")
+            }
+        };
+        let known: HashSet<&str> = members.iter().copied().collect();
+        let mut roots: BTreeSet<String> = members
+            .iter()
+            .filter(|f| {
+                let rel = f.strip_prefix(&at("")).unwrap_or(f);
+                let parts: Vec<&str> = rel.split('/').collect();
+                matches!(
+                    parts[..],
+                    ["src", "lib.rs" | "main.rs"]
+                        | ["build.rs"]
+                        | ["src", "bin", _]
+                        | ["src", "bin", _, "main.rs"]
+                        | ["tests" | "examples" | "benches", _]
+                        | ["examples" | "benches" | "tests", _, "main.rs"]
+                )
+            })
+            .map(|f| f.to_string())
+            .collect();
+        // A target's own `path` in `[lib]`, `[[bin]]`, `[[test]]`, ….
+        if let Ok(toml) = std::fs::read_to_string(root.join(&krate).join("Cargo.toml")) {
+            let mut target = false;
+            for line in toml.lines().map(str::trim) {
+                if line.starts_with('[') {
+                    target = matches!(
+                        line,
+                        "[lib]" | "[[bin]]" | "[[test]]" | "[[example]]" | "[[bench]]"
+                    );
+                } else if target
+                    && let Some(value) = line
+                        .strip_prefix("path")
+                        .and_then(|r| r.trim_start().strip_prefix('='))
+                    && let Some(path) = value.split('"').nth(1)
+                {
+                    roots.insert(at(path));
+                }
+            }
+        }
+        let mut reached: HashSet<String> = HashSet::new();
+        let mut waiting: Vec<(String, bool)> = roots.into_iter().map(|r| (r, true)).collect();
+        while let Some((file, is_root)) = waiting.pop() {
+            if !reached.insert(file.clone()) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(root.join(&file)) else {
+                continue;
+            };
+            let path = Path::new(&file);
+            let parent = path.parent().unwrap_or(Path::new(""));
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            // Where `mod x;` looks: beside a root or `mod.rs`, else in `stem/`.
+            let base = if is_root || stem == "mod" {
+                parent.to_path_buf()
+            } else {
+                parent.join(stem)
+            };
+            let mut inline: Vec<(String, i32)> = Vec::new();
+            let mut depth = 0i32;
+            let mut pinned: Option<String> = None;
+            for line in text.lines() {
+                let code = line.split("//").next().unwrap_or("").trim();
+                if let Some(rest) = code.strip_prefix("#[path") {
+                    pinned = rest.split('"').nth(1).map(str::to_string);
+                }
+                if let Some(at_include) = code.find("include!(\"")
+                    && let Some(name) = code[at_include + 10..].split('"').next()
+                {
+                    waiting.push((slash(&parent.join(name)), false));
+                }
+                let words: Vec<&str> = code.split_whitespace().collect();
+                let at_mod = words.iter().position(|w| *w == "mod");
+                if let Some(i) = at_mod.filter(|&i| {
+                    words[..i]
+                        .iter()
+                        .all(|w| w.starts_with("pub") || w.starts_with("#["))
+                }) {
+                    let name = words
+                        .get(i + 1)
+                        .map_or("", |w| w.trim_end_matches([';', '{']));
+                    let opens = code.ends_with('{') || words.get(i + 2) == Some(&"{");
+                    if opens {
+                        inline.push((name.to_string(), depth + 1));
+                    } else if code.ends_with(';') && !name.is_empty() {
+                        let mut dir = base.clone();
+                        for (n, _) in &inline {
+                            dir.push(n);
+                        }
+                        let candidates = match pinned.take() {
+                            Some(p) => vec![parent.join(p)],
+                            None => vec![
+                                dir.join(format!("{name}.rs")),
+                                dir.join(name).join("mod.rs"),
+                            ],
+                        };
+                        for c in candidates {
+                            let c = slash(&c);
+                            if known.contains(c.as_str()) || root.join(&c).is_file() {
+                                waiting.push((c, false));
+                            }
+                        }
+                    }
+                }
+                depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+                while inline.last().is_some_and(|(_, d)| depth < *d) {
+                    inline.pop();
+                }
+            }
+        }
+        outside.extend(
+            members
+                .iter()
+                .filter(|f| !reached.contains(**f))
+                .map(|f| f.to_string()),
+        );
+    }
+    outside.sort();
+    outside
+}
+
 /// The plain name a value refers to: `&mut self.data`, `&a`, `b`.
 fn named(value: &str) -> Option<&str> {
     let text = value.trim().trim_start_matches('&').trim_start();

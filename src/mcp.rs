@@ -949,7 +949,8 @@ fn tool_list() -> Value {
                     "checked": {"type": "integer", "description": "Definitions considered"},
                     "count": {"type": "integer"},
                     "next_offset": {"type": "integer", "description": "Present when more remain"},
-                    "unused": {"type": "array", "items": {"type": "string"}}
+                    "unused": {"type": "array", "items": {"type": "string"}},
+                    "not_compiled": {"type": "array", "items": {"type": "string"}, "description": "Definitions in Rust files no `mod` from a crate root reaches: the compiler never builds them"}
                 },
                 "required": ["path", "checked", "count", "unused"]
             }
@@ -3599,8 +3600,28 @@ fn render_http_surface(v: &Value) -> String {
     out
 }
 
+/// The indexed Rust files no crate builds; see `imports::rust_outside_modules`.
+fn rust_outside_modules(served: &Served) -> Vec<String> {
+    let Some(root) = served.root else {
+        return Vec::new();
+    };
+    let files: std::collections::BTreeSet<&str> = served
+        .registry
+        .entries()
+        .filter(|(s, n)| served.defined.contains(n) && s.contains(".rs#"))
+        .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f))
+        .collect();
+    crate::imports::rust_outside_modules(root, &files.into_iter().collect::<Vec<_>>())
+}
+
 fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     let scope = args["path"].as_str().unwrap_or("").trim_start_matches("./");
+    // What the compiler never builds is dead whatever calls it.
+    let outside: std::collections::HashSet<String> = rust_outside_modules(served)
+        .into_iter()
+        .filter(|f| f.starts_with(scope))
+        .collect();
+    let mut not_compiled: Vec<String> = Vec::new();
     let (offset, limit) = page(args, 50);
     let reverse = served.snap.reverse();
 
@@ -3624,6 +3645,10 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
             .rsplit_once('.')
             .map_or("", |(_, e)| e)
             .to_ascii_lowercase();
+        if served.defined.contains(&node) && outside.contains(file) && name != "<module>" {
+            not_compiled.push(symbol.clone());
+            continue;
+        }
         if !served.defined.contains(&node)
             || !file.starts_with(scope)
             || NOT_CALLED.contains(&ext.as_str())
@@ -3732,9 +3757,11 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|(file, name)| format!("{file}#{name}"))
         .collect();
     unused.sort();
+    not_compiled.sort();
     let mut value = json!({
         "path": scope,
         "checked": checked,
+        "not_compiled": not_compiled,
         "count": unused.len(),
         "unused": unused.iter().skip(offset).take(limit).collect::<Vec<_>>(),
     });
@@ -4115,8 +4142,21 @@ fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn render_find_unused(v: &Value) -> String {
     let count = v["count"].as_u64().unwrap_or(0);
     let checked = v["checked"].as_u64().unwrap_or(0);
-    let mut out =
-        format!("{count} of {checked} definition(s) are not referenced anywhere in the graph");
+    let mut out = String::new();
+    let outside = v["not_compiled"].as_array().map_or(&[][..], Vec::as_slice);
+    if !outside.is_empty() {
+        out.push_str(&format!(
+            "{} definition(s) sit in Rust files no `mod` reaches, so the compiler never builds them:\n",
+            outside.len()
+        ));
+        for s in outside.iter().take(50) {
+            out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
+        }
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "{count} of {checked} definition(s) are not referenced anywhere in the graph"
+    ));
     let unused = v["unused"].as_array().map_or(&[][..], Vec::as_slice);
     if unused.is_empty() {
         out.push_str(".\n");
@@ -4499,6 +4539,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     // whatever `limit` the caller asked for.
     let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
     let mut answer = json!({
+        "rust_outside_modules": rust_outside_modules(served),
         "server_version": env!("CARGO_PKG_VERSION"),
         "indexed_at": served.now,
         "symbols": symbols,
@@ -4582,6 +4623,18 @@ unlinked: {}. If one is a copy, list it in `.glasirignore`.\n",
                 names.join(", ")
             )
         });
+    let outside = v["rust_outside_modules"]
+        .as_array()
+        .filter(|files| !files.is_empty())
+        .map_or(String::new(), |files| {
+            let names: Vec<&str> = files.iter().filter_map(Value::as_str).take(20).collect();
+            format!(
+                "\n{} Rust file(s) no `mod` reaches, so the compiler never builds them: {}\n",
+                files.len(),
+                names.join(", ")
+            )
+        });
+    let repeated = format!("{repeated}{outside}");
     if total == 0 {
         return format!(
             "no subsystems: the tree has no partition yet, which means \
