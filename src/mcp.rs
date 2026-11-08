@@ -822,6 +822,8 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
                     "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
                     "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
+                    "limit": {"type": "integer", "description": "How many tests to list (default 50); `count` and `files` cover all"},
+                    "offset": {"type": "integer", "description": "Where the list starts (default 0)"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to follow (default ambiguous)"}
                 }
@@ -832,6 +834,8 @@ fn tool_list() -> Value {
                     "target": {"type": "string"},
                     "count": {"type": "integer"},
                     "files": {"type": "array", "items": {"type": "string"}},
+                    "commands": {"type": "array", "items": {"type": "string"}, "description": "`cargo test` runs covering the Rust test files"},
+                    "next_offset": {"type": "integer"},
                     "tests": {"type": "array", "items": {
                         "type": "object",
                         "properties": {
@@ -964,7 +968,8 @@ fn tool_list() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "The definition, `path#name` or a unique name"},
                     "limit": {"type": "integer", "description": "How many changes to return (default 10)"},
-                    "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"}
+                    "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"},
+                    "body_lines": {"type": "integer", "description": "Lines of each commit body to return (default 6, 0 for the subject only)"}
                 },
                 "required": ["symbol"]
             },
@@ -3184,13 +3189,21 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
             .collect()
     });
 
-    Ok(json!({
+    let (offset, limit) = page(args, 50);
+    let commands = served
+        .root
+        .map(|root| rust_test_commands(root, &files))
+        .unwrap_or_default();
+    let mut value = json!({
         "target": target,
         "count": tests.len(),
         "named_elsewhere": naming,
         "files": files,
+        "commands": commands,
         "tests": tests
             .iter()
+            .skip(offset)
+            .take(limit)
             .map(|(t, hop)| json!({
                 "symbol": t,
                 "file": t.split_once('#').map_or("", |(f, _)| f),
@@ -3199,7 +3212,60 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "depth": depth,
         "files_without_known_symbols": unknown,
-    }))
+    });
+    next_offset(&mut value, offset, limit, tests.len());
+    Ok(value)
+}
+
+/// `cargo test` runs for the Rust test files among `files`: an integration
+/// test by its target, a crate's own tests once per crate by `--lib` or the
+/// binary they sit in.
+fn rust_test_commands(root: &std::path::Path, files: &[String]) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for file in files.iter().filter(|f| f.ends_with(".rs")) {
+        let Some((krate, package)) =
+            std::path::Path::new(file)
+                .ancestors()
+                .skip(1)
+                .find_map(|dir| {
+                    let toml = std::fs::read_to_string(root.join(dir).join("Cargo.toml")).ok()?;
+                    let mut in_package = false;
+                    for line in toml.lines().map(str::trim) {
+                        if line.starts_with('[') {
+                            in_package = line == "[package]";
+                        } else if in_package
+                            && let Some(value) = line
+                                .strip_prefix("name")
+                                .and_then(|r| r.trim_start().strip_prefix('='))
+                        {
+                            return Some((
+                                dir.to_path_buf(),
+                                value.trim().trim_matches('"').to_string(),
+                            ));
+                        }
+                    }
+                    None
+                })
+        else {
+            continue;
+        };
+        let rel = std::path::Path::new(file)
+            .strip_prefix(&krate)
+            .unwrap_or(std::path::Path::new(file));
+        let parts: Vec<&str> = rel.iter().filter_map(|p| p.to_str()).collect();
+        let stem = |name: &str| name.trim_end_matches(".rs").to_string();
+        out.insert(match parts[..] {
+            ["tests", name] => format!("cargo test -p {package} --test {}", stem(name)),
+            ["src", "main.rs"] => format!("cargo test -p {package} --bins"),
+            ["src", "bin", name] => format!("cargo test -p {package} --bin {}", stem(name)),
+            // A crate without a library builds its `src/` into binaries.
+            _ if !root.join(&krate).join("src/lib.rs").is_file() => {
+                format!("cargo test -p {package} --bins")
+            }
+            _ => format!("cargo test -p {package} --lib"),
+        });
+    }
+    out.into_iter().collect()
 }
 
 fn render_affected_tests(v: &Value) -> String {
@@ -3239,22 +3305,24 @@ run them:\n",
         return out;
     }
     let files = v["files"].as_array().map_or(0, Vec::len);
+    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
     out.push_str(&format!(
-        "{} test(s) in {files} file(s), nearest first:\n",
-        tests.len()
+        "{count} test(s) in {files} file(s), nearest first:\n"
     ));
-    for t in tests.iter().take(CHANGE_LIST_LIMIT) {
+    for t in tests {
         out.push_str(&format!(
             "  {:>2} hop  {}\n",
             t["hop"].as_u64().unwrap_or(0),
             t["symbol"].as_str().unwrap_or("")
         ));
     }
-    if tests.len() > CHANGE_LIST_LIMIT {
-        out.push_str(&format!(
-            "  … and {} more (all of them in structuredContent)\n",
-            tests.len() - CHANGE_LIST_LIMIT
-        ));
+    out.push_str(&more_line(v, count));
+    let commands = v["commands"].as_array().map_or(&[][..], Vec::as_slice);
+    if !commands.is_empty() {
+        out.push_str("\nto run them:\n");
+        for c in commands {
+            out.push_str(&format!("  {}\n", c.as_str().unwrap_or("")));
+        }
     }
     out.push_str("\nfiles to run:\n");
     for f in v["files"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -3412,11 +3480,28 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
         .ok_or(format!("{name} is not defined in a file"))?;
     let window = args["commits"].as_u64().unwrap_or(200).clamp(1, 5000) as usize;
     let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 200) as usize;
+    // A commit body can be pages of release notes; its first lines say why.
+    let keep = args["body_lines"].as_u64().unwrap_or(6) as usize;
     let all = crate::commits::changes(root, file, def, window)?;
     let changes: Vec<Value> = all
         .iter()
         .take(limit)
-        .map(|c| json!({"commit": c.sha, "date": c.date, "subject": c.subject, "body": c.body}))
+        .map(|c| {
+            let lines: Vec<&str> = c.body.lines().collect();
+            let body = lines
+                .iter()
+                .take(keep)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            json!({
+                "commit": c.sha,
+                "date": c.date,
+                "subject": c.subject,
+                "body": body,
+                "body_lines_left_out": lines.len().saturating_sub(keep),
+            })
+        })
         .collect();
     Ok(json!({"symbol": name, "scanned": window, "changes": changes}))
 }
@@ -3438,7 +3523,13 @@ fn render_change_history(v: &Value) -> String {
             c["subject"].as_str().unwrap_or("")
         ));
         let body = c["body"].as_str().unwrap_or("");
+        let left_out = c["body_lines_left_out"].as_u64().unwrap_or(0);
         if !body.is_empty() {
+            if left_out > 0 {
+                out.push_str(&format!(
+                    "    ({left_out} more line(s) of this message: `body_lines`)\n"
+                ));
+            }
             for line in body.lines() {
                 out.push_str(&format!("    {line}\n"));
             }
