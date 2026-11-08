@@ -750,7 +750,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to count (default ambiguous)"},
-                    "limit": {"type": "integer", "description": "How many callers to name (default 200)"},
+                    "limit": {"type": "integer", "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -762,6 +762,10 @@ fn tool_list() -> Value {
                     "count": {"type": "integer"},
                     "next_offset": {"type": "integer", "description": "Present when more remain"},
                     "min_confidence": {"type": "string"},
+                    "named_elsewhere": {"type": "array", "items": {"type": "string"}},
+                    "named_elsewhere_total": {"type": "integer"},
+                    "undecided_callers": {"type": "array", "items": {"type": "string"}},
+                    "undecided_total": {"type": "integer"},
                     "callers": {"type": "array", "items": {
                         "type": "object",
                         "properties": {
@@ -1880,15 +1884,19 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .collect();
     undecided.sort_unstable();
     undecided.dedup();
+    let mut elsewhere = served.unconnected_mentions(node, &reached);
+    let elsewhere_total = elsewhere.len();
+    elsewhere.truncate(limit);
     let mut value = json!({
         "symbol": served.name(node),
-        "named_elsewhere": served.unconnected_mentions(node, &reached),
+        "named_elsewhere": elsewhere,
+        "named_elsewhere_total": elsewhere_total,
         "untraced": untraced,
         "untraced_total": untraced_total,
         "library_calls": library,
         "undecided_callers": undecided
             .iter()
-            .take(20)
+            .take(limit.min(20))
             .map(|&n| served.name(n))
             .collect::<Vec<_>>(),
         "undecided_total": undecided.len(),
@@ -4444,20 +4452,25 @@ fn render_elsewhere(v: &Value, lead: &str) -> String {
     let files = v["named_elsewhere"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
+    let total = v["named_elsewhere_total"]
+        .as_u64()
+        .map_or(files.len(), |t| t as usize);
     let mut out = format!(
-        "{lead} its name appears in {} other file(s) no edge connects — a type, a \
+        "{lead} its name appears in {total} other file(s) no edge connects — a type, a \
 constant, an import or a reference the graph does not record as a call. Read \
-them before changing it:\n",
-        files.len()
+them before changing it:\n"
     );
-    for f in files.iter().take(CHANGE_LIST_LIMIT) {
+    let shown = files.len().min(CHANGE_LIST_LIMIT);
+    for f in &files[..shown] {
         out.push_str(&format!("  {}\n", f.as_str().unwrap_or("")));
     }
-    if files.len() > CHANGE_LIST_LIMIT {
-        out.push_str(&format!(
-            "  … and {} more (all of them in structuredContent)\n",
-            files.len() - CHANGE_LIST_LIMIT
-        ));
+    if total > shown {
+        let note = if files.len() == total {
+            " (all of them in structuredContent)"
+        } else {
+            ""
+        };
+        out.push_str(&format!("  … and {} more{note}\n", total - shown));
     }
     out
 }

@@ -8062,7 +8062,7 @@ fn demo_imports() {
         ),
         (
             "ws/asm/src/user.rs",
-            "fn asm_user(v: Vec<u8>) -> bool {\n    v.first().shrink_sect();\n    out_line();\n    floppy_only();\n    make_v().is_empty()\n}\n",
+            "fn asm_user(v: Vec<u8>) -> bool {\n    v.first().shrink_sect();\n    out_line();\n    floppy_only();\n    make_v().is_empty()\n}\nfn asm_check() -> bool {\n    make_v().is_empty()\n}\n",
         ),
         (
             "ws/core/src/help.rs",
@@ -8704,6 +8704,19 @@ fn demo_imports() {
     assert!(
         undecided.contains("ws/asm/src/user.rs#asm_user"),
         "{undecided}"
+    );
+    let capped = mcp::handle_for_test(
+        &state.as_served(),
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_callers", "arguments": {"symbol": "ws/asm/src/sect.rs#is_empty", "limit": 1}}}),
+    )
+    .unwrap();
+    let capped = &capped["result"]["structuredContent"];
+    assert!(capped["undecided_total"].as_u64() > Some(1), "{capped}");
+    assert_eq!(
+        capped["undecided_callers"].as_array().map(Vec::len),
+        Some(1),
+        "limit caps them: {capped}"
     );
     let text = ruled["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
@@ -9932,6 +9945,20 @@ fn demo_change_tools() {
     let (v, text) = call("find_callers", json!({"symbol": "src/report.rs#render"}));
     assert_eq!(elsewhere(&v), ["src/view.rs", "tests/view.rs"], "{text}");
     assert!(text.contains("tests/view.rs"), "{text}");
+    let (v, text) = call(
+        "find_callers",
+        json!({"symbol": "src/report.rs#render", "limit": 1}),
+    );
+    assert_eq!(
+        elsewhere(&v),
+        ["src/view.rs"],
+        "limit caps the files: {text}"
+    );
+    assert_eq!(v["named_elsewhere_total"], 2, "{text}");
+    assert!(
+        text.contains("2 other file(s)") && text.contains("1 more"),
+        "{text}"
+    );
     let (v, text) = call("affected_tests", json!({"symbol": "src/report.rs#render"}));
     assert_eq!(elsewhere(&v), ["tests/view.rs"], "{text}");
     assert!(text.contains("run them"), "{text}");
