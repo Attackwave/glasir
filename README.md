@@ -3,6 +3,7 @@
 [![ci](https://github.com/Attackwave/glasir/actions/workflows/ci.yml/badge.svg)](https://github.com/Attackwave/glasir/actions/workflows/ci.yml)
 [![codeql](https://github.com/Attackwave/glasir/actions/workflows/codeql.yml/badge.svg)](https://github.com/Attackwave/glasir/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Attackwave/glasir/badge)](https://scorecard.dev/viewer/?uri=github.com/Attackwave/glasir)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16445/badge)](https://www.bestpractices.dev/projects/16445)
 
 **Deterministic code intelligence for repositories.** Glasir builds a local,
 queryable graph of definitions, references, dependencies, and change impact,
