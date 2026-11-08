@@ -2544,8 +2544,11 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
         }
     } * 60;
     #[cfg(unix)]
+    // Without a watch nothing refreshes a backend, so it ends with its last
+    // client and the next one reads the tree as it is.
     let linger = match args.value("linger").map(str::parse::<u64>) {
-        None => 60,
+        None if args.has("watch") => 60,
+        None => 0,
         Some(Ok(seconds)) => seconds,
         Some(Err(_)) => {
             eprintln!("--linger must be a whole number of seconds.");
@@ -3430,7 +3433,7 @@ fn run_guard(args: &cli::Args) -> std::io::Result<()> {
              Write one, a rule per line:\n\n\
              \x20 deny src/a.rs -> src/b.rs   # this must not call that\n\
              \x20 deny src/a -> src/b.rs      # a prefix covers a directory\n\
-             \x20 no-cycles [extracted]       # no file may depend on itself\n",
+             \x20 no-cycles [confidence]      # no file may depend on itself\n",
             path.display()
         );
         std::process::exit(2);
@@ -3584,6 +3587,17 @@ fn demo_guard() {
         &guard::parse("no-cycles inferred\n").unwrap(),
     );
     assert_eq!(cyc.len(), 1, "a mutual dependency is a broken contract");
+    // Without a confidence, the default of `cycles`: this tree has no
+    // compiler-resolved edge, so `extracted` would hold vacuously.
+    let plain = guard::check(
+        &b.snap,
+        &b.registry,
+        &names_b,
+        &b.defined,
+        &guard::parse("no-cycles\n").unwrap(),
+    );
+    assert_eq!(plain.len(), 1, "no-cycles takes the default of cycles");
+    assert!(plain[0].rule.ends_with("inferred"), "{}", plain[0].rule);
 
     // A rule that cannot be read is an error, never an empty contract: the
     // quietest way for a gate to stop being one is to silently hold no rules.
@@ -9087,6 +9101,38 @@ fn demo_references() {
         .map(|c| c["score"].as_f64().unwrap())
         .collect();
     assert!(scores.windows(2).all(|w| w[0] >= w[1]), "{v}");
+    // Data keys the embeddings place near `settle` are no alternative to it.
+    let alike = std::env::temp_dir().join(format!("glasir-alike-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&alike);
+    std::fs::create_dir_all(alike.join("src")).unwrap();
+    for (file, body) in [
+        ("src/model.rs", "pub const LIMIT: u32 = 3;\n"),
+        ("src/settle.rs", "fn settle() -> u32 {\n    LIMIT\n}\n"),
+        (
+            "package-lock.json",
+            "{\n  \"settle\": {\"total\": 1, \"limit\": 3}\n}\n",
+        ),
+    ] {
+        std::fs::write(alike.join(file), body).unwrap();
+    }
+    let state = served_state(&alike).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "explain_node", "arguments": {"symbol": "src/settle.rs#settle"}}}),
+    )
+    .unwrap();
+    let v = &r["result"]["structuredContent"];
+    let similar = v["structurally_similar"].as_array().unwrap();
+    assert!(!similar.is_empty(), "{v}");
+    assert!(
+        similar
+            .iter()
+            .all(|c| c["symbol"].as_str().unwrap().contains(".rs#")),
+        "only definitions in the node's language: {v}"
+    );
+    drop(state);
+    std::fs::remove_dir_all(&alike).unwrap();
     let text = ask("find_callers", "src/model.rs#LIMIT");
     assert!(text.contains("src/settle.rs#settle"), "{text}");
     let text = ask("impact", "src/twin_a.rs#Twin");
@@ -9325,6 +9371,17 @@ fn demo_change_tools() {
     .unwrap();
     let outside = &r["result"]["structuredContent"]["not_compiled"];
     assert_eq!(outside, &json!(["k/src/stray.rs#stray_fn"]), "{outside}");
+    let impact_of = |symbol: &str| {
+        mcp::handle_for_test(
+            &state.as_served(),
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "impact", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap()["result"]["structuredContent"]["not_compiled"]
+            .clone()
+    };
+    assert_eq!(impact_of("k/src/stray.rs#stray_fn"), json!(true));
+    assert!(impact_of("k/src/inc.rs#inc_fn").is_null());
     // A trait's methods are called by whoever holds the trait.
     std::fs::write(
         dir.join("src/server.rs"),
@@ -9895,6 +9952,12 @@ fn demo_change_tools() {
     };
     let quotes = "pub fn strip_marks(s: &str) -> &str {\n    s\n}\n\nfn use_marks(s: &str) -> &str {\n    strip_marks(s)\n}\n";
     std::fs::write(live.join("src/quotes.rs"), quotes).unwrap();
+    // A crate, so its calls carry the crate scope.
+    std::fs::write(
+        live.join("Cargo.toml"),
+        "[package]\nname = \"q\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     std::fs::write(
         live.join("src/reader.rs"),
         "fn read_name(s: &str) -> &str {\n    strip_marks(s)\n}\n",
@@ -9914,7 +9977,19 @@ fn demo_change_tools() {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "fill"]);
     // Stored first, so the edit is read again into that graph, as a watch does.
-    drop(served_state(&live).unwrap());
+    let before = served_state(&live).unwrap();
+    // A call through a placeholder is one hop, as in the code.
+    let r = mcp::handle_for_test(
+        &before.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "shortest_path", "arguments":
+                    {"from": "src/reader.rs#read_name", "to": "src/quotes.rs#strip_marks"}}}),
+    )
+    .unwrap();
+    let v = &r["result"]["structuredContent"];
+    assert_eq!(v["hops"], 1, "{v}");
+    assert_eq!(v["path"].as_array().map(Vec::len), Some(2), "{v}");
+    drop(before);
     std::fs::write(
         live.join("src/quotes.rs"),
         quotes.replace("fn strip_marks(", "fn strip_marks_renamed("),

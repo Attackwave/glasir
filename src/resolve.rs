@@ -260,13 +260,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 .iter()
                 .copied()
                 .filter(|_| defs.len() == 1)
-                .filter(|d| {
-                    file_of.get(d).is_some_and(|file| {
-                        dirs.split('|').filter(|dir| !dir.is_empty()).any(|dir| {
-                            dir == "." || file.strip_prefix(dir).is_some_and(|r| r.starts_with('/'))
-                        })
-                    })
-                })
+                .filter(|d| file_of.get(d).is_some_and(|file| in_crates(dirs, file)))
                 .collect();
             if let [definition] = found[..] {
                 links.push(Link {
@@ -434,3 +428,11 @@ pub fn link_edges(links: &[Link], now: u64) -> Vec<(NodeId, Edge)> {
 /// Edge kind for a heuristic link, distinct from a call so retrieval can tell
 /// "this is what that name probably refers to" from "this calls that".
 pub const RESOLVES_TO: u16 = 1;
+
+/// Whether `file` lies in one of the `|`-separated crate dirs of a `~dirs`
+/// placeholder.
+pub(crate) fn in_crates(dirs: &str, file: &str) -> bool {
+    dirs.split('|')
+        .filter(|dir| !dir.is_empty())
+        .any(|dir| dir == "." || file.strip_prefix(dir).is_some_and(|r| r.starts_with('/')))
+}

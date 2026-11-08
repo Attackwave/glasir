@@ -185,7 +185,11 @@ mod unix {
             std::thread::spawn(move || {
                 let mut unlinked = false;
                 loop {
-                    std::thread::sleep(Duration::from_millis(250).min(linger));
+                    std::thread::sleep(
+                        Duration::from_millis(250)
+                            .min(linger)
+                            .max(Duration::from_millis(20)),
+                    );
                     let idle = last_left
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())

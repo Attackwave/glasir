@@ -285,3 +285,56 @@ fn a_rebuilt_binary_gets_a_backend_of_its_own() {
     first.close();
     second.close();
 }
+
+#[test]
+fn an_unwatched_backend_ends_with_its_last_client() {
+    let base = PathBuf::from(format!("/tmp/glu-{}", std::process::id()));
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for pid in backends(&self.0.join("t")) {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(base.clone());
+    let (tree, state): (PathBuf, PathBuf) = (base.join("t"), base.join("s"));
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(
+        tree.join("src/lib.rs"),
+        "pub fn shared() {}\npub fn first() { shared(); }\npub fn second() { shared(); }\n",
+    )
+    .unwrap();
+    // The default linger, as an assistant starts it.
+    let start = || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_glasir"))
+            .arg("serve")
+            .arg(&tree)
+            .env("XDG_STATE_HOME", &state)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let lines = BufReader::new(child.stdout.take().unwrap());
+        Client { child, lines }
+    };
+    let init = serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}});
+    let mut first = start();
+    first.ask(1, "initialize", init.clone());
+    assert_eq!(first.callers(2), 2);
+    first.close();
+    // Without a watch nothing refreshes a running backend, so the next
+    // client must not reach this one: it reads the tree as it is now.
+    wait_until("the backend has ended", || backends(&tree).is_empty());
+    std::fs::write(
+        tree.join("src/lib.rs"),
+        "pub fn shared() {}\npub fn first() { shared(); }\npub fn second() { shared(); }\npub fn third() { shared(); }\n",
+    )
+    .unwrap();
+    let mut next = start();
+    next.ask(1, "initialize", init);
+    assert_eq!(next.callers(2), 3);
+    next.close();
+}

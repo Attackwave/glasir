@@ -625,6 +625,7 @@ fn tool_list() -> Value {
             "dependents": {"type": "integer"},
             "within": {"type": "integer", "description": "Hops the dependents span"},
             "next_offset": {"type": "integer", "description": "Present when more remain"},
+            "not_compiled": {"type": "boolean", "description": "Present when the symbol's Rust file is reached by no `mod` from a crate root: the compiler never builds it"},
             "min_confidence": {"type": "string"},
             "hops": {"type": "array", "description": "Grouped by distance: a direct caller almost certainly breaks",
                 "items": {
@@ -704,7 +705,7 @@ fn tool_list() -> Value {
             "siblings": {"type": "array", "items": {"type": "string"}},
             "calls": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
             "called_by": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
-            "nearby": {"type": "array", "description": "Callers, callees and the file's other definitions, with the embeddings' score", "items": {
+            "nearby": {"type": "array", "description": "Callers, callees and the file's other definitions, with the embeddings' score (-1 to 1; at or below 0 the embeddings see no likeness)", "items": {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string"},
@@ -912,7 +913,7 @@ fn tool_list() -> Value {
                             "file": {"type": "string"},
                             "together": {"type": "integer"},
                             "share": {"type": "number", "description": "Fraction of the file's commits that also touched this one"},
-                            "in_graph": {"type": "boolean", "description": "Whether any edge in the graph joins the two files"}
+                            "in_graph": {"type": "boolean", "description": "Whether a graph edge joins this file and the asked one; false means they change together with no edge between them"}
                         },
                         "required": ["file", "together", "share", "in_graph"]
                     }}
@@ -931,7 +932,7 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "rules": {"type": "string", "description": "Rules to check instead of the tree's file, one per line"}
+                    "rules": {"type": "string", "description": "Rules to check instead of the tree's file, one per line in a single string"}
                 }
             },
             "outputSchema": {
@@ -1368,17 +1369,23 @@ fn shortest_path(served: &Served, args: &Value) -> Result<Value, String> {
     let start = served.resolve_one(from)?;
     let goal = served.resolve_one(to)?;
 
-    // Plain BFS: every edge is one hop, so BFS already yields a shortest path
-    // and Dijkstra would only add weight handling nothing here needs.
+    // 0-1 BFS: an edge out of a placeholder costs nothing, so a call routed
+    // through one (`caller -> name -> definition`) is one hop, as in the code.
     let mut prev: std::collections::HashMap<NodeId, (NodeId, Confidence)> =
         std::collections::HashMap::new();
+    let mut dist = std::collections::HashMap::from([(start, 0usize)]);
     let mut queue = std::collections::VecDeque::from([start]);
-    let mut seen = std::collections::HashSet::from([start]);
+    let mut done = std::collections::HashSet::new();
 
     while let Some(node) = queue.pop_front() {
+        if !done.insert(node) {
+            continue;
+        }
         if node == goal {
             break;
         }
+        let cost = usize::from(node == start || served.defined.contains(&node));
+        let here = dist[&node];
         let mut edges: Vec<_> = served
             .snap
             .neighbors(node)
@@ -1392,9 +1399,15 @@ fn shortest_path(served: &Served, args: &Value) -> Result<Value, String> {
                 .then(a.target.cmp(&b.target))
         });
         for e in edges {
-            if seen.insert(e.target) {
+            let d = here + cost;
+            if dist.get(&e.target).is_none_or(|&old| d < old) {
+                dist.insert(e.target, d);
                 prev.insert(e.target, (node, e.confidence));
-                queue.push_back(e.target);
+                if cost == 0 {
+                    queue.push_front(e.target);
+                } else {
+                    queue.push_back(e.target);
+                }
             }
         }
     }
@@ -1420,6 +1433,21 @@ fn shortest_path(served: &Served, args: &Value) -> Result<Value, String> {
         cur = parent;
     }
     chain.reverse();
+    // A placeholder between two steps stands for the definition after it:
+    // drop it, and the edge into it takes the weaker of its two edges.
+    // (`chain[i].1` is the edge leaving step `i`.)
+    let mut i = 1;
+    while i + 1 < chain.len() {
+        if served.defined.contains(&chain[i].0) {
+            i += 1;
+        } else {
+            let (_, out) = chain.remove(i);
+            chain[i - 1].1 = match (chain[i - 1].1, out) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+    }
 
     let steps: Vec<Value> = chain
         .iter()
@@ -1526,8 +1554,18 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
     // and the file's other definitions kept a pinned neighbour in the list
     // whatever the embeddings scored it, so the list could not show them
     // failing. Those go to `nearby`, scored too, kept apart.
-    let mut similar = served.embeddings.nearest(node, 5);
-    similar.retain(|&(n, _)| served.defined.contains(&n));
+    // Only definitions in the node's language: a lockfile entry or a macro
+    // of another language is no alternative to a function.
+    let lang = |n: NodeId| {
+        use crate::parse_ast::LangExt;
+        let name = served.name(n);
+        let file = name.split_once('#').map_or(name.as_str(), |(f, _)| f);
+        crate::parse_ast::Lang::from_path(std::path::Path::new(file))
+    };
+    let own = lang(node);
+    let mut similar = served.embeddings.nearest(node, 64);
+    similar.retain(|&(n, _)| served.defined.contains(&n) && lang(n) == own);
+    similar.truncate(5);
     similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut direct: Vec<_> = served
         .snap
@@ -1723,6 +1761,13 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
             .collect::<Vec<_>>(),
     });
     next_offset(&mut value, offset, limit, total);
+    let name = served.name(node);
+    if let Some((file, _)) = name.split_once('#')
+        && file.ends_with(".rs")
+        && rust_outside_modules(served).iter().any(|f| f == file)
+    {
+        value["not_compiled"] = json!(true);
+    }
     Ok(value)
 }
 
@@ -2352,7 +2397,8 @@ fn removed_names(served: &Served, file: &str, old: Option<&str>, new: Option<&st
 }
 
 /// Definitions that call a removed one: through a placeholder of its name,
-/// bare, scoped to its file or to a type, that now links to no definition.
+/// bare, scoped to its file, a type or its crate, that now links to no
+/// definition.
 fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String> {
     if removed.is_empty() {
         return Vec::new();
@@ -2375,7 +2421,13 @@ fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String
             None => (symbol.as_str(), None),
         };
         let named = removed.iter().any(|(file, name)| {
-            name == bare && target.is_none_or(|t| t == file || t.starts_with('@'))
+            name == bare
+                && target.is_none_or(|t| {
+                    t == file
+                        || t.starts_with('@')
+                        || t.strip_prefix('~')
+                            .is_some_and(|dirs| crate::resolve::in_crates(dirs, file))
+                })
         });
         let resolves = served
             .snap
@@ -4278,12 +4330,21 @@ fn render_check_architecture(v: &Value) -> String {
                 evidence.len() - CHANGE_LIST_LIMIT
             ));
         }
+        if v["rule"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("no-cycles"))
+        {
+            out.push_str("  (the first cycle found; `cycles` lists every one)\n");
+        }
     }
     out
 }
 
 fn render_impact(v: &Value) -> String {
     let mut out = format!("{}\n\n", v["symbol"].as_str().unwrap_or(""));
+    if v["not_compiled"].as_bool().unwrap_or(false) {
+        out.push_str("not compiled: no `mod` from a crate root reaches this file\n\n");
+    }
     let levels = v["hops"].as_array().map_or(&[][..], Vec::as_slice);
     if v["dependents"].as_u64().unwrap_or(0) == 0 {
         if has_elsewhere(v) {
@@ -4882,8 +4943,7 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
     // report "no cycles" for want of a single edge strong enough to walk.
     let floor = match args["min_confidence"].as_str() {
         Some(named) => parse_confidence(named),
-        None if has_extracted(served) => Confidence::Extracted,
-        None => Confidence::Inferred,
+        None => crate::guard::cycle_default(served.snap),
     };
 
     let local = std::sync::OnceLock::new();
@@ -4969,17 +5029,6 @@ dependency runs one way\n",
         out.push_str(&format!("  back to {}\n", names.first().unwrap_or(&"")));
     }
     out
-}
-
-/// Whether any edge in the graph was compiler-resolved, which decides how much
-/// a cycle report can afford to trust.
-fn has_extracted(served: &Served) -> bool {
-    (0..served.snap.width() as NodeId).any(|n| {
-        served
-            .snap
-            .neighbors(n)
-            .any(|e| e.confidence == Confidence::Extracted)
-    })
 }
 
 /// One step of the cycle search. Split out because the recursion needs a name;

@@ -22,8 +22,8 @@ pub enum Rule {
         floor: Confidence,
     },
     /// `no-cycles [confidence]`: no file may depend on itself, however
-    /// indirectly.
-    NoCycles(Confidence),
+    /// indirectly. Without a confidence, the default of `cycles`.
+    NoCycles(Option<Confidence>),
 }
 
 /// A rule that is broken, with enough detail to fix it.
@@ -58,8 +58,8 @@ pub fn parse(text: &str) -> Result<Vec<Rule>, String> {
                 let (from, to) = pair.split_once("->").unwrap();
                 deny(from.trim(), to.trim(), Confidence::Inferred)
             }
-            ["no-cycles"] => Rule::NoCycles(Confidence::Extracted),
-            ["no-cycles", c] => Rule::NoCycles(confidence_from(c, n)?),
+            ["no-cycles"] => Rule::NoCycles(None),
+            ["no-cycles", c] => Rule::NoCycles(Some(confidence_from(c, n)?)),
             _ => {
                 return Err(format!(
                     "line {}: cannot read `{line}`\n\
@@ -207,6 +207,7 @@ pub fn check(
                 }
             }
             Rule::NoCycles(floor) => {
+                let floor = &floor.unwrap_or_else(|| cycle_default(snap));
                 if let Some(cycle) = first_cycle(snap, &file, &stands_for, *floor) {
                     out.push(Violation {
                         rule: format!("no-cycles {}", confidence_name(*floor)),
@@ -217,6 +218,21 @@ pub fn check(
         }
     }
     out
+}
+
+/// The floor a cycle search defaults to: compiler-resolved edges where the
+/// tree has any, otherwise inferred ones, since name-matched edges invent
+/// cycles between unrelated files.
+pub fn cycle_default(snap: &GraphSnapshot) -> Confidence {
+    let extracted = (0..snap.width() as NodeId).any(|n| {
+        snap.neighbors(n)
+            .any(|e| e.confidence == Confidence::Extracted)
+    });
+    if extracted {
+        Confidence::Extracted
+    } else {
+        Confidence::Inferred
+    }
 }
 
 fn confidence_name(c: Confidence) -> &'static str {
