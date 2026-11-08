@@ -4414,6 +4414,31 @@ them before changing it:\n",
 /// a rendered string.
 type Group = (usize, String, Vec<(usize, String)>);
 
+/// The Rust package `file` belongs to: its name and directory, from the
+/// nearest `Cargo.toml` with a `[package]`.
+fn cargo_package(root: &std::path::Path, file: &str) -> Option<(String, String)> {
+    std::path::Path::new(file)
+        .ancestors()
+        .skip(1)
+        .find_map(|dir| {
+            let toml = std::fs::read_to_string(root.join(dir).join("Cargo.toml")).ok()?;
+            let mut in_package = false;
+            for line in toml.lines().map(str::trim) {
+                if line.starts_with('[') {
+                    in_package = line == "[package]";
+                } else if in_package
+                    && let Some(value) = line
+                        .strip_prefix("name")
+                        .and_then(|r| r.trim_start().strip_prefix('='))
+                {
+                    let dir = dir.to_string_lossy().replace('\\', "/");
+                    return Some((value.trim().trim_matches('"').to_string(), dir));
+                }
+            }
+            None
+        })
+}
+
 fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(12).clamp(1, 60) as usize;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
@@ -4431,6 +4456,30 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     }
 
     let reverse = served.snap.reverse();
+    // The crates of a Rust tree, by directory: name and defined symbols.
+    let defined_files: Vec<String> = served
+        .registry
+        .entries()
+        .filter(|(_, n)| served.defined.contains(n))
+        .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f.to_string()))
+        .collect();
+    let mut crate_dirs: std::collections::HashMap<String, Option<(String, String)>> =
+        Default::default();
+    let mut crates: std::collections::BTreeMap<String, (String, usize)> = Default::default();
+    for file in defined_files.iter().filter(|f| f.ends_with(".rs")) {
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+        let found = crate_dirs
+            .entry(dir)
+            .or_insert_with(|| served.root.and_then(|root| cargo_package(root, file)))
+            .clone();
+        if let Some((name, krate)) = found {
+            crates.entry(krate).or_insert((name, 0)).1 += 1;
+        }
+    }
+    let crate_of = |file: &str| -> Option<(String, String)> {
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+        crate_dirs.get(dir).cloned().flatten()
+    };
     let mut groups: Vec<Group> = Vec::new();
     let mut cids: Vec<u32> = by_community.keys().copied().collect();
     cids.sort_unstable();
@@ -4442,9 +4491,11 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         if members.len() < 2 {
             continue;
         }
-        let mut counts: std::collections::HashMap<String, usize> = Default::default();
-        for &m in members {
-            if let Some((file, _)) = served.name(m).split_once('#') {
+        // The majority file by path: two `lib.rs` of two crates are two files.
+        let mut counts: std::collections::HashMap<&str, usize> = Default::default();
+        let names: Vec<String> = members.iter().map(|&m| served.name(m)).collect();
+        for name in &names {
+            if let Some((file, _)) = name.split_once('#') {
                 // Markdown sections are graph nodes too, and a community of
                 // them would be labelled `roadmap` — a document, offered as a
                 // subsystem of the code. This tool answers "what is built
@@ -4452,17 +4503,25 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
                 if crate::docs::is_markdown(std::path::Path::new(file)) {
                     continue;
                 }
-                let stem = file.rsplit('/').next().unwrap_or(file);
-                let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
-                *counts.entry(stem.to_string()).or_insert(0) += 1;
+                *counts.entry(file).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, usize)> = counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let Some((label, _)) = ranked.first() else {
+        let mut ranked: Vec<(&str, usize)> = counts.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let Some(&(file, _)) = ranked.first() else {
             continue;
         };
-        let label = label.clone();
+        let stem_of = |f: &str| -> String {
+            let stem = f.rsplit('/').next().unwrap_or(f);
+            stem.rsplit_once('.').map_or(stem, |(s, _)| s).to_string()
+        };
+        let stem = stem_of(file);
+        // In a tree of several crates, which crate: `m68k-dap/lib`.
+        let label = match crate_of(file) {
+            Some((name, _)) if crates.len() > 1 => format!("{name}/{stem}"),
+            _ => stem.clone(),
+        };
+        let in_crate = crate_of(file).map(|(_, dir)| dir);
 
         // **Entry points come from the labelled file, not from the whole
         // community.** The label is the majority file, so a community also
@@ -4476,8 +4535,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
             .map(|&m| (reverse.callers(m).count(), served.name(m)))
             .filter(|(_, name)| {
                 name.split_once('#').is_some_and(|(f, _)| {
-                    let stem = f.rsplit('/').next().unwrap_or(f);
-                    stem.rsplit_once('.').map_or(stem, |(s, _)| s) == label
+                    stem_of(f) == stem && crate_of(f).map(|(_, dir)| dir) == in_crate
                 })
             })
             .collect();
@@ -4527,6 +4585,18 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         }));
     }
 
+    // Only for a tree of several crates, largest first.
+    let mut crate_list: Vec<Value> = crates
+        .iter()
+        .filter(|_| crates.len() > 1)
+        .map(|(dir, (name, symbols))| json!({"name": name, "dir": dir, "symbols": symbols}))
+        .collect();
+    crate_list.sort_by(|a, b| {
+        b["symbols"]
+            .as_u64()
+            .cmp(&a["symbols"].as_u64())
+            .then(a["dir"].as_str().cmp(&b["dir"].as_str()))
+    });
     let symbols = served.defined.len();
     let files: std::collections::HashSet<&str> = served
         .registry
@@ -4539,6 +4609,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     // whatever `limit` the caller asked for.
     let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
     let mut answer = json!({
+        "crates": crate_list,
         "rust_outside_modules": rust_outside_modules(served),
         "server_version": env!("CARGO_PKG_VERSION"),
         "indexed_at": served.now,
@@ -4648,6 +4719,19 @@ either no analysis has run or nothing in it is connected.\n{repeated}"
         v["server_version"].as_str().unwrap_or(""),
         v["indexed_at"].as_u64().unwrap_or(0),
     );
+    let crates = v["crates"].as_array().map_or(&[][..], Vec::as_slice);
+    if !crates.is_empty() {
+        out.push_str(&format!("{} crates:\n", crates.len()));
+        for c in crates {
+            out.push_str(&format!(
+                "  {} ({}) {} symbols\n",
+                c["name"].as_str().unwrap_or(""),
+                c["dir"].as_str().unwrap_or(""),
+                c["symbols"].as_u64().unwrap_or(0)
+            ));
+        }
+        out.push('\n');
+    }
     for g in groups {
         out.push_str(&format!(
             "{}  ({} symbols)\n",

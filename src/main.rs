@@ -8694,6 +8694,24 @@ fn demo_imports() {
     )
     .unwrap();
     let text = overview["result"]["content"][0]["text"].as_str().unwrap();
+    // A tree of several crates names them, and each subsystem by its crate.
+    let v = &overview["result"]["structuredContent"];
+    let mut crates: Vec<&str> = v["crates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    crates.sort_unstable();
+    assert_eq!(crates, ["asm", "core", "floppy", "rs"], "{text}");
+    assert!(
+        v["subsystems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["name"] == "core/help"),
+        "{text}"
+    );
     assert!(text.contains("repeat each other"), "{text}");
     assert!(text.contains("rep/one, rep/two."), "{text}");
     assert!(!text.contains("rep/head"), "{text}");
