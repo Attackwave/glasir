@@ -93,6 +93,7 @@ dependencies = [
  "libc",
  "mimalloc",
  "native_parsers",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

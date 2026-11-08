@@ -591,6 +591,13 @@ before 0.11.0 carry none and are refused). A repository that pins actions to
 a commit writes `Attackwave/glasir@<commit of the tag> # v0.11.6`; the action
 then downloads that version's release.
 
+## Feedback and contributing
+
+Report a bug or ask for a feature in
+[GitHub Issues](https://github.com/Attackwave/glasir/issues). Changes come in as
+pull requests; [CONTRIBUTING.md](CONTRIBUTING.md) lists what a pull request
+needs. Report a vulnerability privately as [SECURITY.md](SECURITY.md) describes.
+
 ## Licence
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
