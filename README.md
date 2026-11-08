@@ -253,7 +253,8 @@ Three answer what to do *before* a commit, which is when an answer is
 cheapest to act on:
 
 - `affected_tests` — the tests that reach a symbol or the uncommitted diff,
-  nearest first, with the files to run. Recognises the test conventions of
+  nearest first, a page at a time (`limit`, `offset`), with the files to run
+  and, for Rust, the `cargo test` runs that cover them. Recognises the test conventions of
   each language (`tests/`, `spec/`, `__tests__/`, `x_test`, `x.spec`,
   `FooTest`, test attributes such as `#[test]` and `@Test`); a name such as
   `test_x` alone counts only in Python and Ruby, whose runners collect by name
@@ -268,12 +269,15 @@ cheapest to act on:
   the working tree, so a change is checked before it is committed
 - `find_unused` — definitions nothing in the tree refers to, confirmed against
   every text file rather than the call graph alone, with tests, annotated and
-  generated code, overrides and framework conventions left out. On six real
+  generated code, overrides and framework conventions left out. Definitions in
+  a Rust file no `mod` reaches from a crate root are listed apart, as code the
+  compiler never builds; `overview` names those files. On six real
   repositories in five languages, every name it reported appeared nowhere but
   in its own definition; what it cannot see — a library's public API, a name
   built at run time — is stated in each answer
 - `change_history` — the commits that changed one definition, newest first,
-  with their messages: why the code is the way it is, before it is changed. A
+  with their messages (the first `body_lines` of each, 6 by default): why the
+  code is the way it is, before it is changed. A
   commit counts when its changed lines fall inside the definition as the file
   was then, not inside one nested in it. Read from git when asked; commit
   messages are kept out of the search index, where measured they crowded out

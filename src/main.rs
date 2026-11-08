@@ -9211,6 +9211,37 @@ fn demo_change_tools() {
         .map(|t| t["symbol"].as_str().unwrap())
         .collect();
     assert_eq!(found, ["src/cpu.rs#steps"]);
+    // A page of tests at a time, and the runs that cover them in a crate.
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"named\"\n").unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "mod cpu;\n").unwrap();
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(
+        dir.join("tests/flags.rs"),
+        "#[test]\nfn flag_set() {\n    assert!(step(1));\n}\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "affected_tests", "arguments": {"symbol": "src/cpu.rs#test_flag", "limit": 1}}}),
+    )
+    .unwrap();
+    let v = &r["result"]["structuredContent"];
+    assert_eq!(v["count"], 2, "{v}");
+    assert_eq!(v["tests"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["next_offset"], 1, "{v}");
+    assert_eq!(
+        v["commands"],
+        json!([
+            "cargo test -p named --lib",
+            "cargo test -p named --test flags"
+        ]),
+        "{v}"
+    );
+    std::fs::remove_file(dir.join("Cargo.toml")).unwrap();
+    std::fs::remove_file(dir.join("src/lib.rs")).unwrap();
+    std::fs::remove_dir_all(dir.join("tests")).unwrap();
     // A local of a method's name is no use of it; prose saying "let" is no
     // local, and outside a language that declares with `let` nothing is.
     std::fs::write(
@@ -9237,6 +9268,33 @@ fn demo_change_tools() {
     .unwrap();
     let unused = &r["result"]["structuredContent"]["unused"];
     assert_eq!(unused, &json!(["src/regs.rs#is_spare"]), "{unused}");
+    // A Rust file no `mod` reaches is never built, whatever calls it.
+    for (file, body) in [
+        ("k/Cargo.toml", "[package]\nname = \"k\"\n"),
+        (
+            "k/src/lib.rs",
+            "mod a;\nmod b {\n    mod c;\n}\n#[path = \"other/d.rs\"]\nmod d;\ninclude!(\"inc.rs\");\n",
+        ),
+        ("k/src/a.rs", "mod sub;\npub fn a_fn() {}\n"),
+        ("k/src/a/sub.rs", "pub fn sub_fn() {}\n"),
+        ("k/src/b/c.rs", "pub fn c_fn() {}\n"),
+        ("k/src/other/d.rs", "pub fn d_fn() {}\n"),
+        ("k/src/inc.rs", "pub fn inc_fn() {}\n"),
+        ("k/src/stray.rs", "pub fn stray_fn() {}\n"),
+        ("k/tests/t.rs", "pub fn t_helper() {}\n"),
+    ] {
+        std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+    let state = served_state(&dir).unwrap();
+    let r = mcp::handle_for_test(
+        &state.as_served(),
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "find_unused", "arguments": {"path": "k"}}}),
+    )
+    .unwrap();
+    let outside = &r["result"]["structuredContent"]["not_compiled"];
+    assert_eq!(outside, &json!(["k/src/stray.rs#stray_fn"]), "{outside}");
     // A trait's methods are called by whoever holds the trait.
     std::fs::write(
         dir.join("src/server.rs"),
@@ -9708,6 +9766,13 @@ fn demo_change_tools() {
         v["changes"][0]["body"],
         "Because the first slot is reserved."
     );
+    // A body is cut to `body_lines`, and says how much was left out.
+    let (v, text) = call(
+        "change_history",
+        json!({"symbol": "src/hist.rs#second", "body_lines": 0}),
+    );
+    assert_eq!(v["changes"][0]["body"], "", "{text}");
+    assert_eq!(v["changes"][0]["body_lines_left_out"], 1, "{text}");
 
     // What nothing uses: a helper nobody names is reported; a test the
     // harness calls, a function named only in a comment and generated code
