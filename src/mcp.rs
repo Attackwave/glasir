@@ -843,6 +843,8 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
                     "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
                     "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
+                    "limit": {"type": "integer", "description": "How many tests to list (default 50); `count` and `files` cover all"},
+                    "offset": {"type": "integer", "description": "Where the list starts (default 0)"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to follow (default ambiguous)"}
                 }
@@ -853,6 +855,8 @@ fn tool_list() -> Value {
                     "target": {"type": "string"},
                     "count": {"type": "integer"},
                     "files": {"type": "array", "items": {"type": "string"}},
+                    "commands": {"type": "array", "items": {"type": "string"}, "description": "`cargo test` runs covering the Rust test files"},
+                    "next_offset": {"type": "integer"},
                     "tests": {"type": "array", "items": {
                         "type": "object",
                         "properties": {
@@ -966,7 +970,8 @@ fn tool_list() -> Value {
                     "checked": {"type": "integer", "description": "Definitions considered"},
                     "count": {"type": "integer"},
                     "next_offset": {"type": "integer", "description": "Present when more remain"},
-                    "unused": {"type": "array", "items": {"type": "string"}}
+                    "unused": {"type": "array", "items": {"type": "string"}},
+                    "not_compiled": {"type": "array", "items": {"type": "string"}, "description": "Definitions in Rust files no `mod` from a crate root reaches: the compiler never builds them"}
                 },
                 "required": ["path", "checked", "count", "unused"]
             }
@@ -984,7 +989,8 @@ fn tool_list() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "The definition, `path#name` or a unique name"},
                     "limit": {"type": "integer", "description": "How many changes to return (default 10)"},
-                    "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"}
+                    "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"},
+                    "body_lines": {"type": "integer", "description": "Lines of each commit body to return (default 6, 0 for the subject only)"}
                 },
                 "required": ["symbol"]
             },
@@ -3204,13 +3210,21 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
             .collect()
     });
 
-    Ok(json!({
+    let (offset, limit) = page(args, 50);
+    let commands = served
+        .root
+        .map(|root| rust_test_commands(root, &files))
+        .unwrap_or_default();
+    let mut value = json!({
         "target": target,
         "count": tests.len(),
         "named_elsewhere": naming,
         "files": files,
+        "commands": commands,
         "tests": tests
             .iter()
+            .skip(offset)
+            .take(limit)
             .map(|(t, hop)| json!({
                 "symbol": t,
                 "file": t.split_once('#').map_or("", |(f, _)| f),
@@ -3219,7 +3233,60 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
             .collect::<Vec<_>>(),
         "depth": depth,
         "files_without_known_symbols": unknown,
-    }))
+    });
+    next_offset(&mut value, offset, limit, tests.len());
+    Ok(value)
+}
+
+/// `cargo test` runs for the Rust test files among `files`: an integration
+/// test by its target, a crate's own tests once per crate by `--lib` or the
+/// binary they sit in.
+fn rust_test_commands(root: &std::path::Path, files: &[String]) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for file in files.iter().filter(|f| f.ends_with(".rs")) {
+        let Some((krate, package)) =
+            std::path::Path::new(file)
+                .ancestors()
+                .skip(1)
+                .find_map(|dir| {
+                    let toml = std::fs::read_to_string(root.join(dir).join("Cargo.toml")).ok()?;
+                    let mut in_package = false;
+                    for line in toml.lines().map(str::trim) {
+                        if line.starts_with('[') {
+                            in_package = line == "[package]";
+                        } else if in_package
+                            && let Some(value) = line
+                                .strip_prefix("name")
+                                .and_then(|r| r.trim_start().strip_prefix('='))
+                        {
+                            return Some((
+                                dir.to_path_buf(),
+                                value.trim().trim_matches('"').to_string(),
+                            ));
+                        }
+                    }
+                    None
+                })
+        else {
+            continue;
+        };
+        let rel = std::path::Path::new(file)
+            .strip_prefix(&krate)
+            .unwrap_or(std::path::Path::new(file));
+        let parts: Vec<&str> = rel.iter().filter_map(|p| p.to_str()).collect();
+        let stem = |name: &str| name.trim_end_matches(".rs").to_string();
+        out.insert(match parts[..] {
+            ["tests", name] => format!("cargo test -p {package} --test {}", stem(name)),
+            ["src", "main.rs"] => format!("cargo test -p {package} --bins"),
+            ["src", "bin", name] => format!("cargo test -p {package} --bin {}", stem(name)),
+            // A crate without a library builds its `src/` into binaries.
+            _ if !root.join(&krate).join("src/lib.rs").is_file() => {
+                format!("cargo test -p {package} --bins")
+            }
+            _ => format!("cargo test -p {package} --lib"),
+        });
+    }
+    out.into_iter().collect()
 }
 
 fn render_affected_tests(v: &Value) -> String {
@@ -3259,22 +3326,24 @@ run them:\n",
         return out;
     }
     let files = v["files"].as_array().map_or(0, Vec::len);
+    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
     out.push_str(&format!(
-        "{} test(s) in {files} file(s), nearest first:\n",
-        tests.len()
+        "{count} test(s) in {files} file(s), nearest first:\n"
     ));
-    for t in tests.iter().take(CHANGE_LIST_LIMIT) {
+    for t in tests {
         out.push_str(&format!(
             "  {:>2} hop  {}\n",
             t["hop"].as_u64().unwrap_or(0),
             t["symbol"].as_str().unwrap_or("")
         ));
     }
-    if tests.len() > CHANGE_LIST_LIMIT {
-        out.push_str(&format!(
-            "  … and {} more (all of them in structuredContent)\n",
-            tests.len() - CHANGE_LIST_LIMIT
-        ));
+    out.push_str(&more_line(v, count));
+    let commands = v["commands"].as_array().map_or(&[][..], Vec::as_slice);
+    if !commands.is_empty() {
+        out.push_str("\nto run them:\n");
+        for c in commands {
+            out.push_str(&format!("  {}\n", c.as_str().unwrap_or("")));
+        }
     }
     out.push_str("\nfiles to run:\n");
     for f in v["files"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -3432,11 +3501,28 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
         .ok_or(format!("{name} is not defined in a file"))?;
     let window = args["commits"].as_u64().unwrap_or(200).clamp(1, 5000) as usize;
     let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 200) as usize;
+    // A commit body can be pages of release notes; its first lines say why.
+    let keep = args["body_lines"].as_u64().unwrap_or(6) as usize;
     let all = crate::commits::changes(root, file, def, window)?;
     let changes: Vec<Value> = all
         .iter()
         .take(limit)
-        .map(|c| json!({"commit": c.sha, "date": c.date, "subject": c.subject, "body": c.body}))
+        .map(|c| {
+            let lines: Vec<&str> = c.body.lines().collect();
+            let body = lines
+                .iter()
+                .take(keep)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
+            json!({
+                "commit": c.sha,
+                "date": c.date,
+                "subject": c.subject,
+                "body": body,
+                "body_lines_left_out": lines.len().saturating_sub(keep),
+            })
+        })
         .collect();
     Ok(json!({"symbol": name, "scanned": window, "changes": changes}))
 }
@@ -3458,7 +3544,13 @@ fn render_change_history(v: &Value) -> String {
             c["subject"].as_str().unwrap_or("")
         ));
         let body = c["body"].as_str().unwrap_or("");
+        let left_out = c["body_lines_left_out"].as_u64().unwrap_or(0);
         if !body.is_empty() {
+            if left_out > 0 {
+                out.push_str(&format!(
+                    "    ({left_out} more line(s) of this message: `body_lines`)\n"
+                ));
+            }
             for line in body.lines() {
                 out.push_str(&format!("    {line}\n"));
             }
@@ -3529,8 +3621,28 @@ fn render_http_surface(v: &Value) -> String {
     out
 }
 
+/// The indexed Rust files no crate builds; see `imports::rust_outside_modules`.
+fn rust_outside_modules(served: &Served) -> Vec<String> {
+    let Some(root) = served.root else {
+        return Vec::new();
+    };
+    let files: std::collections::BTreeSet<&str> = served
+        .registry
+        .entries()
+        .filter(|(s, n)| served.defined.contains(n) && s.contains(".rs#"))
+        .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f))
+        .collect();
+    crate::imports::rust_outside_modules(root, &files.into_iter().collect::<Vec<_>>())
+}
+
 fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
     let scope = args["path"].as_str().unwrap_or("").trim_start_matches("./");
+    // What the compiler never builds is dead whatever calls it.
+    let outside: std::collections::HashSet<String> = rust_outside_modules(served)
+        .into_iter()
+        .filter(|f| f.starts_with(scope))
+        .collect();
+    let mut not_compiled: Vec<String> = Vec::new();
     let (offset, limit) = page(args, 50);
     let reverse = served.snap.reverse();
 
@@ -3554,6 +3666,10 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
             .rsplit_once('.')
             .map_or("", |(_, e)| e)
             .to_ascii_lowercase();
+        if served.defined.contains(&node) && outside.contains(file) && name != "<module>" {
+            not_compiled.push(symbol.clone());
+            continue;
+        }
         if !served.defined.contains(&node)
             || !file.starts_with(scope)
             || NOT_CALLED.contains(&ext.as_str())
@@ -3662,9 +3778,11 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         .map(|(file, name)| format!("{file}#{name}"))
         .collect();
     unused.sort();
+    not_compiled.sort();
     let mut value = json!({
         "path": scope,
         "checked": checked,
+        "not_compiled": not_compiled,
         "count": unused.len(),
         "unused": unused.iter().skip(offset).take(limit).collect::<Vec<_>>(),
     });
@@ -4045,8 +4163,21 @@ fn text_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn render_find_unused(v: &Value) -> String {
     let count = v["count"].as_u64().unwrap_or(0);
     let checked = v["checked"].as_u64().unwrap_or(0);
-    let mut out =
-        format!("{count} of {checked} definition(s) are not referenced anywhere in the graph");
+    let mut out = String::new();
+    let outside = v["not_compiled"].as_array().map_or(&[][..], Vec::as_slice);
+    if !outside.is_empty() {
+        out.push_str(&format!(
+            "{} definition(s) sit in Rust files no `mod` reaches, so the compiler never builds them:\n",
+            outside.len()
+        ));
+        for s in outside.iter().take(50) {
+            out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
+        }
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "{count} of {checked} definition(s) are not referenced anywhere in the graph"
+    ));
     let unused = v["unused"].as_array().map_or(&[][..], Vec::as_slice);
     if unused.is_empty() {
         out.push_str(".\n");
@@ -4304,6 +4435,31 @@ them before changing it:\n",
 /// a rendered string.
 type Group = (usize, String, Vec<(usize, String)>);
 
+/// The Rust package `file` belongs to: its name and directory, from the
+/// nearest `Cargo.toml` with a `[package]`.
+fn cargo_package(root: &std::path::Path, file: &str) -> Option<(String, String)> {
+    std::path::Path::new(file)
+        .ancestors()
+        .skip(1)
+        .find_map(|dir| {
+            let toml = std::fs::read_to_string(root.join(dir).join("Cargo.toml")).ok()?;
+            let mut in_package = false;
+            for line in toml.lines().map(str::trim) {
+                if line.starts_with('[') {
+                    in_package = line == "[package]";
+                } else if in_package
+                    && let Some(value) = line
+                        .strip_prefix("name")
+                        .and_then(|r| r.trim_start().strip_prefix('='))
+                {
+                    let dir = dir.to_string_lossy().replace('\\', "/");
+                    return Some((value.trim().trim_matches('"').to_string(), dir));
+                }
+            }
+            None
+        })
+}
+
 fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(12).clamp(1, 60) as usize;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
@@ -4321,6 +4477,30 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     }
 
     let reverse = served.snap.reverse();
+    // The crates of a Rust tree, by directory: name and defined symbols.
+    let defined_files: Vec<String> = served
+        .registry
+        .entries()
+        .filter(|(_, n)| served.defined.contains(n))
+        .filter_map(|(s, _)| s.split_once('#').map(|(f, _)| f.to_string()))
+        .collect();
+    let mut crate_dirs: std::collections::HashMap<String, Option<(String, String)>> =
+        Default::default();
+    let mut crates: std::collections::BTreeMap<String, (String, usize)> = Default::default();
+    for file in defined_files.iter().filter(|f| f.ends_with(".rs")) {
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+        let found = crate_dirs
+            .entry(dir)
+            .or_insert_with(|| served.root.and_then(|root| cargo_package(root, file)))
+            .clone();
+        if let Some((name, krate)) = found {
+            crates.entry(krate).or_insert((name, 0)).1 += 1;
+        }
+    }
+    let crate_of = |file: &str| -> Option<(String, String)> {
+        let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+        crate_dirs.get(dir).cloned().flatten()
+    };
     let mut groups: Vec<Group> = Vec::new();
     let mut cids: Vec<u32> = by_community.keys().copied().collect();
     cids.sort_unstable();
@@ -4332,9 +4512,11 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         if members.len() < 2 {
             continue;
         }
-        let mut counts: std::collections::HashMap<String, usize> = Default::default();
-        for &m in members {
-            if let Some((file, _)) = served.name(m).split_once('#') {
+        // The majority file by path: two `lib.rs` of two crates are two files.
+        let mut counts: std::collections::HashMap<&str, usize> = Default::default();
+        let names: Vec<String> = members.iter().map(|&m| served.name(m)).collect();
+        for name in &names {
+            if let Some((file, _)) = name.split_once('#') {
                 // Markdown sections are graph nodes too, and a community of
                 // them would be labelled `roadmap` — a document, offered as a
                 // subsystem of the code. This tool answers "what is built
@@ -4342,17 +4524,25 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
                 if crate::docs::is_markdown(std::path::Path::new(file)) {
                     continue;
                 }
-                let stem = file.rsplit('/').next().unwrap_or(file);
-                let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
-                *counts.entry(stem.to_string()).or_insert(0) += 1;
+                *counts.entry(file).or_insert(0) += 1;
             }
         }
-        let mut ranked: Vec<(String, usize)> = counts.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let Some((label, _)) = ranked.first() else {
+        let mut ranked: Vec<(&str, usize)> = counts.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let Some(&(file, _)) = ranked.first() else {
             continue;
         };
-        let label = label.clone();
+        let stem_of = |f: &str| -> String {
+            let stem = f.rsplit('/').next().unwrap_or(f);
+            stem.rsplit_once('.').map_or(stem, |(s, _)| s).to_string()
+        };
+        let stem = stem_of(file);
+        // In a tree of several crates, which crate: `m68k-dap/lib`.
+        let label = match crate_of(file) {
+            Some((name, _)) if crates.len() > 1 => format!("{name}/{stem}"),
+            _ => stem.clone(),
+        };
+        let in_crate = crate_of(file).map(|(_, dir)| dir);
 
         // **Entry points come from the labelled file, not from the whole
         // community.** The label is the majority file, so a community also
@@ -4366,8 +4556,7 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
             .map(|&m| (reverse.callers(m).count(), served.name(m)))
             .filter(|(_, name)| {
                 name.split_once('#').is_some_and(|(f, _)| {
-                    let stem = f.rsplit('/').next().unwrap_or(f);
-                    stem.rsplit_once('.').map_or(stem, |(s, _)| s) == label
+                    stem_of(f) == stem && crate_of(f).map(|(_, dir)| dir) == in_crate
                 })
             })
             .collect();
@@ -4417,6 +4606,18 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
         }));
     }
 
+    // Only for a tree of several crates, largest first.
+    let mut crate_list: Vec<Value> = crates
+        .iter()
+        .filter(|_| crates.len() > 1)
+        .map(|(dir, (name, symbols))| json!({"name": name, "dir": dir, "symbols": symbols}))
+        .collect();
+    crate_list.sort_by(|a, b| {
+        b["symbols"]
+            .as_u64()
+            .cmp(&a["symbols"].as_u64())
+            .then(a["dir"].as_str().cmp(&b["dir"].as_str()))
+    });
     let symbols = served.defined.len();
     let files: std::collections::HashSet<&str> = served
         .registry
@@ -4429,6 +4630,8 @@ fn overview(served: &Served, args: &Value) -> Result<Value, String> {
     // whatever `limit` the caller asked for.
     let page: Vec<&Group> = groups.iter().skip(offset).take(limit).collect();
     let mut answer = json!({
+        "crates": crate_list,
+        "rust_outside_modules": rust_outside_modules(served),
         "server_version": env!("CARGO_PKG_VERSION"),
         "indexed_at": served.now,
         "symbols": symbols,
@@ -4512,6 +4715,18 @@ unlinked: {}. If one is a copy, list it in `.glasirignore`.\n",
                 names.join(", ")
             )
         });
+    let outside = v["rust_outside_modules"]
+        .as_array()
+        .filter(|files| !files.is_empty())
+        .map_or(String::new(), |files| {
+            let names: Vec<&str> = files.iter().filter_map(Value::as_str).take(20).collect();
+            format!(
+                "\n{} Rust file(s) no `mod` reaches, so the compiler never builds them: {}\n",
+                files.len(),
+                names.join(", ")
+            )
+        });
+    let repeated = format!("{repeated}{outside}");
     if total == 0 {
         return format!(
             "no subsystems: the tree has no partition yet, which means \
@@ -4525,6 +4740,19 @@ either no analysis has run or nothing in it is connected.\n{repeated}"
         v["server_version"].as_str().unwrap_or(""),
         v["indexed_at"].as_u64().unwrap_or(0),
     );
+    let crates = v["crates"].as_array().map_or(&[][..], Vec::as_slice);
+    if !crates.is_empty() {
+        out.push_str(&format!("{} crates:\n", crates.len()));
+        for c in crates {
+            out.push_str(&format!(
+                "  {} ({}) {} symbols\n",
+                c["name"].as_str().unwrap_or(""),
+                c["dir"].as_str().unwrap_or(""),
+                c["symbols"].as_u64().unwrap_or(0)
+            ));
+        }
+        out.push('\n');
+    }
     for g in groups {
         out.push_str(&format!(
             "{}  ({} symbols)\n",
