@@ -297,7 +297,9 @@ Every tool declares itself read-only, idempotent and closed-world
 read-only mode may call all of them. The four that list without bound —
 `impact`, `find_callers`, `find_unused` and `overview` — take `limit` and
 `offset` and return `next_offset` while more remain; the order is stable, so
-pages add up to the whole answer.
+pages add up to the whole answer. In `find_callers`, `limit` also caps
+`undecided_callers` and `named_elsewhere` (`named_elsewhere_total` keeps the
+full count).
 
 **"Nothing calls this" is checked against the source.** The graph records
 calls; a type in a signature, a constant read or a handler wired up in a
