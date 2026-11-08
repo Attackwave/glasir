@@ -7,11 +7,11 @@
     "url": "https://github.com/Attackwave/glasir",
     "source": "github"
   },
-  "version": "0.11.7",
+  "version": "0.11.8",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/attackwave/glasir:v0.11.7",
+      "identifier": "ghcr.io/attackwave/glasir:v0.11.8",
       "runtimeHint": "docker",
       "transport": { "type": "stdio" },
       "runtimeArguments": [
