@@ -140,6 +140,8 @@ pub struct SymbolRegistry {
     /// A name reached from two languages has none: it is then shared, and the
     /// safe reading is to link it nowhere rather than to guess a side.
     placeholder_lang: HashMap<NodeId, Vec<Lang>>,
+    /// `imports::rust_crate_scope` per directory, read once per run.
+    crate_scopes: HashMap<String, Option<String>>,
     /// Per file, the names each of its definitions uses without calling:
     /// (definition, name). Resolved against the whole tree when served, since
     /// only then is it known which names are defined exactly once. Keyed by
@@ -358,6 +360,7 @@ impl SymbolRegistry {
             docs: HashMap::new(),
             spans: HashMap::new(),
             placeholder_lang: HashMap::new(),
+            crate_scopes: HashMap::new(),
             refs: HashMap::new(),
             http: HashMap::new(),
             dispatch: HashMap::new(),
@@ -650,6 +653,21 @@ fn markdown_names(registry: &SymbolRegistry) -> MarkdownNames {
     for (symbol, &node) in registry.entries() {
         note_tail(&mut by_tail, symbol, node);
     }
+    // A name Rust code calls by its crate placeholder: a document naming it
+    // goes where the code's call goes, as it went to the bare placeholder
+    // before, rather than to whichever definition carries the name.
+    let mut scoped: HashMap<&str, NodeId> = HashMap::new();
+    for (symbol, &node) in registry.entries() {
+        if let Some((name, target)) = crate::imports::unscope(symbol)
+            && target.starts_with('~')
+        {
+            let slot = scoped.entry(name).or_insert(node);
+            *slot = (*slot).min(node);
+        }
+    }
+    for (name, node) in scoped {
+        by_tail.insert(name.to_owned(), Some(node));
+    }
     by_tail
 }
 
@@ -864,6 +882,94 @@ pub fn ingest_file(
 ///
 /// Split out so the batch path can reuse it verbatim — the two must mint the
 /// same ids in the same order, or a full build and a re-parse would disagree.
+/// Methods the Rust standard library gives its collections, strings,
+/// options and iterators: on a value of unknown type, one of those.
+const RUST_STD_METHODS: &[&str] = &[
+    "all",
+    "and_then",
+    "any",
+    "as_bytes",
+    "as_mut",
+    "as_ref",
+    "as_slice",
+    "as_str",
+    "borrow",
+    "borrow_mut",
+    "bytes",
+    "chars",
+    "clear",
+    "clone",
+    "cloned",
+    "collect",
+    "contains",
+    "contains_key",
+    "copied",
+    "count",
+    "drain",
+    "ends_with",
+    "entry",
+    "enumerate",
+    "err",
+    "expect",
+    "extend",
+    "filter",
+    "filter_map",
+    "find",
+    "first",
+    "flat_map",
+    "flatten",
+    "fold",
+    "get",
+    "get_mut",
+    "insert",
+    "into_iter",
+    "is_empty",
+    "is_none",
+    "is_some",
+    "iter",
+    "iter_mut",
+    "join",
+    "keys",
+    "last",
+    "len",
+    "lines",
+    "lock",
+    "map",
+    "map_err",
+    "max",
+    "min",
+    "next",
+    "ok",
+    "ok_or",
+    "or_insert",
+    "peek",
+    "pop",
+    "position",
+    "push",
+    "push_str",
+    "remove",
+    "retain",
+    "rev",
+    "skip",
+    "sort",
+    "sort_by",
+    "split",
+    "starts_with",
+    "sum",
+    "take",
+    "to_owned",
+    "to_string",
+    "to_vec",
+    "trim",
+    "truncate",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "unwrap_or_else",
+    "values",
+    "zip",
+];
+
 fn prepare_facts(
     arena: &mut SymbolArena,
     registry: &mut SymbolRegistry,
@@ -1186,7 +1292,29 @@ fn prepare_facts(
             // file defining it lands on the same node. Which language reached
             // it is recorded beside the node, because tier 3 links by name
             // alone and a name means different things in different languages.
-            let node = registry.get_or_mint(callee);
+            //
+            // Rust reaches by name only its own crate and its dependencies
+            // (`~` and their directories), and a standard method on a value of
+            // unknown type (`v.is_empty()`) nothing in the tree at all.
+            let scope = (lang == Some(Lang::Rust))
+                .then(|| {
+                    if unknown_receiver && RUST_STD_METHODS.contains(&callee.as_str()) {
+                        return Some(String::new());
+                    }
+                    let dir = file.rsplit_once('/').map_or("", |(d, _)| d).to_string();
+                    registry
+                        .crate_scopes
+                        .entry(dir)
+                        .or_insert_with(|| crate::imports::rust_crate_scope(root, &file))
+                        .clone()
+                })
+                .flatten();
+            let node = match scope {
+                Some(dirs) => {
+                    registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
+                }
+                None => registry.get_or_mint(callee),
+            };
             if let Some(lang) = Lang::from_path(path) {
                 registry.note_placeholder_lang(node, lang);
             }

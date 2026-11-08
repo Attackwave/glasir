@@ -1766,11 +1766,34 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     // nothing calling it.
     let full = served.name(node);
     let bare = full.split_once('#').map(|(_, name)| name);
+    // A standard method on a value of unknown type (`s.is_empty()`) links
+    // nowhere; from this definition's own crate it may still be this one.
+    let crate_dir = served
+        .root
+        .zip(full.split_once('#'))
+        .and_then(|(root, (file, _))| crate::imports::rust_crate_scope(root, file))
+        .and_then(|dirs| dirs.split('|').next().map(str::to_string));
+    let unknown = bare
+        .filter(|_| crate_dir.is_some())
+        .and_then(|name| served.registry.node_of(&crate::imports::scoped(name, "~")));
+    let in_crate = |n: NodeId| {
+        let name = served.name(n);
+        crate_dir
+            .as_deref()
+            .is_some_and(|d| d == "." || name.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
+    };
     let mut undecided: Vec<NodeId> = bare
         .and_then(|name| served.registry.node_of(name))
         .map(|placeholder| direct_callers(served, reverse, placeholder, floor))
         .unwrap_or_default()
         .into_iter()
+        .chain(
+            unknown
+                .map(|p| direct_callers(served, reverse, p, floor))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|&(n, _)| in_crate(n)),
+        )
         .map(|(n, _)| n)
         .filter(|n| !callers.iter().any(|(c, _)| c == n))
         .collect();
