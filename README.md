@@ -225,7 +225,8 @@ source and extraction configuration still match.
 Fifteen MCP tools, over stdio for a local editor or Streamable HTTP for a remote
 agent:
 
-- `overview` — the subsystems of an unfamiliar tree and the way into each
+- `overview` — the subsystems of an unfamiliar tree and the way into each;
+  in a Rust workspace its crates, and each subsystem named by its crate
 - `query_graph` — the subgraph relevant to a question; given a file's path,
   every definition in that file
 - `shortest_path` — how one symbol reaches another
