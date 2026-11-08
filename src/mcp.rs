@@ -687,7 +687,9 @@ fn tool_list() -> Value {
             "name": "explain_node",
             "title": "Explain one symbol",
             "description": "Callers, callees, subsystem and structurally similar \
-    symbols for one node, each edge tagged with how it was resolved.",
+    symbols for one node, each edge tagged with how it was resolved. `structurally_similar` \
+    is what the graph embeddings rank nearest; `nearby` holds the callers, callees and the \
+    file's other definitions with the same score.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"symbol": {"type": "string"}},
@@ -702,7 +704,15 @@ fn tool_list() -> Value {
             "siblings": {"type": "array", "items": {"type": "string"}},
             "calls": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
             "called_by": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
-            "structurally_similar": {"type": "array", "items": {
+            "nearby": {"type": "array", "description": "Callers, callees and the file's other definitions, with the embeddings' score", "items": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "score": {"type": "number"}
+                },
+                "required": ["symbol", "score"]
+            }},
+            "structurally_similar": {"type": "array", "description": "The embeddings' nearest definitions", "items": {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string"},
@@ -1512,32 +1522,27 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
         .collect();
     incoming.sort();
 
-    // A direct caller or callee is structural evidence, not merely a keyword
-    // match. Keep a bounded set beside the five embedding neighbours: a small
-    // graph growth must not make `configured -> current` disappear from an
-    // explanation just because it moved from rank five to six. The score is
-    // still the actual deterministic cosine similarity; directness controls
-    // inclusion, never invents a score.
+    // What the embeddings say alike, and nothing else: mixing in the callers
+    // and the file's other definitions kept a pinned neighbour in the list
+    // whatever the embeddings scored it, so the list could not show them
+    // failing. Those go to `nearby`, scored too, kept apart.
     let mut similar = served.embeddings.nearest(node, 5);
+    similar.retain(|&(n, _)| served.defined.contains(&n));
+    similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut direct: Vec<_> = served
         .snap
         .neighbors(node)
         .map(|edge| edge.target)
         .chain(
-            served
-                .snap
-                .reverse()
-                .callers(node)
+            direct_callers(served, served.snap.reverse(), node, Confidence::Ambiguous)
+                .into_iter()
                 .map(|(caller, _)| caller),
         )
         .filter(|&other| other != node && !similar.iter().any(|&(known, _)| known == other))
         .collect();
-    // Scanner-tier call extraction intentionally refuses receiver-qualified
-    // calls such as `self.current()`: guessing their target across impls would
-    // create false edges. For an explanation, however, definitions in the same
-    // source file are useful bounded structural context. This covers that
-    // honest uncertainty without inventing a call edge or changing graph-wide
-    // retrieval and impact results.
+    // Scanner-tier call extraction refuses receiver-qualified calls such as
+    // `self.current()`, so definitions in the same source file are useful
+    // context beside the edges.
     if let Some((file, _)) = served.name(node).split_once('#') {
         for candidate in 0..served.snap.width() as u32 {
             if served.name(candidate).starts_with(&format!("{file}#"))
@@ -1548,19 +1553,16 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
             }
         }
     }
+    direct.retain(|n| served.defined.contains(n));
     direct.sort_unstable();
     direct.dedup();
-    // A source file can be large; 32 keeps the response bounded while still
-    // covering ordinary impl blocks whose method order is meaningful context.
+    // A source file can be large; 32 keeps the response bounded.
     direct.truncate(32);
-    similar.extend(
-        direct
-            .into_iter()
-            .map(|other| (other, served.embeddings.similarity(node, other))),
-    );
-    // Definitions only, most alike first: a placeholder is no definition.
-    similar.retain(|&(n, _)| served.defined.contains(&n));
-    similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut nearby: Vec<(NodeId, f32)> = direct
+        .into_iter()
+        .map(|other| (other, served.embeddings.similarity(node, other)))
+        .collect();
+    nearby.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
     Ok(json!({
         "symbol": served.name(node),
@@ -1576,6 +1578,13 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
             .map(|(c, n)| json!({"symbol": n, "confidence": c}))
             .collect::<Vec<_>>(),
         "structurally_similar": similar
+            .into_iter()
+            .map(|(n, score)| json!({
+                "symbol": served.name(n),
+                "score": round_to(score as f64, 100.0),
+            }))
+            .collect::<Vec<_>>(),
+        "nearby": nearby
             .into_iter()
             .map(|(n, score)| json!({
                 "symbol": served.name(n),

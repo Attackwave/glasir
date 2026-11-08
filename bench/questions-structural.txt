@@ -226,5 +226,8 @@ explain_node src/csr.rs#no_such_accessor
 # the rest of the list is under 0.55, because `current` and `configured` really
 # do read the same token file. Pinning anything below it measured how many
 # symbols this repository happens to hold.
+# Since 0.5.0 the embeddings score `configured` near zero; the question
+# passed only while callers were mixed into the section. It now fails, on
+# purpose, until the embeddings put it back.
 explain_node src/auth.rs#current
   in: structurally_similar src/auth.rs#configured

@@ -9073,6 +9073,13 @@ fn demo_references() {
     assert!(by.contains(&"src/top.rs#top"), "{v}");
     assert!(by.iter().all(|s| s.contains('#')), "{v}");
     assert!(by.windows(2).all(|w| w[0] != w[1]), "{v}");
+    // The embeddings' five, and the callers and the file's other
+    // definitions apart in `nearby`.
+    assert!(
+        v["structurally_similar"].as_array().unwrap().len() <= 5,
+        "{v}"
+    );
+    assert!(v["nearby"].to_string().contains("src/top.rs#keep"), "{v}");
     let scores: Vec<f64> = v["structurally_similar"]
         .as_array()
         .unwrap()
