@@ -9193,6 +9193,29 @@ fn demo_change_tools() {
         .map(|t| t["symbol"].as_str().unwrap())
         .collect();
     assert_eq!(found, ["src/cpu.rs#steps"]);
+    // A test repeats the words of what it tests: its score counts for less,
+    // unless the question asks about tests.
+    std::fs::write(
+        dir.join("src/framing.rs"),
+        "/// Frames a packet with its header.\npub fn frame_packet() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn framed_packet_header_survives() {\n        super::frame_packet();\n    }\n}\n",
+    )
+    .unwrap();
+    let state = served_state(&dir).unwrap();
+    let served = state.as_served();
+    let score_of = |q: &str, name: &str| {
+        mcp::seeds_for_test(&served, q)
+            .into_iter()
+            .find(|&(n, _)| served.name(n) == name)
+            .map_or(0.0, |(_, s)| s)
+    };
+    let implementation = "src/framing.rs#frame_packet";
+    assert!(score_of("does the header of a framed packet survive", implementation) > 0.6);
+    assert!(
+        score_of(
+            "which test checks that the header of a framed packet survives",
+            implementation
+        ) < 0.6
+    );
     // A local of a method's name is no use of it; prose saying "let" is no
     // local, and outside a language that declares with `let` nothing is.
     std::fs::write(
