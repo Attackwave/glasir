@@ -8,7 +8,7 @@ branding:
   color: gray-dark
 inputs:
   version:
-    description: Glasir release to run (a tag such as v0.11.7, or "latest"). Releases before 0.11.0 carry no provenance and are refused.
+    description: Glasir release to run (a tag such as v0.11.8, or "latest"). Releases before 0.11.0 carry no provenance and are refused.
     default: latest
   base:
     description: Revision to compare HEAD against. Defaults to the pull request's base.
