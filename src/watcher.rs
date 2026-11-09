@@ -88,10 +88,14 @@ pub fn ignored_under(path: &Path, root: Option<&Path>) -> bool {
         if rel.as_deref().unwrap_or("").split('/').skip(1).any(hidden) {
             return true;
         }
-    } else if path
+    } else if root
+        .and_then(|r| path.strip_prefix(r).ok())
+        .unwrap_or(path)
         .components()
         .any(|c| hidden(&c.as_os_str().to_string_lossy()))
     {
+        // Below the root only: a tree inside `.cache/` or `target/` is
+        // still a tree.
         return true;
     }
     let Some(root) = root else {
