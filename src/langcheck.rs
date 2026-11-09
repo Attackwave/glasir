@@ -71,11 +71,11 @@ const MODULE: &str = "<module>";
 /// resolution bug mask an extraction one.
 pub fn measure(root: &std::path::Path, by_dir: bool) -> BTreeMap<String, Yield> {
     let mut out: BTreeMap<String, Yield> = BTreeMap::new();
-    for path in crate::walk(root) {
+    for path in crate::files::walk(root) {
         let Some(lang) = Lang::from_path(&path) else {
             continue;
         };
-        let Some(src) = crate::read_source(&path) else {
+        let Some(src) = crate::files::read_source(&path) else {
             continue;
         };
         let Some(facts) = crate::parse_ast::parse_file(&path, &src, lang) else {
@@ -286,11 +286,11 @@ pub fn anomalies(root: &std::path::Path) -> BTreeMap<String, Anomalies> {
     };
     let keyword = |w: &str| control(w) || w == "end";
     let mut out: BTreeMap<String, Anomalies> = BTreeMap::new();
-    for path in crate::walk(root) {
+    for path in crate::files::walk(root) {
         let Some(lang) = Lang::from_path(&path) else {
             continue;
         };
-        let Some(src) = crate::read_source(&path) else {
+        let Some(src) = crate::files::read_source(&path) else {
             continue;
         };
         let Some(facts) = crate::parse_ast::parse_file(&path, &src, lang) else {

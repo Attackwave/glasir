@@ -82,7 +82,7 @@ pub fn changes(
         ) else {
             continue;
         };
-        let hunks = crate::mcp::hunk_lines(patch);
+        let hunks = hunk_lines(patch);
         if hunks.is_empty() {
             continue;
         }
@@ -109,7 +109,7 @@ pub fn changes(
         let Some(facts) = crate::parse_ast::parse_file(Path::new(file), &src, lang) else {
             continue;
         };
-        if crate::mcp::innermost_touched(&facts.ranges, &src, &hunks).contains(name) {
+        if innermost_touched(&facts.ranges, &src, &hunks).contains(name) {
             out.push(change);
         }
     }
@@ -208,4 +208,81 @@ fn without_trailers(body: &str) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// New-side line ranges of `git diff -U0`, 1-based and inclusive. A pure
+/// deletion has no new lines and is a point between two: it comes back as
+/// `(line after, line before)`, start past end, and touches only a definition
+/// that contains the point — not the one that happens to begin right there.
+pub(crate) fn hunk_lines(diff: &str) -> Vec<(u32, u32)> {
+    diff.lines()
+        .filter_map(|l| l.strip_prefix("@@ "))
+        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with('+')))
+        .filter_map(|w| {
+            let (start, count) = w[1..].split_once(',').unwrap_or((&w[1..], "1"));
+            let (start, count): (u32, u32) = (start.parse().ok()?, count.parse().ok()?);
+            Some(if count == 0 {
+                (start + 1, start)
+            } else {
+                (start, start + count - 1)
+            })
+        })
+        .collect()
+}
+
+/// The innermost definitions a diff's hunks fall in, by their ranges in the
+/// new content, and `<module>` for a hunk outside every definition. Shared by
+/// `detect_changes` and the commit history, so both read a change alike.
+pub(crate) fn innermost_touched(
+    ranges: &[(String, (u32, u32))],
+    src: &str,
+    hunks: &[(u32, u32)],
+) -> std::collections::HashSet<String> {
+    let mut line_start = vec![0u32];
+    line_start.extend(
+        src.bytes()
+            .enumerate()
+            .filter(|&(_, b)| b == b'\n')
+            .map(|(i, _)| i as u32 + 1),
+    );
+    let end = src.len() as u32;
+    let bytes = |(a, b): (u32, u32)| {
+        let at = |line: u32| line_start.get(line as usize - 1).copied().unwrap_or(end);
+        (at(a.max(1)), at(b + 1))
+    };
+    let mut names = std::collections::HashSet::new();
+    for &(a, b) in hunks {
+        let (hs, he) = if a > b {
+            let at = bytes((a, a)).0;
+            (at, at)
+        } else {
+            bytes((a, b))
+        };
+        let hit: Vec<&(String, (u32, u32))> = ranges
+            .iter()
+            .filter(|(_, (s, e))| {
+                if hs == he {
+                    *s < hs && hs < *e
+                } else {
+                    *s < he && hs < *e
+                }
+            })
+            .collect();
+        if hit.is_empty() {
+            names.insert("<module>".to_string());
+        }
+        // Only the innermost definition a hunk falls in changed. A class
+        // around an edited method is not itself changed — its users are not
+        // the method's callers — and a function around an edited inner one is
+        // reached anyway, as the inner one's caller.
+        for (name, (s, e)) in &hit {
+            let holds_another = hit
+                .iter()
+                .any(|(_, (s2, e2))| (s, e) != (s2, e2) && s <= s2 && e2 <= e);
+            if !holds_another {
+                names.insert(name.clone());
+            }
+        }
+    }
+    names
 }

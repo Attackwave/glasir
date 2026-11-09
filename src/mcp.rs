@@ -135,6 +135,8 @@ pub struct ServedState {
     /// Who uses each symbol without calling it, built on first use.
     pub references: std::sync::OnceLock<References>,
     pub root: std::path::PathBuf,
+    /// While asleep: nodes and symbols of the graph that left memory.
+    pub asleep: Option<(usize, usize)>,
 }
 
 /// Builds the node-id -> name table the tools read.
@@ -151,6 +153,12 @@ pub fn name_table(registry: &SymbolRegistry, width: usize) -> Vec<String> {
 }
 
 impl ServedState {
+    /// Nodes and symbols of the served graph, asleep or not.
+    pub fn counts(&self) -> (usize, usize) {
+        self.asleep
+            .unwrap_or((self.snap.width(), self.registry.len()))
+    }
+
     pub fn as_served(&self) -> Served<'_> {
         Served {
             snap: &self.snap,
@@ -444,7 +452,7 @@ fn tool_list() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"},
-                    "max_lines": {"type": "integer", "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
+                    "max_lines": {"type": "integer", "minimum": 1, "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
                 },
                 "required": ["symbol"]
             },
@@ -485,7 +493,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Symbol name, substring, or a plain-language question"},
-                    "max_nodes": {"type": "integer", "description": "Result cap (default 40)"},
+                    "max_nodes": {"type": "integer", "minimum": 1, "description": "Result cap (default 40)"},
                     "max_hops": {"type": "integer", "description": "Expansion depth (default 3)"}
                 },
                 "required": ["query"]
@@ -522,7 +530,7 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "How many subsystems (default 12)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many subsystems (default 12)"},
                     "offset": {"type": "integer", "description": "Skip this many, largest first: the `next_offset` of a previous answer"},
                     "entry_points": {"type": "integer", "description": "Entry points per subsystem (default 3)"}
                 },
@@ -618,7 +626,7 @@ fn tool_list() -> Value {
                         "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Weakest edge kind to follow (default ambiguous)"
                     },
-                    "limit": {"type": "integer", "description": "How many dependents to name (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many dependents to name (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many, nearest first: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -667,7 +675,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "max_len": {"type": "integer", "description": "Longest cycle to report, in files (default 5)"},
-                    "limit": {"type": "integer", "description": "How many cycles to return (default 20)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many cycles to return (default 20)"},
                     "min_confidence": {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
@@ -762,7 +770,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to count (default ambiguous)"},
-                    "limit": {"type": "integer", "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -874,7 +882,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
                     "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
                     "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
-                    "limit": {"type": "integer", "description": "How many tests to list (default 50); `count` and `files` cover all"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many tests to list (default 50); `count` and `files` cover all"},
                     "offset": {"type": "integer", "description": "Where the list starts (default 0)"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to follow (default ambiguous)"}
@@ -992,7 +1000,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Only definitions under this path prefix"},
-                    "limit": {"type": "integer", "description": "How many to name (default 50)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many to name (default 50)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 }
             },
@@ -1021,7 +1029,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "The definition, `path#name` or a unique name"},
-                    "limit": {"type": "integer", "description": "How many changes to return (default 10)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many changes to return (default 10)"},
                     "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"},
                     "body_lines": {"type": "integer", "description": "Lines of each commit body to return (default 6, 0 for the subject only)"}
                 },
@@ -2408,8 +2416,8 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
                 new.get(k).cloned().flatten()
             };
             let hunks = match sections.get(format!("diff --git a/{local} b/{local}").as_str()) {
-                Some(body) => Some(hunk_lines(body)),
-                None => unified(&[local.as_str()]).map(|d| hunk_lines(&d)),
+                Some(body) => Some(crate::commits::hunk_lines(body)),
+                None => unified(&[local.as_str()]).map(|d| crate::commits::hunk_lines(&d)),
             };
             let old_src = old.get(k).cloned().flatten();
             removed.extend(
@@ -2540,83 +2548,6 @@ fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String
     out.into_iter().collect()
 }
 
-/// New-side line ranges of `git diff -U0`, 1-based and inclusive. A pure
-/// deletion has no new lines and is a point between two: it comes back as
-/// `(line after, line before)`, start past end, and touches only a definition
-/// that contains the point — not the one that happens to begin right there.
-pub(crate) fn hunk_lines(diff: &str) -> Vec<(u32, u32)> {
-    diff.lines()
-        .filter_map(|l| l.strip_prefix("@@ "))
-        .filter_map(|l| l.split_whitespace().find(|w| w.starts_with('+')))
-        .filter_map(|w| {
-            let (start, count) = w[1..].split_once(',').unwrap_or((&w[1..], "1"));
-            let (start, count): (u32, u32) = (start.parse().ok()?, count.parse().ok()?);
-            Some(if count == 0 {
-                (start + 1, start)
-            } else {
-                (start, start + count - 1)
-            })
-        })
-        .collect()
-}
-
-/// The innermost definitions a diff's hunks fall in, by their ranges in the
-/// new content, and `<module>` for a hunk outside every definition. Shared by
-/// `detect_changes` and the commit history, so both read a change alike.
-pub(crate) fn innermost_touched(
-    ranges: &[(String, (u32, u32))],
-    src: &str,
-    hunks: &[(u32, u32)],
-) -> std::collections::HashSet<String> {
-    let mut line_start = vec![0u32];
-    line_start.extend(
-        src.bytes()
-            .enumerate()
-            .filter(|&(_, b)| b == b'\n')
-            .map(|(i, _)| i as u32 + 1),
-    );
-    let end = src.len() as u32;
-    let bytes = |(a, b): (u32, u32)| {
-        let at = |line: u32| line_start.get(line as usize - 1).copied().unwrap_or(end);
-        (at(a.max(1)), at(b + 1))
-    };
-    let mut names = std::collections::HashSet::new();
-    for &(a, b) in hunks {
-        let (hs, he) = if a > b {
-            let at = bytes((a, a)).0;
-            (at, at)
-        } else {
-            bytes((a, b))
-        };
-        let hit: Vec<&(String, (u32, u32))> = ranges
-            .iter()
-            .filter(|(_, (s, e))| {
-                if hs == he {
-                    *s < hs && hs < *e
-                } else {
-                    *s < he && hs < *e
-                }
-            })
-            .collect();
-        if hit.is_empty() {
-            names.insert("<module>".to_string());
-        }
-        // Only the innermost definition a hunk falls in changed. A class
-        // around an edited method is not itself changed — its users are not
-        // the method's callers — and a function around an edited inner one is
-        // reached anyway, as the inner one's caller.
-        for (name, (s, e)) in &hit {
-            let holds_another = hit
-                .iter()
-                .any(|(_, (s2, e2))| (s, e) != (s2, e2) && s <= s2 && e2 <= e);
-            if !holds_another {
-                names.insert(name.clone());
-            }
-        }
-    }
-    names
-}
-
 /// The names in one changed file the diff touches: definitions whose lines
 /// changed, `<module>` when a change fell outside every definition, and every
 /// definition the graph has for the file that the new content no longer
@@ -2637,7 +2568,7 @@ fn touched_names(
     use crate::parse_ast::LangExt;
     let lang = crate::parse_ast::Lang::from_path(path)?;
     let facts = crate::parse_ast::parse_file(path, src, lang)?;
-    let mut names = innermost_touched(&facts.ranges, src, hunks);
+    let mut names = crate::commits::innermost_touched(&facts.ranges, src, hunks);
     let now: std::collections::HashSet<&str> = facts.defines.iter().map(String::as_str).collect();
     let prefix = format!("{file}#");
     for (symbol, _) in served.registry.entries() {
@@ -5168,7 +5099,8 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .split_once('#')
         .ok_or_else(|| format!("{name} is a placeholder, not a definition with source"))?;
     let path = std::path::Path::new(file);
-    let src = crate::read_source(&root.join(path)).ok_or_else(|| format!("cannot read {file}"))?;
+    let src =
+        crate::files::read_source(&root.join(path)).ok_or_else(|| format!("cannot read {file}"))?;
     // The range is taken from the file as it is now, not from the analysis: a
     // server without `--watch` keeps its graph while the file is edited, and
     // a stored range cut from newer text returns the end of the routine above
@@ -5388,6 +5320,9 @@ fn render_get_code_snippet(v: &Value) -> String {
 }
 
 fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, String> {
+    if let Some(problem) = argument_problem(name, args) {
+        return Err(problem);
+    }
     match name {
         "get_code_snippet" => get_code_snippet(served, args),
         "query_graph" => query_graph(served, args),
@@ -5579,6 +5514,28 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
 /// speaks, never echoed.
 const KNOWN_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", LEGACY_VERSION];
 
+/// A whole-number argument that is negative, fractional, a string or below
+/// its declared `minimum`. Read with `as_u64`, each of those fell back to the
+/// default without a word.
+fn argument_problem(tool: &str, args: &Value) -> Option<String> {
+    static TOOLS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let tools = TOOLS.get_or_init(tool_list);
+    let properties =
+        tools.as_array()?.iter().find(|t| t["name"] == tool)?["inputSchema"]["properties"]
+            .as_object()?;
+    properties
+        .iter()
+        .filter(|(_, schema)| schema["type"] == "integer")
+        .find_map(|(key, schema)| {
+            let given = args.get(key).filter(|v| !v.is_null())?;
+            let least = schema["minimum"].as_u64().unwrap_or(0);
+            match given.as_u64() {
+                Some(n) if n >= least => None,
+                _ => Some(format!("{key} must be a whole number of at least {least}")),
+            }
+        })
+}
+
 /// Fields a tool returns that its `outputSchema` does not declare, by path.
 /// Checked on every call in debug builds, so the schemas cannot drift.
 #[cfg(debug_assertions)]
@@ -5699,7 +5656,7 @@ mod diff_tests {
         let sections = super::diff_sections(diff);
         assert_eq!(sections.len(), 2, "{sections:?}");
         let z = sections["diff --git a/z.rs b/z.rs"];
-        assert_eq!(super::hunk_lines(z), vec![(2, 4)]);
+        assert_eq!(crate::commits::hunk_lines(z), vec![(2, 4)]);
         assert!(sections["diff --git a/x.rs b/x.rs"].contains("+diff --git a/y"));
     }
 }
