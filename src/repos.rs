@@ -55,7 +55,11 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // Each pipe is read on a thread that reports through a channel, so the
+    // wait for it has the same deadline: a helper git started can keep a pipe
+    // open after git itself has exited.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut kept = Vec::new();
             let mut over = false;
@@ -72,8 +76,9 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
                     }
                 }
             }
-            (kept, over)
-        })
+            let _ = tx.send((kept, over));
+        });
+        rx
     };
     let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
     let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
@@ -92,8 +97,17 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let (stdout, over_out) = stdout.join().unwrap_or_default();
-    let (stderr, over_err) = stderr.join().unwrap_or_default();
+    let collect = |rx: std::sync::mpsc::Receiver<(Vec<u8>, bool)>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "git exited but its output stayed open",
+                )
+            })
+    };
+    let (stdout, over_out) = collect(stdout)?;
+    let (stderr, over_err) = collect(stderr)?;
     if over_out || over_err {
         return Err(std::io::Error::other(format!(
             "git produced more than {} MiB",
@@ -240,6 +254,21 @@ mod tests {
         let err =
             output_within(Command::new("sleep").arg("30"), Duration::from_millis(100)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    /// A helper left running in the background keeps the pipe open after
+    /// the command exits; the deadline holds for that wait too.
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_pipe_does_not_outlast_the_deadline() {
+        let started = Instant::now();
+        let err = output_within(
+            Command::new("sh").args(["-c", "sleep 3 & echo x"]),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[cfg(unix)]

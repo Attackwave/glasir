@@ -58,6 +58,15 @@ use csr::{Confidence, CsrBuilder, Edge};
 
 fn main() -> std::io::Result<()> {
     let args = cli::Args::parse(std::env::args());
+    // Refused before anything runs: a misread option is a run nobody asked
+    // for, and for `install` one that writes.
+    if !args.problems.is_empty() {
+        for p in &args.problems {
+            eprintln!("glasir: {p}");
+        }
+        eprintln!("see `glasir --help`");
+        std::process::exit(2);
+    }
     // Before the help branch, or `--version` prints the help and an operator
     // cannot answer "which version is running" — the question a CVE list is
     // checked against.
@@ -340,11 +349,22 @@ fn strip_codex_block(text: &str) -> (String, bool) {
     let mut out = String::new();
     let mut inside = false;
     let mut found = false;
+    // Inside a multi-line string a `[` line is text, not a table header.
+    let mut in_string = false;
     for line in text.lines() {
         let t = line.trim();
-        if t.starts_with('[') {
-            inside = t == CODEX_HEADER || t.starts_with("[mcp_servers.glasir.");
+        if !in_string && t.starts_with('[') {
+            // `[mcp_servers."glasir"]` is the same table: quotes and blanks
+            // in a header name nothing.
+            let key: String = t
+                .chars()
+                .filter(|c| !matches!(c, ' ' | '\t' | '"' | '\''))
+                .collect();
+            inside = key == CODEX_HEADER || key.starts_with("[mcp_servers.glasir.");
             found |= inside;
+        }
+        if (line.matches("\"\"\"").count() + line.matches("\'\'\'").count()) % 2 == 1 {
+            in_string = !in_string;
         }
         if !inside {
             out.push_str(line);
@@ -1663,6 +1683,13 @@ fn write_registration(
             if !doc.is_object() {
                 return Err(std::io::Error::other("config root is not an object"));
             }
+            // Indexing into a list or a string panics: refused like bad JSON.
+            if !(doc[key].is_null() || doc[key].is_object()) {
+                return Err(std::io::Error::other(format!(
+                    "{}: `{key}` is not an object; left alone",
+                    path.display()
+                )));
+            }
             let entry = target.format.entry(&exe, &root);
             let already = doc[key]["glasir"] == entry;
             doc[key]["glasir"] = entry;
@@ -1764,6 +1791,12 @@ fn install_assistant_hook(
 ) -> std::io::Result<bool> {
     let mut doc = settings_object(path)?;
     let entry = assistant_hook_entry(exe);
+    if !(doc["hooks"].is_null() || doc["hooks"].is_object()) {
+        return Err(std::io::Error::other(format!(
+            "{}: `hooks` is not an object; left alone",
+            path.display()
+        )));
+    }
     let slot = &mut doc["hooks"][HOOK_EVENT];
     if slot.is_null() {
         *slot = serde_json::json!([]);
@@ -10160,6 +10193,25 @@ fn demo_install() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
+    // A quoted header is the same table; a header-shaped line inside a
+    // multi-line string is text.
+    let (rest, found) =
+        strip_codex_block("[mcp_servers.\"glasir\"]\ncommand = \"x\"\n[other]\na = 1\n");
+    assert!(
+        found && !rest.contains("glasir") && rest.contains("[other]"),
+        "{rest}"
+    );
+    let quoted = "note = \"\"\"\n[mcp_servers.glasir]\n\"\"\"\n";
+    assert_eq!(strip_codex_block(quoted), (quoted.to_string(), false));
+    // A server key holding a list is refused, not a panic halfway through.
+    let vscode = TARGETS.iter().find(|t| t.name == "vscode").unwrap();
+    let odd = dir.join("odd-mcp.json");
+    std::fs::write(&odd, "{\"servers\": []}").unwrap();
+    let exe = std::path::Path::new("/usr/local/bin/glasir");
+    assert!(write_registration(vscode, &odd, exe, &dir, false).is_err());
+    assert_eq!(std::fs::read_to_string(&odd).unwrap(), "{\"servers\": []}");
+    std::fs::remove_file(&odd).unwrap();
+
     let args = |cmd: &str, extra: &[&str]| {
         let mut v = vec![
             "glasir".to_string(),
@@ -13256,6 +13308,32 @@ fn demo_cli() {
     assert!(
         missing.is_empty(),
         "read with value() but not in VALUE_OPTIONS: {missing:?}"
+    );
+    // And every flag it reads is a known flag, or the parser refuses it.
+    let mut unknown = Vec::new();
+    for (k, _) in src.match_indices("args.has(\"") {
+        let key = &src[k + 10..k + 10 + src[k + 10..].find('"').unwrap()];
+        if !cli::FLAG_OPTIONS.contains(&key) && !cli::VALUE_OPTIONS.contains(&key) && key.len() > 1
+        {
+            unknown.push(key);
+        }
+    }
+    assert!(
+        unknown.is_empty(),
+        "read with has() but not in FLAG_OPTIONS: {unknown:?}"
+    );
+    let parse = |v: &[&str]| cli::Args::parse(v.iter().map(|s| s.to_string()));
+    for refused in [
+        &["glasir", "install", "--dry-run=true"][..],
+        &["glasir", "install", "--dryrun"],
+        &["glasir", "serve", "--http", "--watch"],
+    ] {
+        assert!(!parse(refused).problems.is_empty(), "{refused:?}");
+    }
+    assert!(
+        parse(&["glasir", "serve", "--http", "8899", "--watch"])
+            .problems
+            .is_empty()
     );
 
     let args = cli::Args::parse(
