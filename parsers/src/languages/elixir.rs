@@ -38,9 +38,11 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 scope.on_receiver();
                 // `Shop.Cart.total()` goes through the module `Shop.Cart`: the
                 // capitalised chain before the dot, which `defmodule` names.
+                // Bounded: walked back at every dot, an unbounded chain is
+                // quadratic in its length.
                 let mut chain: Vec<&str> = Vec::new();
                 let mut k = i;
-                while k > 0 {
+                while k > 0 && chain.len() < 16 {
                     match tokens[k - 1].kind {
                         TokenKind::Ident(w) if w.starts_with(|c: char| c.is_uppercase()) => {
                             chain.push(w);

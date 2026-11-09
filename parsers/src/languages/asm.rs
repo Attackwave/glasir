@@ -488,7 +488,9 @@ impl Origin {
 /// parameter, resolved across files later.
 #[derive(Default)]
 struct Track {
-    regs: std::collections::HashMap<String, Origin>,
+    // Ordered: `pass` reports registers in this order, and the snapshot
+    // stores it.
+    regs: std::collections::BTreeMap<String, Origin>,
     /// Registers the open label has written; one it uses without writing it
     /// is a parameter.
     written: std::collections::HashSet<String>,
@@ -919,10 +921,29 @@ fn ident(s: &str) -> Option<&str> {
 /// comma (`DC.L name,  handler`) is inside the field, not after it.
 fn operands(rest: &str) -> Vec<&str> {
     let rest = rest.trim_start();
-    let beside_comma =
-        |k: usize| rest[..k].trim_end().ends_with(',') || rest[k..].trim_start().starts_with(',');
+    // The last non-blank before a blank, and the first after its run, are
+    // carried rather than searched for at every blank: a long run beside a
+    // comma made that quadratic.
+    let mut last: Option<char> = None;
+    let mut ahead: Option<(usize, Option<char>)> = None;
+    let mut beside_comma = |k: usize, last: Option<char>| {
+        let next = match ahead {
+            Some((until, next)) if k < until => next,
+            _ => {
+                let tail = rest[k..].trim_start();
+                let next = tail.chars().next();
+                ahead = Some((rest.len() - tail.len(), next));
+                next
+            }
+        };
+        last == Some(',') || next == Some(',')
+    };
     let (mut depth, mut quote, mut end) = (0i32, None, rest.len());
     for (k, c) in rest.char_indices() {
+        let before = last;
+        if !c.is_whitespace() {
+            last = Some(c);
+        }
         match (quote, c) {
             (None, '\'' | '"') => quote = Some(c),
             (Some(q), c) if c == q => quote = None,
@@ -933,7 +954,7 @@ fn operands(rest: &str) -> Vec<&str> {
                 end = k;
                 break;
             }
-            (None, c) if c.is_whitespace() && depth <= 0 && !beside_comma(k) => {
+            (None, c) if c.is_whitespace() && depth <= 0 && !beside_comma(k, before) => {
                 end = k;
                 break;
             }

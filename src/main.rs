@@ -779,7 +779,12 @@ pub(crate) fn read_source(path: &std::path::Path) -> Option<String> {
     }
     match std::fs::read(path) {
         Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(text) => Some(text),
+            // Without its byte order mark: no scanner reads it as part of
+            // the first word, and every reader sees the same offsets.
+            Ok(text) => Some(match text.strip_prefix('\u{feff}') {
+                Some(rest) => rest.to_string(),
+                None => text,
+            }),
             // Latin-1 fallback. Refusing the file loses all of it over bytes
             // that are almost never in the code: measured on five real
             // non-UTF-8 files, every one
@@ -15299,6 +15304,16 @@ fn demo_langcheck() {
         check(&absent, &floors).is_empty(),
         "a floor for a language that is not present must not fire"
     );
+
+    // A byte order mark is read away: scanners, snippets and ranges all see
+    // the file from its first character.
+    let marked = std::env::temp_dir().join(format!("glasir-bom-{}.py", fixture_id()));
+    std::fs::write(&marked, "\u{feff}def first():\n    pass\n").unwrap();
+    assert_eq!(
+        read_source(&marked).as_deref(),
+        Some("def first():\n    pass\n")
+    );
+    let _ = std::fs::remove_file(&marked);
 
     let path = std::path::Path::new("bench/languages.txt");
     let Ok(expected) = crate::langcheck::load_expectations(path) else {
