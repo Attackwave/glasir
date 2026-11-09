@@ -114,12 +114,21 @@ target, and all three of its defences are enforced:
   `localhost.evil.com`, which the self-check asserts against.
 - **Bearer tokens.** Per-user tokens take precedence over a shared `--token`:
   once any user token exists the shared one stops working, so issuing tokens
-  cannot leave an anonymous door open beside them. The shared token is compared
-  in constant time.
+  cannot leave an anonymous door open beside them. Once in effect, per-user
+  auth stays in effect for the life of the process: an emptied, unreadable or
+  deleted token file admits nobody. A `.glasir-tokens` that this user owns but
+  others may read is ignored with a warning: `token issue` writes mode 0600,
+  and a file that came with a clone or an archive does not look like that. The
+  shared token is compared in constant time.
 
-Also enforced: read and write timeouts, a bounded connection pool, a 1 MiB body
-cap and a header-count cap — the last two before authentication, since
-`Content-Length` is attacker-controlled and arrives first.
+Also enforced: read and write timeouts per operation and a 30-second deadline
+for a whole request to arrive, a bounded connection pool, a 1 MiB body cap, a
+16 KiB line cap and a cap of 100 header lines — the caps before
+authentication, since `Content-Length` is attacker-controlled and arrives first.
+
+`glasir view` is unauthenticated. On loopback it answers only a `Host` naming
+loopback, which a page reached through a rebound DNS name does not send; bound
+to another address it warns that anyone reaching it can read the graph.
 
 **A `GET` opens an event stream, and it holds a connection slot for as long as
 it is open.** The pool is 32, so streams are subject to the same cap as any

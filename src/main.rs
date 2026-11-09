@@ -12068,6 +12068,27 @@ fn demo_auth() {
     assert_eq!(tokens.identify(None, now), None, "no token at all");
     assert!(tokens.configured());
 
+    // A token file that arrived with the tree (readable by others, as a clone
+    // leaves it) is not believed; one the operator wrote is.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let planted = dir.join("planted-tokens");
+        std::fs::copy(&path, &planted).unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(auth::read(&planted).is_empty());
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!auth::read(&planted).is_empty());
+        // Emptied after tokens were in effect: nobody gets in, not everybody.
+        let once = Tokens::new(planted.clone());
+        assert!(once.configured());
+        std::fs::write(&planted, "").unwrap();
+        assert!(once.configured(), "per-user auth stays in effect");
+        assert_eq!(once.identify(Some(&secret), now), None);
+        std::fs::remove_file(&planted).unwrap();
+        assert!(once.configured(), "a deleted file admits nobody");
+    }
+
     let rotated = auth::rotate(&path, "anna", 0).unwrap();
     let rotated_entries = auth::read(&path);
     assert_eq!(
@@ -13625,6 +13646,20 @@ fn demo_scope() {
 fn demo_ignored_paths() {
     use std::path::Path;
     let root = Path::new("/home/u/repo");
+
+    // A tree that itself sits inside a hidden or build directory is judged
+    // below its root only, or nothing in it is indexed.
+    for parent in ["/home/u/.claude/worktrees/w", "/home/u/target/w"] {
+        let tree = Path::new(parent);
+        assert!(
+            !watcher::ignored_under(&tree.join("src/f.rs"), Some(tree)),
+            "{parent}"
+        );
+        assert!(
+            watcher::ignored_under(&tree.join(".cache/f.rs"), Some(tree)),
+            "{parent}"
+        );
+    }
 
     // Scratch space at the top of the tree, ignored.
     assert!(watcher::ignored_under(
