@@ -6152,6 +6152,25 @@ fn demo_embed() {
         "two distinct nodes must not collapse onto one vector: {ab}"
     );
 
+    // A sink ends only its own step. Sinks at even ids, each odd id calling
+    // the next: every caller must have moved off its starting vector, however
+    // the nodes are split across threads.
+    let mut chain = csr::CsrBuilder::new();
+    for i in 0..64u32 {
+        chain.add_node(i + 1);
+    }
+    for i in (1..63u32).step_by(2) {
+        chain.add_edge(i, e(i + 1));
+    }
+    let chain = graph::Graph::new(chain.build()).load();
+    let (moved, start) = (embed::embed(&chain, 4), embed::embed(&chain, 0));
+    for i in (1..63u32).step_by(2) {
+        assert!(
+            moved.get(i) != start.get(i),
+            "node {i} kept its starting vector"
+        );
+    }
+
     // Vectors are L2-normalised, so self-similarity is 1.
     assert!((emb.similarity(0, 0) - 1.0).abs() < 1e-4);
     // Similarity is symmetric.
