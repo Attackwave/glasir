@@ -29,7 +29,7 @@ pub fn is_fresh(graph: &Path, source: &Path) -> bool {
 
 pub fn write(csr: &BaseCsr, path: &Path) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(csr).map_err(std::io::Error::other)?;
-    std::fs::write(path, &bytes)
+    crate::files::replace(path, &bytes)
 }
 
 /// A validated CSR block held in owned memory.
