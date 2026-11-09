@@ -35,10 +35,9 @@ questions-docs           95
 # documentation. Without the spelling fold, or with the earlier z->t fold, it
 # reads 50%.
 questions-docs-de        65
-# structural reads 96 since `explain_node` lists the embeddings' neighbours
-# alone: the `auth.rs#current` question fails until the embeddings place
-# `configured` again (owner decision, 2026-11-08).
-structural               96
+# structural: `explain_node` lists the embeddings' neighbours alone; 100
+# since the propagation runs over every node.
+structural               100
 partition                62
 deep                     92
 

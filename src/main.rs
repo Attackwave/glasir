@@ -22,6 +22,7 @@ mod csr;
 mod delta;
 mod docs;
 mod embed;
+mod files;
 mod graph;
 mod guard;
 mod history;
@@ -1626,6 +1627,7 @@ fn write_registration(
     dry: bool,
 ) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let tree = root;
     let (exe, root) = (exe.to_string_lossy(), root.to_string_lossy());
 
     let updated = match target.format.store() {
@@ -1678,7 +1680,7 @@ fn write_registration(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, updated)?;
+        files::replace_in(tree, path, updated.as_bytes())?;
     }
     Ok(true)
 }
@@ -1782,7 +1784,7 @@ fn install_assistant_hook(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, format!("{doc:#}\n"))?;
+        files::replace(path, format!("{doc:#}\n").as_bytes())?;
     }
     Ok(true)
 }
@@ -1820,7 +1822,7 @@ fn uninstall_assistant_hook(
         if doc.as_object().is_some_and(|d| d.is_empty()) {
             std::fs::remove_file(path)?;
         } else {
-            std::fs::write(path, format!("{doc:#}\n"))?;
+            files::replace(path, format!("{doc:#}\n").as_bytes())?;
         }
     }
     Ok(true)
@@ -1954,7 +1956,7 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
 
         if !dry {
             match updated {
-                Some(text) => std::fs::write(&path, text)?,
+                Some(text) => files::replace_in(root, &path, text.as_bytes())?,
                 None => std::fs::remove_file(&path)?,
             }
         }
@@ -3813,6 +3815,8 @@ fn hook_script(hook: &str, exe: &std::path::Path, graph: Option<&std::path::Path
         "{HOOK_BEGIN}\n\
          # Keeps the code graph current after the tree changes under it.\n\
          # Installed by: glasir install — remove with: glasir uninstall\n\
+         # A subshell: its `exit` ends this block, never the rest of the hook.\n\
+         (\n\
          [ \"${{GLASIR_SKIP_HOOK:-0}}\" = \"1\" ] && exit 0\n\
          {guard}\n\
          # Mid-operation states are not worth indexing: a rebase or merge in\n\
@@ -3830,6 +3834,7 @@ fn hook_script(hook: &str, exe: &std::path::Path, graph: Option<&std::path::Path
          _log=\"${{TMPDIR:-/tmp}}/glasir-refresh.log\"\n\
          ({exe} analyse {tree} >>\"$_log\" 2>&1 || \\\n\
          \techo \"$(date): glasir analyse failed, graph may be stale\" >>\"$_log\") &\n\
+         )\n\
          {HOOK_END}\n",
         // Single-quoted, with any embedded quote escaped. `current_exe` is not
         // under our control: a path with a space silently breaks the hook, and
@@ -3913,6 +3918,20 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
     notes
 }
 
+/// A `#!` line naming a POSIX-style shell, directly or through `env`.
+fn is_shell_script(text: &str) -> bool {
+    let Some(line) = text.lines().next().and_then(|l| l.strip_prefix("#!")) else {
+        return false;
+    };
+    let mut words = line.split_whitespace();
+    let mut prog = words.next().unwrap_or("");
+    if prog.ends_with("/env") {
+        prog = words.find(|w| !w.starts_with('-')).unwrap_or("");
+    }
+    let name = prog.rsplit('/').next().unwrap_or("");
+    matches!(name, "sh" | "bash" | "dash" | "zsh" | "ksh" | "ash")
+}
+
 fn install_hooks_in(
     root: &std::path::Path,
     exe: &std::path::Path,
@@ -3929,12 +3948,16 @@ fn install_hooks_in(
 
     for hook in HOOKS {
         let path = dir.join(hook);
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            notes.push(format!("{hook}: is a symbolic link, leaving it alone"));
+            continue;
+        }
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         if existing.contains(HOOK_BEGIN) {
             notes.push(format!("{hook}: already installed"));
             continue;
         }
-        if !existing.trim().is_empty() && !existing.starts_with("#!") {
+        if !existing.trim().is_empty() && !is_shell_script(&existing) {
             notes.push(format!(
                 "{hook}: exists but is not a shell script, leaving it alone"
             ));
@@ -3950,7 +3973,7 @@ fn install_hooks_in(
             notes.push(format!("{hook}: would write {}", path.display()));
             continue;
         }
-        if std::fs::write(&path, body).is_err() {
+        if files::replace(&path, body.as_bytes()).is_err() {
             notes.push(format!("{hook}: could not write {}", path.display()));
             continue;
         }
@@ -4008,7 +4031,7 @@ fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
         let done = if bare {
             std::fs::remove_file(&path)
         } else {
-            std::fs::write(&path, rest)
+            files::replace(&path, rest.as_bytes())
         };
         notes.push(match done {
             Ok(()) => format!("{hook}: removed"),
@@ -4044,7 +4067,7 @@ fn add_ignore_lines(path: &std::path::Path, names: &[&str]) {
         };
         current = format!("{current}{sep}{name}\n");
     }
-    let _ = std::fs::write(path, current);
+    let _ = files::replace(path, current.as_bytes());
 }
 
 /// Everything an analysis or a served tree writes beside the sources.
@@ -6167,6 +6190,25 @@ fn demo_embed() {
         ab < 0.999,
         "two distinct nodes must not collapse onto one vector: {ab}"
     );
+
+    // A sink ends only its own step. Sinks at even ids, each odd id calling
+    // the next: every caller must have moved off its starting vector, however
+    // the nodes are split across threads.
+    let mut chain = csr::CsrBuilder::new();
+    for i in 0..64u32 {
+        chain.add_node(i + 1);
+    }
+    for i in (1..63u32).step_by(2) {
+        chain.add_edge(i, e(i + 1));
+    }
+    let chain = graph::Graph::new(chain.build()).load();
+    let (moved, start) = (embed::embed(&chain, 4), embed::embed(&chain, 0));
+    for i in (1..63u32).step_by(2) {
+        assert!(
+            moved.get(i) != start.get(i),
+            "node {i} kept its starting vector"
+        );
+    }
 
     // Vectors are L2-normalised, so self-similarity is 1.
     assert!((emb.similarity(0, 0) - 1.0).abs() < 1e-4);
@@ -11919,6 +11961,46 @@ fn demo_hooks() {
             .contains("npm test")
     );
 
+    // A hook in another language, and one linked to a tracked script, are
+    // left as they are; the block's own exits end only the block.
+    let hooks = dir.join(".git/hooks");
+    std::fs::write(
+        hooks.join("post-merge"),
+        "#!/usr/bin/env python3
+print(1)
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tracked-hook"),
+        "#!/bin/sh
+echo mine
+",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("tracked-hook"), hooks.join("post-rewrite")).unwrap();
+    let notes = install_hooks(&dir, exe, false);
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("post-merge")).unwrap(),
+        "#!/usr/bin/env python3\nprint(1)\n",
+        "{notes:?}"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_to_string(dir.join("tracked-hook")).unwrap(),
+        "#!/bin/sh\necho mine\n",
+        "{notes:?}"
+    );
+    let block = hook_script("post-checkout", exe, None);
+    let ran = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{block}\necho after"))
+        .args(["sh", "a", "a", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "after\n", "{block}");
+
     // The stored graph must be ignored, or an analysis leaves the tree dirty
     // and git refuses the next branch switch: "Please commit your changes".
     // This was found by a hook doing exactly that.
@@ -12010,6 +12092,27 @@ fn demo_auth() {
     assert_eq!(tokens.identify(Some(&other), now), None, "unknown token");
     assert_eq!(tokens.identify(None, now), None, "no token at all");
     assert!(tokens.configured());
+
+    // A token file that arrived with the tree (readable by others, as a clone
+    // leaves it) is not believed; one the operator wrote is.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let planted = dir.join("planted-tokens");
+        std::fs::copy(&path, &planted).unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(auth::read(&planted).is_empty());
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!auth::read(&planted).is_empty());
+        // Emptied after tokens were in effect: nobody gets in, not everybody.
+        let once = Tokens::new(planted.clone());
+        assert!(once.configured());
+        std::fs::write(&planted, "").unwrap();
+        assert!(once.configured(), "per-user auth stays in effect");
+        assert_eq!(once.identify(Some(&secret), now), None);
+        std::fs::remove_file(&planted).unwrap();
+        assert!(once.configured(), "a deleted file admits nobody");
+    }
 
     let rotated = auth::rotate(&path, "anna", 0).unwrap();
     let rotated_entries = auth::read(&path);
@@ -12424,6 +12527,18 @@ fn demo_snapshot() {
         snapshot::source_times(&dir, std::slice::from_ref(&src)),
     );
     snapshot::write(&stored, &path).unwrap();
+
+    // A link planted where an output goes is never written through.
+    #[cfg(unix)]
+    {
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "mine").unwrap();
+        let link = dir.join("linked-graph");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(snapshot::write(&stored, &link).is_err());
+        assert!(files::append_options(0o600).open(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine");
+    }
 
     // Names are the reason this exists: a bare CSR stores interned keys whose
     // strings live in an arena that was never written, so reading one back
@@ -13155,8 +13270,39 @@ fn demo_repos() {
     assert!(repos::repos(&dir).is_err(), "an external diff is a command");
     git(&dir.join("client"), &["config", "--unset", "diff.external"]);
     assert!(repos::repos(&dir).is_ok());
+    // A file the repository includes is the repository's configuration too.
+    std::fs::write(
+        dir.join("client/.git/extra.cfg"),
+        "[gpg]\n\tprogram = /bin/true\n",
+    )
+    .unwrap();
+    git(
+        &dir.join("client"),
+        &["config", "include.path", "extra.cfg"],
+    );
+    let refused = repos::repos(&dir).unwrap_err();
+    assert!(refused.contains("gpg.program"), "{refused}");
+    git(&dir.join("client"), &["config", "--unset", "include.path"]);
+    assert!(repos::repos(&dir).is_ok());
+    // The programs it could start are off for every command run here.
+    let args: Vec<String> = repos::git(&dir)
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    for off in ["core.fsmonitor=false", "log.showSignature=false"] {
+        assert!(args.iter().any(|a| a == off), "{args:?}");
+    }
+
+    // A name outside ASCII, which git prints quoted unless told otherwise.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 1; }\n").unwrap();
+    git(&dir.join("client"), &["add", "."]);
+    git(
+        &dir.join("client"),
+        &["commit", "-qm", "größe", "--no-verify"],
+    );
 
     // Uncommitted edits in two repositories read as one change.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 2; }\n").unwrap();
     std::fs::write(
         dir.join("client/src/app.rs"),
         "fn fetch() { render(); }\nfn render() { 1; }\n",
@@ -13187,6 +13333,10 @@ fn demo_repos() {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert!(symbols.contains(&"client/src/app.rs#render"), "{symbols:?}");
+    assert!(
+        symbols.contains(&"client/src/größe.rs#groesse"),
+        "{symbols:?}"
+    );
     assert!(symbols.contains(&"server/src/api.rs#handle"), "{symbols:?}");
     assert!(
         !symbols.contains(&"server/src/api.rs#store"),
@@ -13521,6 +13671,20 @@ fn demo_scope() {
 fn demo_ignored_paths() {
     use std::path::Path;
     let root = Path::new("/home/u/repo");
+
+    // A tree that itself sits inside a hidden or build directory is judged
+    // below its root only, or nothing in it is indexed.
+    for parent in ["/home/u/.claude/worktrees/w", "/home/u/target/w"] {
+        let tree = Path::new(parent);
+        assert!(
+            !watcher::ignored_under(&tree.join("src/f.rs"), Some(tree)),
+            "{parent}"
+        );
+        assert!(
+            watcher::ignored_under(&tree.join(".cache/f.rs"), Some(tree)),
+            "{parent}"
+        );
+    }
 
     // Scratch space at the top of the tree, ignored.
     assert!(watcher::ignored_under(

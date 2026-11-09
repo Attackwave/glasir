@@ -35,7 +35,15 @@ could reach:
   `SessionStart` hook in `.claude/settings.local.json` that runs `glasir hook`
   (reads the event from stdin, prints a note). Existing files are merged
   into, never replaced; a registration file it creates is gitignored.
-  `uninstall` removes exactly what it wrote.
+  `uninstall` removes exactly what it wrote. A hook is appended to only when
+  it is a shell script; the block runs in a subshell, so it cannot end the
+  rest of the hook.
+- **It never writes through a symbolic link inside the tree.** Every file
+  above, and every hook, is replaced through a sibling file and a rename or
+  opened with `O_NOFOLLOW`; a link planted where one of them goes is refused,
+  so a tree cannot redirect a write to a file outside it. User-level
+  registrations (`install --user`) still follow links, as dotfile managers
+  expect.
 - **The Claude Code plugin runs in every project you open.** It starts
   `glasir serve --plugin` on the session's directory, which refuses a directory
   outside a git repository, and adds the generated file names to that
@@ -67,11 +75,17 @@ could reach:
   dependency belongs stated rather than discovered. A revision a client passes
   to `detect_changes` or `affected_tests` is refused when it starts with `-`,
   so git can never read it as an option (fixed in 0.3.0). A repository is
-  refused, by name, when its own `.git/config` names a command git would run
-  on those operations (`core.fsmonitor` other than git's daemon,
-  `diff.external`, a diff driver's `command` or `textconv`, `filter.*`): a
-  served tree is not trusted to run anything. Every git child runs with a
-  deadline and a bound on the output read.
+  refused, by name, when its own configuration — `.git/config`, any file it
+  includes, or a worktree's own file — names a command git would run on those
+  operations (`core.fsmonitor` other than git's daemon, `core.sshCommand`,
+  `core.gitProxy`, `diff.external`, a diff driver's `command` or `textconv`,
+  `filter.*`, `gpg.program`, a remote's `uploadpack`/`receivepack`/`proxy`,
+  `extensions.partialClone`): a served tree is not trusted to run anything.
+  Independently of that check, every git child runs with `core.fsmonitor`
+  and `log.showSignature` off, without lazy fetching of missing objects,
+  without external diffs or text conversion, and with any `GIT_DIR`-style
+  variable of the calling environment removed. Each has a deadline and a
+  bound on the output read.
 
 ## Language rules
 
@@ -100,12 +114,21 @@ target, and all three of its defences are enforced:
   `localhost.evil.com`, which the self-check asserts against.
 - **Bearer tokens.** Per-user tokens take precedence over a shared `--token`:
   once any user token exists the shared one stops working, so issuing tokens
-  cannot leave an anonymous door open beside them. The shared token is compared
-  in constant time.
+  cannot leave an anonymous door open beside them. Once in effect, per-user
+  auth stays in effect for the life of the process: an emptied, unreadable or
+  deleted token file admits nobody. A `.glasir-tokens` that this user owns but
+  others may read is ignored with a warning: `token issue` writes mode 0600,
+  and a file that came with a clone or an archive does not look like that. The
+  shared token is compared in constant time.
 
-Also enforced: read and write timeouts, a bounded connection pool, a 1 MiB body
-cap and a header-count cap — the last two before authentication, since
-`Content-Length` is attacker-controlled and arrives first.
+Also enforced: read and write timeouts per operation and a 30-second deadline
+for a whole request to arrive, a bounded connection pool, a 1 MiB body cap, a
+16 KiB line cap and a cap of 100 header lines — the caps before
+authentication, since `Content-Length` is attacker-controlled and arrives first.
+
+`glasir view` is unauthenticated. On loopback it answers only a `Host` naming
+loopback, which a page reached through a rebound DNS name does not send; bound
+to another address it warns that anyone reaching it can read the graph.
 
 **A `GET` opens an event stream, and it holds a connection slot for as long as
 it is open.** The pool is 32, so streams are subject to the same cap as any

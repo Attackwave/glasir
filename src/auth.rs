@@ -62,11 +62,40 @@ impl Entry {
     }
 }
 
+/// Refuses a token file that arrived with the tree. A clone or an unpacked
+/// archive leaves its files owned by whoever unpacked them and, under the
+/// usual umask, readable by others; `token issue` writes mode 0600, and a file
+/// provisioned by an administrator (a mounted secret) belongs to someone else.
+/// A link is judged by what it points to.
+fn trusted(path: &Path) -> Result<(), &'static str> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return Ok(()); // missing: an empty set
+        };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let mine = meta.uid() == unsafe { libc::geteuid() };
+        if mine && meta.mode() & 0o077 != 0 {
+            return Err(
+                "others may read it, so it was not written by `token issue` (chmod 600 if it was)",
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Reads the token file, skipping blank lines, comments and corrupt records.
 ///
 /// A missing file is an empty set, not an error: a server with no token file is
 /// simply one that has no per-user tokens configured.
 pub fn read(path: &Path) -> Vec<Entry> {
+    if let Err(why) = trusted(path) {
+        eprintln!("glasir: ignoring {}: {why}", path.display());
+        return Vec::new();
+    }
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -83,14 +112,9 @@ pub fn read(path: &Path) -> Vec<Entry> {
 /// briefly world-readable is a file that can be read.
 pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    opts.open(path)?.write_all(entry.line().as_bytes())
+    crate::files::append_options(0o600)
+        .open(path)?
+        .write_all(entry.line().as_bytes())
 }
 
 /// Removes every entry with this name, returning how many went.
@@ -103,7 +127,7 @@ pub fn revoke(path: &Path, name: &str) -> std::io::Result<usize> {
     let gone = read(path).len() - kept.len();
     if gone > 0 {
         let body: String = kept.iter().map(|e| e.line()).collect();
-        std::fs::write(path, body)?;
+        crate::files::replace(path, body.as_bytes())?;
     }
     Ok(gone)
 }
@@ -174,6 +198,9 @@ pub fn identify(entries: &[Entry], token: &str, now: u64) -> Option<String> {
 pub struct Tokens {
     path: PathBuf,
     cache: Mutex<(Option<FileStamp>, Vec<Entry>)>,
+    /// Set once the file has held a token: from then on an empty, unreadable
+    /// or deleted file admits nobody rather than everybody.
+    seen: std::sync::atomic::AtomicBool,
 }
 
 /// Identity of the token file, not merely its modification time. Atomic token
@@ -207,13 +234,18 @@ impl Tokens {
         Tokens {
             path,
             cache: Mutex::new((None, Vec::new())),
+            seen: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// True when the file holds at least one token, so the server knows whether
-    /// per-user auth is configured at all.
+    /// True when the file holds at least one token, or has held one since this
+    /// process started: per-user auth, once in effect, stays in effect.
     pub fn configured(&self) -> bool {
-        !self.current().is_empty()
+        use std::sync::atomic::Ordering;
+        if !self.current().is_empty() {
+            self.seen.store(true, Ordering::Relaxed);
+        }
+        self.seen.load(Ordering::Relaxed)
     }
 
     pub fn current(&self) -> Vec<Entry> {
