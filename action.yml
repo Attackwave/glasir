@@ -56,13 +56,17 @@ runs:
         mkdir -p "$dir"
         gh release download "$VERSION" --repo "$repo" --pattern "$name" --pattern "$name.sha256" --dir "$dir"
         (cd "$dir" && sha256sum --check --strict "$name.sha256")
-        # The archive must come from this repository's release workflow.
-        gh attestation verify "$dir/$name" --repo "$repo"
+        # The archive must come from this repository's release workflow, run
+        # for this tag: an attested archive of another release does not pass.
+        gh attestation verify "$dir/$name" --repo "$repo" \
+          --signer-workflow "$repo/.github/workflows/release.yml" \
+          --source-ref "refs/tags/$VERSION"
         tar -xzf "$dir/$name" -C "$dir"
         bin=$(find "$dir" -type f -name glasir | head -n 1)
         chmod +x "$bin"
         echo "$(dirname "$bin")" >> "$GITHUB_PATH"
-        "$bin" --version
+        test "$("$bin" --version)" = "glasir ${VERSION#v}" || {
+          echo "the archive for $VERSION reports $("$bin" --version)" >&2; exit 1; }
     - name: Review the change
       id: review
       shell: bash

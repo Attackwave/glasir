@@ -2314,21 +2314,38 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         let new_src = if working {
             std::fs::read_to_string(root.join(file)).ok()
         } else {
-            git(&repo.root, &["show", &format!("HEAD:{local}")])
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            git(
+                &repo.root,
+                &["show", "--no-textconv", &format!("HEAD:{local}")],
+            )
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         };
         let hunks = git(
             &repo.root,
-            &[&["diff", "-U0", "--no-color"][..], &against, &["--", local]].concat(),
+            &[
+                &[
+                    "diff",
+                    "-U0",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ][..],
+                &against,
+                &["--", local],
+            ]
+            .concat(),
         )
         .ok()
         .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
-        let old_src = git(&repo.root, &["show", &format!("{base}:{local}")])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let old_src = git(
+            &repo.root,
+            &["show", "--no-textconv", &format!("{base}:{local}")],
+        )
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         removed.extend(
             removed_names(served, file, old_src.as_deref(), new_src.as_deref())
                 .into_iter()
