@@ -26,7 +26,7 @@ pub fn directory() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| crate::home().map(|h| h.join(".local").join("state")))?;
+        .or_else(|| crate::files::home().map(|h| h.join(".local").join("state")))?;
     Some(base.join("glasir").join("servers"))
 }
 
@@ -203,14 +203,14 @@ pub struct Sleeper<T> {
     state: std::sync::Arc<crate::published::Published<T>>,
     asleep: std::sync::atomic::AtomicBool,
     turn: std::sync::Mutex<()>,
-    empty: Box<dyn Fn() -> T + Send + Sync>,
+    empty: Box<dyn Fn(&T) -> T + Send + Sync>,
     load: Box<dyn Fn() -> Option<T> + Send + Sync>,
 }
 
 impl<T> Sleeper<T> {
     pub fn new(
         state: std::sync::Arc<crate::published::Published<T>>,
-        empty: impl Fn() -> T + Send + Sync + 'static,
+        empty: impl Fn(&T) -> T + Send + Sync + 'static,
         load: impl Fn() -> Option<T> + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -226,23 +226,22 @@ impl<T> Sleeper<T> {
         self.asleep.load(Ordering::Acquire)
     }
 
-    /// Drops the graph when nothing asked for `after` seconds. Under the same
-    /// lock as `wake`, so a request arriving now never meets the empty state.
-    pub fn sleep_if_idle(&self, idle: u64, after: u64) {
+    /// Drops the graph when nothing asked for `after` seconds. `idle` is read
+    /// under the lock every `wake` takes, so a request that noted itself
+    /// before is seen, and one after finds the server asleep and loads.
+    pub fn sleep_if_idle(&self, idle: impl Fn() -> u64, after: u64) {
         let _turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
-        if after == 0 || idle < after || self.is_asleep() {
+        if after == 0 || self.is_asleep() || idle() < after {
             return;
         }
-        self.state.store(std::sync::Arc::new((self.empty)()));
+        let empty = (self.empty)(&self.state.load());
+        self.state.store(std::sync::Arc::new(empty));
         self.asleep.store(true, Ordering::Release);
     }
 
     /// Loads the graph again before a request is answered. A failed load keeps
     /// the server asleep, so the next request tries again.
     pub fn wake(&self) {
-        if !self.is_asleep() {
-            return;
-        }
         let _turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
         if !self.is_asleep() {
             return;

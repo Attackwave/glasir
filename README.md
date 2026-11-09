@@ -532,7 +532,9 @@ it fails the build.
 
 `/health` answers without a credential for liveness. `/ready` is the deployment
 probe: it proves a graph is loaded and returns its `indexed_at`, publish
-`generation` and any last re-index error. `/metrics` answers without a
+`generation` and any last re-index error. A server asleep after
+`--sleep-after` reports `"asleep":true` with the size and `indexed_at` of the
+graph the next request loads again. `/metrics` answers without a
 credential with Prometheus counters — calls, errors and time per tool, refusals,
 a latency histogram, and the graph's size. `/mcp` stays behind the token either
 way.
