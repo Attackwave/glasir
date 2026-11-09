@@ -681,6 +681,7 @@ fn tool_list() -> Value {
         "properties": {
             "min_confidence": {"type": "string"},
             "max_len": {"type": "integer"},
+            "truncated": {"type": "boolean", "description": "The search stopped at its step budget; longer cycles may exist"},
             "cycles": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
@@ -1094,11 +1095,16 @@ fn confidence_label(c: Confidence) -> &'static str {
     }
 }
 
-fn parse_confidence(s: &str) -> Confidence {
+/// A misspelt tier is an error: read as the weakest, it widened the answer
+/// silently.
+fn parse_confidence(s: &str) -> Result<Confidence, String> {
     match s {
-        "extracted" => Confidence::Extracted,
-        "inferred" => Confidence::Inferred,
-        _ => Confidence::Ambiguous,
+        "extracted" => Ok(Confidence::Extracted),
+        "inferred" => Ok(Confidence::Inferred),
+        "ambiguous" => Ok(Confidence::Ambiguous),
+        other => Err(format!(
+            "min_confidence must be extracted, inferred or ambiguous, not {other:?}"
+        )),
     }
 }
 
@@ -1368,7 +1374,7 @@ this tree may name your concept differently.\n",
 fn shortest_path(served: &Served, args: &Value) -> Result<Value, String> {
     let from = args["from"].as_str().ok_or("from must be a string")?;
     let to = args["to"].as_str().ok_or("to must be a string")?;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
 
     // `resolve_one`, not `seeds().first()`. A bare name is a registry key, so
     // the seed path took the *placeholder* and answered about it without
@@ -1731,7 +1737,7 @@ placed in a subsystem\n\n",
 fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let symbol = args["symbol"].as_str().ok_or("symbol must be a string")?;
     let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let node = served.resolve_one(symbol)?;
     let mut levels = reverse_levels(served, &[node], depth, floor);
     if levels.is_empty() {
@@ -1848,7 +1854,7 @@ fn more_line(v: &Value, total: u64) -> String {
 /// strict, as in `impact`.
 fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     let symbol = args["symbol"].as_str().ok_or("symbol must be a string")?;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let node = served.resolve_one(symbol)?;
 
     let reverse = served.snap.reverse();
@@ -2327,21 +2333,38 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         let new_src = if working {
             std::fs::read_to_string(root.join(file)).ok()
         } else {
-            git(&repo.root, &["show", &format!("HEAD:{local}")])
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            git(
+                &repo.root,
+                &["show", "--no-textconv", &format!("HEAD:{local}")],
+            )
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         };
         let hunks = git(
             &repo.root,
-            &[&["diff", "-U0", "--no-color"][..], &against, &["--", local]].concat(),
+            &[
+                &[
+                    "diff",
+                    "-U0",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ][..],
+                &against,
+                &["--", local],
+            ]
+            .concat(),
         )
         .ok()
         .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
-        let old_src = git(&repo.root, &["show", &format!("{base}:{local}")])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let old_src = git(
+            &repo.root,
+            &["show", "--no-textconv", &format!("{base}:{local}")],
+        )
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         removed.extend(
             removed_names(served, file, old_src.as_deref(), new_src.as_deref())
                 .into_iter()
@@ -3242,7 +3265,7 @@ const TEST_DEPTH: u64 = 12;
 /// guess which of them are tests.
 fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
     let depth = args["depth"].as_u64().unwrap_or(TEST_DEPTH).clamp(1, 30) as usize;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let mut single = None;
     let (target, seeds, unknown) = match args["symbol"].as_str() {
         Some(symbol) => {
@@ -4970,7 +4993,7 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
     // to syntactic ones when it does not: a tree with no index would otherwise
     // report "no cycles" for want of a single edge strong enough to walk.
     let floor = match args["min_confidence"].as_str() {
-        Some(named) => parse_confidence(named),
+        Some(named) => parse_confidence(named)?,
         None => crate::guard::cycle_default(served.snap),
     };
 
@@ -4985,38 +5008,12 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
         }
     }
 
-    // Each cycle is reported once, from its lowest-numbered file: a search
-    // starting at `start` never steps onto a file below it, so a rotation
-    // cannot be found twice and no separate dedup pass is needed.
-    let mut found: Vec<Vec<usize>> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    let mut on_stack = vec![false; files.len()];
-    for start in 0..files.len() {
-        if found.len() >= limit {
-            break;
-        }
-        stack.push(start);
-        on_stack[start] = true;
-        walk(
-            start,
-            start,
-            &adj,
-            &mut stack,
-            &mut on_stack,
-            max_len,
-            limit,
-            &mut found,
-        );
-        on_stack[start] = false;
-        stack.pop();
-    }
-
-    found.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
-    found.truncate(limit);
+    let (found, truncated) = crate::guard::simple_cycles(&adj, max_len, limit);
 
     Ok(json!({
         "min_confidence": confidence_label(floor),
         "max_len": max_len,
+        "truncated": truncated,
         // The files in loop order, without repeating the first at the end: the
         // prose says "back to X" instead, and a consumer closing the loop
         // itself is better served than one that has to know the last entry is
@@ -5033,10 +5030,19 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
 
 fn render_cycles(v: &Value) -> String {
     let found = v["cycles"].as_array().map_or(&[][..], Vec::as_slice);
+    let cut = if v["truncated"] == true {
+        "the search stopped at its step budget, so longer cycles may exist; lower max_len to search fewer\n"
+    } else {
+        ""
+    };
     if found.is_empty() {
+        let none = if cut.is_empty() {
+            "every dependency runs one way\n"
+        } else {
+            cut
+        };
         return format!(
-            "no cycles up to {} files among {}-confidence edges: every \
-dependency runs one way\n",
+            "no cycles up to {} files among {}-confidence edges: {none}",
             v["max_len"].as_u64().unwrap_or(0),
             v["min_confidence"].as_str().unwrap_or("")
         );
@@ -5056,52 +5062,8 @@ dependency runs one way\n",
         ));
         out.push_str(&format!("  back to {}\n", names.first().unwrap_or(&"")));
     }
+    out.push_str(cut);
     out
-}
-
-/// One step of the cycle search. Split out because the recursion needs a name;
-/// everything it touches is owned by `cycles`.
-#[allow(clippy::too_many_arguments)]
-fn walk(
-    start: usize,
-    at: usize,
-    adj: &[std::collections::BTreeSet<usize>],
-    stack: &mut Vec<usize>,
-    on_stack: &mut [bool],
-    max_len: usize,
-    limit: usize,
-    found: &mut Vec<Vec<usize>>,
-) {
-    if found.len() >= limit {
-        return;
-    }
-    for &next in &adj[at] {
-        if next == start {
-            found.push(stack.clone());
-            if found.len() >= limit {
-                return;
-            }
-            continue;
-        }
-        // Below `start` means this cycle has a lower entry point and will be
-        // (or was) found from there instead.
-        if next < start || on_stack[next] {
-            continue;
-        }
-        // The bound stops the *descent*, not the check above it: a cycle of
-        // `max_len` files is found by walking `max_len` nodes and then seeing
-        // the edge back to `start`. Testing before the loop returned one step
-        // early, so `max_len: 2` reported "every dependency runs one way" on a
-        // tree holding `audit.rs -> main.rs -> audit.rs`.
-        if stack.len() >= max_len {
-            continue;
-        }
-        stack.push(next);
-        on_stack[next] = true;
-        walk(start, next, adj, stack, on_stack, max_len, limit, found);
-        on_stack[next] = false;
-        stack.pop();
-    }
 }
 
 /// Rounds to the precision the prose prints at.

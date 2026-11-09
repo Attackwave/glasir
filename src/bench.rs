@@ -134,8 +134,8 @@ pub fn grep_answer(files: &[(String, String)], q: &Question) -> Answer {
             let hits = words
                 .iter()
                 .filter(|w| {
-                    let stem = &w[..w.len().min(5)];
-                    lower.contains(stem)
+                    let end = w.char_indices().nth(5).map_or(w.len(), |(i, _)| i);
+                    lower.contains(&w[..end])
                 })
                 .count();
             (hits, path, body)

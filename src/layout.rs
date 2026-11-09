@@ -418,7 +418,7 @@ pub fn write(layout: &Layout, path: &std::path::Path) -> std::io::Result<()> {
         y: layout.y.clone(),
     };
     let bytes = serde_json::to_vec(&stored).map_err(std::io::Error::other)?;
-    std::fs::write(path, &bytes)
+    crate::files::replace(path, &bytes)
 }
 
 /// What a stored layout must match: the rules that produced the graph, and

@@ -133,16 +133,27 @@ pub fn load_expectations(path: &std::path::Path) -> std::io::Result<Vec<Expectat
             continue;
         }
         let f: Vec<&str> = line.split_whitespace().collect();
-        if let [lang, d, e, m] = f.as_slice()
-            && let (Ok(min_defs), Ok(min_edges), Ok(max_module)) = (d.parse(), e.parse(), m.parse())
-        {
-            out.push(Expectation {
-                lang: lang.to_string(),
-                min_defs,
-                min_edges,
-                max_module,
-            });
-        }
+        // A line that does not parse is an error: skipped, it would silently
+        // remove that language's floor.
+        let [lang, d, e, m] = f.as_slice() else {
+            return Err(std::io::Error::other(format!(
+                "{}: not `<lang> <defs> <edges> <module>`: {line}",
+                path.display()
+            )));
+        };
+        let (Ok(min_defs), Ok(min_edges), Ok(max_module)) = (d.parse(), e.parse(), m.parse())
+        else {
+            return Err(std::io::Error::other(format!(
+                "{}: not a number in: {line}",
+                path.display()
+            )));
+        };
+        out.push(Expectation {
+            lang: lang.to_string(),
+            min_defs,
+            min_edges,
+            max_module,
+        });
     }
     Ok(out)
 }
