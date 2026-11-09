@@ -451,6 +451,7 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "file": {"type": "string", "description": "Relative to the indexed root"},
                     "line": {"type": "integer", "description": "1-based, where the definition starts"},
@@ -530,6 +531,10 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "crates": {"type": "array", "description": "Rust crates when the tree holds several", "items": {"type": "object", "properties": {"name": {"type": "string"}, "dir": {"type": "string"}, "symbols": {"type": "integer"}}}},
+                    "rust_outside_modules": {"type": "array", "items": {"type": "string"}, "description": "Rust files no `mod` reaches from a crate root"},
+                    "server_version": {"type": "string"},
+                    "indexed_at": {"type": "integer", "description": "Unix seconds the graph was built"},
             "symbols": {"type": "integer"},
             "files": {"type": "integer"},
             "shown": {"type": "integer", "description": "How many subsystems this page holds"},
@@ -621,6 +626,11 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "untraced": {"type": "array", "description": "Callers through a pointer or table the graph cannot follow, nearest first", "items": {"type": "object", "properties": {"symbol": {"type": "string"}, "line": {"type": "integer"}}}},
+                    "untraced_total": {"type": "integer"},
+                    "library_calls": {"type": "integer", "description": "Calls into code outside the tree, which may lead back in"},
+    "named_elsewhere": {"type": "array", "items": {"type": "string"}, "description": "Files that name the symbol with no edge to it"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
             "symbol": {"type": "string"},
             "dependents": {"type": "integer"},
             "within": {"type": "integer", "description": "Hops the dependents span"},
@@ -700,6 +710,7 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
             "symbol": {"type": "string"},
             "role": {"type": "string", "enum": ["member", "connector"]},
             "community": {"type": "integer"},
@@ -759,6 +770,10 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "untraced": {"type": "array", "description": "Callers through a pointer or table the graph cannot follow, nearest first", "items": {"type": "object", "properties": {"symbol": {"type": "string"}, "line": {"type": "integer"}}}},
+                    "untraced_total": {"type": "integer"},
+                    "library_calls": {"type": "integer", "description": "Calls into code outside the tree, which may lead back in"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "count": {"type": "integer"},
                     "next_offset": {"type": "integer", "description": "Present when more remain"},
@@ -868,6 +883,8 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "named_elsewhere": {"type": "array", "items": {"type": "string"}, "description": "Files that name the symbol with no edge to it"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "target": {"type": "string"},
                     "count": {"type": "integer"},
                     "files": {"type": "array", "items": {"type": "string"}},
@@ -1013,6 +1030,7 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "scanned": {"type": "integer", "description": "Commits of the file read"},
                     "changes": {"type": "array", "items": {
@@ -1021,7 +1039,8 @@ fn tool_list() -> Value {
                             "commit": {"type": "string"},
                             "date": {"type": "string"},
                             "subject": {"type": "string"},
-                            "body": {"type": "string"}
+                            "body": {"type": "string"},
+                            "body_lines_left_out": {"type": "integer", "description": "Body lines past body_lines, not returned"}
                         },
                         "required": ["commit", "date", "subject", "body"]
                     }}
@@ -3395,7 +3414,10 @@ fn render_affected_tests(v: &Value) -> String {
         }
         out.push('\n');
     }
-    if tests.is_empty() {
+    // By the total, not this page: an offset past the end is an empty page
+    // of a set that has tests.
+    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
+    if count == 0 {
         out.push_str(&format!(
             "no test in the graph reaches this within {} hops. That is not \
 proof it is untested: a test in a file the graph does not index, or one that \
@@ -3418,7 +3440,6 @@ run them:\n",
         return out;
     }
     let files = v["files"].as_array().map_or(0, Vec::len);
-    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
     out.push_str(&format!(
         "{count} test(s) in {files} file(s), nearest first:\n"
     ));
@@ -3595,7 +3616,7 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 200) as usize;
     // A commit body can be pages of release notes; its first lines say why.
     let keep = args["body_lines"].as_u64().unwrap_or(6) as usize;
-    let all = crate::commits::changes(root, file, def, window)?;
+    let (all, read) = crate::commits::changes(root, file, def, window)?;
     let changes: Vec<Value> = all
         .iter()
         .take(limit)
@@ -3616,7 +3637,7 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
             })
         })
         .collect();
-    Ok(json!({"symbol": name, "scanned": window, "changes": changes}))
+    Ok(json!({"symbol": name, "scanned": read, "changes": changes}))
 }
 
 fn render_change_history(v: &Value) -> String {
@@ -5390,8 +5411,23 @@ const INSTRUCTIONS: &str = "A graph of this codebase, served as tools. Start wit
             before reading files.";
 
 pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
-    let method = msg["method"].as_str()?;
     let id = msg.get("id").cloned();
+    let Some(method) = msg["method"].as_str() else {
+        // A request without a method, or a batch, still gets an answer, or
+        // the client waits for it forever. A reply (`result`/`error`) and a
+        // notification get none.
+        if msg.is_array() {
+            return Some(error(
+                Value::Null,
+                -32600,
+                "batches are not supported".into(),
+            ));
+        }
+        let reply = msg.get("result").is_some() || msg.get("error").is_some();
+        return id
+            .filter(|_| !reply)
+            .map(|id| error(id, -32600, "invalid request: no method".into()));
+    };
 
     // A notification has no id and must never be answered, not even on error.
     let id = id?;
@@ -5403,7 +5439,7 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
             // ours — the client then decides whether to continue.
             let requested = msg["params"]["protocolVersion"].as_str();
             let version = match requested {
-                Some(v) if v <= LEGACY_VERSION => v,
+                Some(v) if KNOWN_VERSIONS.contains(&v) => v,
                 _ => LEGACY_VERSION,
             };
             json!({"jsonrpc": "2.0", "id": id, "result": {
@@ -5454,6 +5490,14 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
                             format!("{asked:?} names no symbol exactly; this is {got}\n\n{text}");
                         value["resolved_from"] = json!(asked);
                     }
+                    #[cfg(debug_assertions)]
+                    {
+                        let undeclared = undeclared_fields(name, &value);
+                        assert!(
+                            undeclared.is_empty(),
+                            "{name} returns fields its outputSchema lacks: {undeclared:?}"
+                        );
+                    }
                     json!({"jsonrpc": "2.0", "id": id, "result": {
                         "content": [{"type": "text", "text": text}],
                         "structuredContent": value,
@@ -5480,6 +5524,51 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
         result.insert("resultType".into(), json!("complete"));
     }
     Some(response)
+}
+
+/// Revisions this server answers in; another is answered with the one it
+/// speaks, never echoed.
+const KNOWN_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", LEGACY_VERSION];
+
+/// Fields a tool returns that its `outputSchema` does not declare, by path.
+/// Checked on every call in debug builds, so the schemas cannot drift.
+#[cfg(debug_assertions)]
+fn undeclared_fields(tool: &str, value: &Value) -> Vec<String> {
+    fn walk(value: &Value, schema: &Value, at: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) => {
+                let Some(props) = schema["properties"].as_object() else {
+                    return;
+                };
+                for (k, v) in fields {
+                    match props.get(k) {
+                        Some(s) => walk(v, s, &format!("{at}.{k}"), out),
+                        None => out.push(format!("{at}.{k}")),
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for v in items {
+                    walk(v, &schema["items"], &format!("{at}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let tools = tool_definitions();
+    let Some(def) = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["name"] == tool)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    walk(value, &def["outputSchema"], "", &mut out);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The answer to a line that is no JSON.

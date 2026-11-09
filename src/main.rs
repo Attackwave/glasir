@@ -1,3 +1,5 @@
+// The tool list is one `json!` literal, deeper than the default limit.
+#![recursion_limit = "256"]
 // Phase 2 lands the watcher and parts of the delta API that phase 3's parser
 // is the first caller of; they are exercised by demo() only indirectly.
 #![allow(dead_code)]
@@ -10057,6 +10059,12 @@ fn demo_change_tools() {
         json!([{"symbol": "src/tools.rs#checks_itself", "file": "src/tools.rs", "hop": 1}]),
         "{text}"
     );
+    // A page past the end is empty; the symbol still has its test.
+    let (_, text) = call(
+        "affected_tests",
+        json!({"symbol": "src/calc.rs#sub", "offset": 5}),
+    );
+    assert!(!text.contains("no test in the graph"), "{text}");
 
     // A name the graph has no edge for is still named by the files that write
     // it: `view.rs` names log and render, `charge.rs` is already a dependent,
@@ -13452,6 +13460,12 @@ fn demo_repos() {
         json!({"symbol": "server/src/api.rs#handle"}),
     );
     assert!(!ch["changes"].as_array().unwrap().is_empty(), "{ch}");
+    // What was read, not the window asked for: the file has a few commits.
+    let deep = call(
+        "change_history",
+        json!({"symbol": "server/src/api.rs#handle", "commits": 5000}),
+    );
+    assert!(deep["scanned"].as_u64().unwrap() < 10, "{deep}");
 
     // A revision only one repository has diffs that one and skips the rest.
     let head = std::process::Command::new("git")
@@ -15266,6 +15280,22 @@ fn demo_cycles() {
         1,
         "rotations deduplicated: {text}"
     );
+
+    // A request the server cannot read is answered, or the client waits.
+    let ask = |msg: serde_json::Value| mcp::handle_for_test(&served, &msg);
+    let bad = ask(serde_json::json!({"jsonrpc": "2.0", "id": 7}));
+    assert_eq!(
+        bad.as_ref().map(|r| r["error"]["code"].clone()),
+        Some(serde_json::json!(-32600))
+    );
+    assert!(ask(serde_json::json!([{"jsonrpc": "2.0", "id": 8, "method": "ping"}])).is_some());
+    assert!(ask(serde_json::json!({"jsonrpc": "2.0", "id": 9, "result": {}})).is_none());
+    let init = ask(
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                      "params": {"protocolVersion": "1.0"}}),
+    )
+    .unwrap();
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18", "{init}");
 
     // max_len is a bound, not decoration: a 3-file cycle is out of reach at 2.
     let short = call(serde_json::json!({"max_len": 2}));

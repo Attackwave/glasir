@@ -26,7 +26,14 @@ pub struct Change {
 
 /// The commits among the last `window` touching `file` (relative to `root`)
 /// that changed the definition `name`, newest first.
-pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec<Change>, String> {
+/// Also returns how many commits of the file git yielded, which is at most
+/// `window` and less when the file has fewer.
+pub fn changes(
+    root: &Path,
+    file: &str,
+    name: &str,
+    window: usize,
+) -> Result<(Vec<Change>, usize), String> {
     let lang = Lang::from_path(Path::new(file))
         .ok_or_else(|| format!("{file} is not a language this history reads"))?;
     // The repository the file is in, which may sit below the served tree.
@@ -62,7 +69,9 @@ pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec
     let log = String::from_utf8_lossy(&out.stdout);
 
     let mut candidates = Vec::new();
+    let mut read = 0;
     for record in log.split('\u{1e}').filter(|r| !r.trim().is_empty()) {
+        read += 1;
         let mut parts = record.splitn(5, '\u{1f}');
         let (Some(sha), Some(date), Some(subject), Some(body), Some(patch)) = (
             parts.next(),
@@ -104,7 +113,7 @@ pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec
             out.push(change);
         }
     }
-    Ok(out)
+    Ok((out, read))
 }
 
 /// Largest file read back from history: a source file, not a generated blob.
