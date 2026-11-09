@@ -35,7 +35,8 @@ scoop install glasir                                       # Windows
 Or download the archive for your platform from
 [Releases](https://github.com/Attackwave/glasir/releases), check it against
 the `.sha256` beside it or its build provenance (`gh attestation verify
-<archive> --repo Attackwave/glasir`), and put `glasir` on your `PATH`:
+<archive> --repo Attackwave/glasir`, or offline with `--bundle` and the
+release's `.intoto.jsonl`), and put `glasir` on your `PATH`:
 
 | Platform | Archive |
 |---|---|
