@@ -6895,6 +6895,21 @@ fn demo_mcp() {
         refused["result"].get("structuredContent").is_none(),
         "an error result must not claim to satisfy the output schema"
     );
+    // A count that is negative, fractional, text or below its minimum is
+    // refused, not read as the default.
+    for (tool, args) in [
+        ("query_graph", json!({"query": "audit", "max_nodes": -5})),
+        ("query_graph", json!({"query": "audit", "max_nodes": 2.5})),
+        ("query_graph", json!({"query": "audit", "max_nodes": 0})),
+        ("overview", json!({"limit": "3"})),
+    ] {
+        let reply = call(json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": tool, "arguments": args}
+        }))
+        .unwrap();
+        assert_eq!(reply["result"]["isError"], true, "{tool} {args}");
+    }
 
     // Every tool advertises the schema its structured answer conforms to, or a
     // client has no way to know the shape it is being handed.
