@@ -87,3 +87,51 @@ fn a_byte_order_mark_hides_nothing() {
     let tokens = native_parsers::rules::active().identifiers(Language::Java, java);
     assert_eq!(tokens.first().map(|t| t.1), Some("package"), "{tokens:?}");
 }
+
+/// Calls on a value: through `?.`, and to a closure or parameter by its name.
+#[test]
+fn a_call_on_a_value_is_not_a_call_by_name() {
+    let calls = |src: &str| {
+        native_parsers::rules::active()
+            .parse(Language::Rust, src)
+            .calls
+    };
+    let bare = |src: &str, callee: &str| calls(src).iter().any(|(_, c, recv)| c == callee && !recv);
+    let any = |src: &str, callee: &str| calls(src).iter().any(|(_, c, _)| c == callee);
+    let tried = "fn f(root: &Path) -> Option<bool> { Some(root.parent()?.join(\"s\").exists()) }\n";
+    assert!(
+        any(tried, "join") && !bare(tried, "join"),
+        "{:?}",
+        calls(tried)
+    );
+    let closure = "fn g(lines: &[&str]) -> usize { let key = |l: &str| l.len(); lines.iter().map(|l| key(l)).sum() }\n";
+    assert!(!any(closure, "key"), "{:?}", calls(closure));
+    let param = "fn h<F: Fn()>(base_targets: impl Fn(u32) -> u32, cb: F) { base_targets(1); cb(); helper(); }\n";
+    assert!(
+        !any(param, "base_targets") && !any(param, "cb"),
+        "{:?}",
+        calls(param)
+    );
+    assert!(any(param, "helper"), "{:?}", calls(param));
+    let shadow = "fn p(x: u32) { let parse = parse(x); }\nfn q() { parse(1); }\n";
+    assert_eq!(
+        calls(shadow)
+            .iter()
+            .filter(|(_, c, _)| c == "parse")
+            .count(),
+        2,
+        "{:?}",
+        calls(shadow)
+    );
+}
+
+/// A closure whose body binds names of its own is still a local.
+#[test]
+fn a_closure_with_lets_inside_is_local() {
+    let src =
+        "fn openapi(text: &str) { let key = |line: &str| { let k = line.len(); k }; key(text); }\n";
+    let calls = native_parsers::rules::active()
+        .parse(Language::Rust, src)
+        .calls;
+    assert!(!calls.iter().any(|(_, c, _)| c == "key"), "{calls:?}");
+}
