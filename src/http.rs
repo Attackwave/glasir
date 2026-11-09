@@ -911,14 +911,14 @@ fn handle_connection<S: Read + Write>(
     // no credential to offer. It discloses only what `overview` already does.
     if req.path == HEALTH_PATH {
         let state = state.load();
+        let (nodes, symbols) = state.counts();
         return respond(
             &mut stream,
             "200 OK",
             "application/json",
             &format!(
-                "{{\"status\":\"ok\",\"nodes\":{},\"symbols\":{}}}",
-                state.snap.width(),
-                state.registry.len()
+                "{{\"status\":\"ok\",\"nodes\":{nodes},\"symbols\":{symbols},\"asleep\":{}}}",
+                state.asleep.is_some()
             ),
         );
     }
@@ -936,6 +936,7 @@ fn handle_connection<S: Read + Write>(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let (nodes, symbols) = state.counts();
         let error = error
             .map(|value| {
                 serde_json::to_string(&value).unwrap_or_else(|_| "\"unserializable error\"".into())
@@ -950,13 +951,12 @@ fn handle_connection<S: Read + Write>(
             },
             "application/json",
             &format!(
-                "{{\"status\":\"{}\",\"indexed_at\":{},\"age_seconds\":{},\"generation\":{},\"nodes\":{},\"symbols\":{},\"last_reindex_error\":{error}}}",
+                "{{\"status\":\"{}\",\"indexed_at\":{},\"age_seconds\":{},\"generation\":{},\"nodes\":{nodes},\"symbols\":{symbols},\"asleep\":{},\"last_reindex_error\":{error}}}",
                 if stale { "stale" } else { "ready" },
                 state.now,
                 age,
                 generation,
-                state.snap.width(),
-                state.registry.len(),
+                state.asleep.is_some(),
             ),
         );
     }
@@ -965,12 +965,12 @@ fn handle_connection<S: Read + Write>(
     // what it reads — call counts and latencies — discloses less than
     // `overview` already does to any caller.
     if req.path == METRICS_PATH {
-        let state = state.load();
+        let (nodes, symbols) = state.load().counts();
         return respond(
             &mut stream,
             "200 OK",
             "text/plain; version=0.0.4",
-            &cfg.metrics.render(state.snap.width(), state.registry.len()),
+            &cfg.metrics.render(nodes, symbols),
         );
     }
     // Answered before authentication, which is the whole point: it is fetched

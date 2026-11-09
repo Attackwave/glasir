@@ -40,7 +40,7 @@ impact src/ingest.rs#qualify
 impact src/watcher.rs#ignored_under
   src/watcher.rs#is_ignored
   src/watcher.rs#watch
-  src/main.rs#walk
+  src/files.rs#walk
 
 impact src/physics.rs#expand
   src/mcp.rs#query_graph
