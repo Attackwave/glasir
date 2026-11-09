@@ -252,7 +252,7 @@ pub fn tokenize_into(text: &str, out: &mut Vec<String>) {
             if ch.is_uppercase() && prev_lower && !word.is_empty() {
                 out.push(std::mem::take(&mut word));
             }
-            word.push(ch.to_ascii_lowercase());
+            word.extend(ch.to_lowercase());
             prev_lower = ch.is_lowercase() || ch.is_numeric();
         } else if !word.is_empty() {
             out.push(std::mem::take(&mut word));
@@ -676,9 +676,19 @@ impl SearchIndex {
                 weighted.push((part, SPLIT_WEIGHT));
             }
         }
-        let terms: Vec<String> = weighted.iter().map(|(t, _)| t.clone()).collect();
-        let term_weight: HashMap<&str, f32> =
-            weighted.iter().map(|(t, w)| (t.as_str(), *w)).collect();
+        // Each term once, at its strongest: a split half must not lower a word
+        // the question also wrote, and a repeated word is one term.
+        let mut term_weight: HashMap<String, f32> = HashMap::new();
+        let mut terms: Vec<String> = Vec::new();
+        for (t, w) in weighted {
+            match term_weight.get_mut(&t) {
+                Some(have) => *have = have.max(w),
+                None => {
+                    terms.push(t.clone());
+                    term_weight.insert(t, w);
+                }
+            }
+        }
 
         let mut scores: HashMap<NodeId, f32> = HashMap::new();
         // How many distinct query terms each node matched. A name hitting two

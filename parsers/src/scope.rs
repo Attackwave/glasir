@@ -43,6 +43,9 @@ pub struct ScopeStack {
     pub saw_unbalanced: bool,
 }
 
+/// Most body-comment text one definition collects.
+const MAX_BODY_DOC: usize = 16 << 10;
+
 impl ScopeStack {
     pub fn new() -> Self {
         Self::default()
@@ -71,7 +74,9 @@ impl ScopeStack {
             .rposition(|o| o.collects_body_docs && o.depth < self.depth);
         if let Some(first) = inside {
             for o in self.open.iter_mut().take(first + 1) {
-                if o.collects_body_docs && o.depth < self.depth {
+                // Bounded: each comment reaches every enclosing definition,
+                // so unbounded docs grow with nesting times comment volume.
+                if o.collects_body_docs && o.depth < self.depth && o.doc_raw.len() < MAX_BODY_DOC {
                     o.doc_raw.push(' ');
                     o.doc_raw.push_str(text);
                 }

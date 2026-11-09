@@ -38,7 +38,7 @@ pub struct ScipImport {
     /// Files the index covers that have been edited since it was written. Their
     /// facts are stale, so tier 2 must re-parse them despite the index
     /// nominally covering them.
-    pub stale_files: Vec<String>,
+    pub stale_files: std::collections::BTreeSet<String>,
 }
 
 impl ScipImport {
@@ -51,7 +51,7 @@ impl ScipImport {
     pub fn fresh_files(&self) -> impl Iterator<Item = &String> {
         self.file_nodes
             .keys()
-            .filter(|f| !self.stale_files.contains(f))
+            .filter(|f| !self.stale_files.contains(*f))
     }
 }
 
@@ -199,6 +199,28 @@ fn symbol_name(symbol: &str) -> Option<String> {
 
 /// Reads a SCIP index and resolves its occurrences into edges.
 ///
+/// Largest index read: decoding holds many times its size in memory.
+const MAX_INDEX: u64 = 256 << 20;
+
+/// Whether git tracks `path`, or the repository cannot be read safely. An
+/// index arrives committed only from somewhere else, and a clone gives it the
+/// same age as the files it claims to describe.
+fn committed(root: &Path, path: &Path) -> bool {
+    let Ok(repos) = crate::repos::repos(root) else {
+        return true;
+    };
+    repos.iter().any(|repo| {
+        path.strip_prefix(&repo.root).is_ok_and(|rel| {
+            crate::repos::output(
+                crate::repos::git(&repo.root)
+                    .args(["ls-files", "--error-unmatch", "--"])
+                    .arg(rel),
+            )
+            .is_ok_and(|o| o.status.success())
+        })
+    })
+}
+
 /// Two passes: definitions first, so a reference in the first document to a
 /// symbol defined in the last still resolves. That is the property tier 3
 /// cannot have — SCIP symbols are globally unique, so nothing is guessed here.
@@ -209,6 +231,19 @@ pub fn import(
     root: &Path,
     registry: &mut SymbolRegistry,
 ) -> std::io::Result<ScipImport> {
+    if committed(root, path) {
+        return Err(std::io::Error::other(
+            "the index is part of the repository: one built elsewhere would claim compiler \
+             provenance for this checkout, so only a local build is used",
+        ));
+    }
+    let size = std::fs::metadata(path)?.len();
+    if size > MAX_INDEX {
+        return Err(std::io::Error::other(format!(
+            "{size} bytes, more than the {} MiB an index is read up to",
+            MAX_INDEX >> 20
+        )));
+    }
     let bytes = std::fs::read(path)?;
     let mut index = crate::scip_wire::decode_index(&bytes)
         .map_err(|e| std::io::Error::other(format!("scip: {e}")))?;
@@ -235,6 +270,12 @@ pub fn import(
     let mut definitions = 0;
 
     for doc in &index.documents {
+        // A file that is gone is reported stale below; its definitions are
+        // not minted, or tier 3 would link calls to names nothing defines.
+        if !root.join(&doc.relative_path).exists() {
+            file_nodes.entry(doc.relative_path.clone()).or_default();
+            continue;
+        }
         for occ in &doc.occurrences {
             if occ.symbol_roles & ROLE_DEFINITION == 0 {
                 continue;
@@ -314,7 +355,10 @@ pub fn import(
         }
     }
 
-    let stale_files = stale_since(path, root, file_nodes.keys().cloned());
+    let stale_files: std::collections::BTreeSet<String> =
+        stale_since(path, root, file_nodes.keys().cloned())
+            .into_iter()
+            .collect();
 
     // An edge from a file the index no longer describes is dropped, not served.
     //
