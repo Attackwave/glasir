@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 libc = "0.2.189"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # SHA-256 for token hashes and the system random source, from the crypto
 # library rustls already links rather than written out here.

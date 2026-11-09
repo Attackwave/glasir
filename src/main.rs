@@ -10410,6 +10410,14 @@ fn demo_install() {
     let exe = std::path::Path::new("/usr/local/bin/glasir");
     assert!(write_registration(vscode, &odd, exe, &dir, false).is_err());
     assert_eq!(std::fs::read_to_string(&odd).unwrap(), "{\"servers\": []}");
+    // The user's keys keep their order: a sorted rewrite churns a tracked file.
+    std::fs::write(&odd, "{\"zeta\": 1, \"alpha\": 2, \"servers\": {}}").unwrap();
+    assert!(write_registration(vscode, &odd, exe, &dir, false).unwrap());
+    let kept = std::fs::read_to_string(&odd).unwrap();
+    assert!(
+        kept.find("zeta") < kept.find("alpha") && kept.find("alpha") < kept.find("servers"),
+        "{kept}"
+    );
     std::fs::remove_file(&odd).unwrap();
 
     let args = |cmd: &str, extra: &[&str]| {
