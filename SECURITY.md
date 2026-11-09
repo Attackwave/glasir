@@ -67,11 +67,17 @@ could reach:
   dependency belongs stated rather than discovered. A revision a client passes
   to `detect_changes` or `affected_tests` is refused when it starts with `-`,
   so git can never read it as an option (fixed in 0.3.0). A repository is
-  refused, by name, when its own `.git/config` names a command git would run
-  on those operations (`core.fsmonitor` other than git's daemon,
-  `diff.external`, a diff driver's `command` or `textconv`, `filter.*`): a
-  served tree is not trusted to run anything. Every git child runs with a
-  deadline and a bound on the output read.
+  refused, by name, when its own configuration — `.git/config`, any file it
+  includes, or a worktree's own file — names a command git would run on those
+  operations (`core.fsmonitor` other than git's daemon, `core.sshCommand`,
+  `core.gitProxy`, `diff.external`, a diff driver's `command` or `textconv`,
+  `filter.*`, `gpg.program`, a remote's `uploadpack`/`receivepack`/`proxy`,
+  `extensions.partialClone`): a served tree is not trusted to run anything.
+  Independently of that check, every git child runs with `core.fsmonitor`
+  and `log.showSignature` off, without lazy fetching of missing objects,
+  without external diffs or text conversion, and with any `GIT_DIR`-style
+  variable of the calling environment removed. Each has a deadline and a
+  bound on the output read.
 
 ## Language rules
 
