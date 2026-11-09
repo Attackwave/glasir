@@ -5671,11 +5671,11 @@ def pay(self):
         .neighbors(pay)
         .map(|e| e.target)
         .map(|t| {
-            if t == reg.get_or_mint("charge") {
+            if t == reg.get_or_mint("charge from =python") {
                 "charge"
-            } else if t == reg.get_or_mint("audit") {
+            } else if t == reg.get_or_mint("audit from =python") {
                 "audit"
-            } else if t == reg.get_or_mint("log") {
+            } else if t == reg.get_or_mint("log from =python") {
                 "log"
             } else {
                 "?"
@@ -5721,7 +5721,7 @@ def pay(self):
 
     // A second file defining `charge` resolves onto the placeholder the first
     // file minted, so the call actually connects.
-    let before = reg.get_or_mint("charge");
+    let before = reg.get_or_mint("charge from =python");
     ingest_file(
         &g,
         &mut arena,
@@ -5732,7 +5732,7 @@ def pay(self):
         3,
     )
     .unwrap();
-    assert_eq!(reg.get_or_mint("charge"), before);
+    assert_eq!(reg.get_or_mint("charge from =python"), before);
 
     // Compaction must keep edges whose nodes exist only in the delta. The base
     // here started empty, so every node was minted at runtime — the case a
@@ -5777,7 +5777,7 @@ def pay(self):
     );
     assert!(
         r2.entries()
-            .any(|(n, _)| n == "now" || n.starts_with("now from ~")),
+            .any(|(n, _)| n == "now from =rust" || n.starts_with("now from ~")),
         "`Instant::now()` must land on a placeholder instead"
     );
 
@@ -8339,8 +8339,8 @@ fn demo_imports() {
     assert!(a.registry.node_of("plat_call from @?Stdlib").is_none());
     assert!(a.registry.node_of("plat_java from @?ArrayStack").is_none());
     assert!(a.registry.node_of("not_here from @NotHere").is_none());
-    assert!(a.registry.node_of("not_here").is_some());
-    assert!(a.registry.node_of("nowhere").is_some());
+    assert!(a.registry.node_of("not_here from =java").is_some());
+    assert!(a.registry.node_of("nowhere from =java").is_some());
     assert!(a.registry.node_of("own_pkg from @?Own^/a/b").is_some());
     assert!(
         a.registry
@@ -14613,7 +14613,7 @@ fn demo_incremental() {
     );
     assert!(
         patched.registry.node_of("m03.rs#helper3").is_some()
-            || patched.registry.node_of("helper3").is_some(),
+            || patched.registry.node_of("helper3 from =rust").is_some(),
         "the new call must be in the graph"
     );
     assert!(
@@ -14675,11 +14675,11 @@ fn demo_incremental() {
     // Measured on a 60-file fixture deleting five per round: five orphans per
     // round, thirty after six, and each one seeded a search for its own name.
     assert!(
-        after.registry.node_of("only5").is_none(),
+        after.registry.node_of("only5 from =rust").is_none(),
         "a placeholder only the deleted file referenced must go too"
     );
     assert!(
-        after.registry.node_of("shared").is_some(),
+        after.registry.node_of("shared from =rust").is_some(),
         "a placeholder other files still reference must stay"
     );
 

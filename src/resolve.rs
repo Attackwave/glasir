@@ -251,7 +251,10 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // the definition there. When the target does not define the name — a
         // re-export through an `__init__.py` or an `index.ts` — the bare-name
         // rule below still applies, with its refusal of an ambiguous name.
+        // `=family` only says which callers share the node; the name rule
+        // below decides, within that family.
         let (bare, target) = match crate::imports::unscope(symbol) {
+            Some((name, target)) if target.starts_with('=') => (name, None),
             Some((name, target)) => (name, Some(target)),
             None => (symbol.as_str(), None),
         };
@@ -381,16 +384,17 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // question by carrying the scheme in the symbol; the registry carries
         // it beside the node instead, so the name a caller sees is unchanged.
         //
-        // A placeholder reached from two languages links only into one of
-        // them: `fill` called in Rust and in assembly is no Rust call of an
-        // assembly label. (Its callers share the node, so the other
-        // language's callers get that edge too; linking nowhere instead cost
-        // a structural set six points.) A definition in a file of no language
-        // (a Markdown heading) is no call target.
+        // A bare name is one placeholder per language family (`=family`), so
+        // a call from Swift and one from a script never share an edge; within
+        // a family, C calls C++. A definition in a file of no language (a
+        // Markdown heading) is no call target.
         let want = registry.placeholder_langs(placeholder);
         if let Some(&definition) = defs.iter().find(|&&d| {
             d != placeholder
-                && lang_of(&file_of, d).is_some_and(|l| want.is_empty() || want.contains(&l))
+                && lang_of(&file_of, d).is_some_and(|l| {
+                    let family = crate::ingest::family(l);
+                    want.is_empty() || want.iter().any(|&w| crate::ingest::family(w) == family)
+                })
         }) {
             // Assembly has no namespaces: a label is global to the unit the
             // assembler builds, and a unit defining it twice does not
