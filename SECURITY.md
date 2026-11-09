@@ -112,10 +112,9 @@ for a whole request to arrive, a bounded connection pool, a 1 MiB body cap, a
 16 KiB line cap and a cap of 100 header lines — the caps before
 authentication, since `Content-Length` is attacker-controlled and arrives first.
 
-The map (`glasir view`) is unauthenticated. On loopback it answers only a
-`Host` naming loopback, which a page reached through a rebound DNS name does
-not send; bound to another address it warns that anyone reaching it can read
-the graph.
+`glasir view` is unauthenticated. On loopback it answers only a `Host` naming
+loopback, which a page reached through a rebound DNS name does not send; bound
+to another address it warns that anyone reaching it can read the graph.
 
 **A `GET` opens an event stream, and it holds a connection slot for as long as
 it is open.** The pool is 32, so streams are subject to the same cap as any
