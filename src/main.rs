@@ -5877,6 +5877,11 @@ fn demo_scip() {
         foreign.edges.is_empty(),
         "an index of another tree must contribute no edges"
     );
+    // Nor definitions: tier 3 would link calls to names no file defines.
+    assert!(
+        foreign_reg.entries().all(|(s, _)| !s.contains('#')),
+        "a missing file defines nothing"
+    );
 
     // And the same index once a covered file has been edited: that file's
     // edges go, the untouched file's stay. All-or-nothing would mean either
@@ -8062,8 +8067,12 @@ fn demo_imports() {
         ),
         (
             "ws/asm/src/user.rs",
-            "fn asm_user(v: Vec<u8>) -> bool {\n    v.first().shrink_sect();\n    out_line();\n    floppy_only();\n    make_v().is_empty()\n}\nfn asm_check() -> bool {\n    make_v().is_empty()\n}\n",
+            "fn asm_user(v: Vec<u8>) -> bool {\n    v.first().shrink_sect();\n    out_line();\n    floppy_only();\n    make_v().is_empty()\n}\nfn asm_check() -> bool {\n    make_v().is_empty()\n}\nfn asm_guide() {\n    guide_step();\n}\n",
         ),
+        // A key in another language inside the crate is no call target.
+        ("ws/asm/conf.yaml", "guide_step: 1\n"),
+        // Nor is a heading: its file has no language to call into.
+        ("ws/tool.py", "def run_notes():\n    Notes()\n"),
         (
             "ws/core/src/help.rs",
             "pub fn core_helper() {}\n\npub fn r#match_it() {}\n\nfn go_raw() {\n    r#match_it();\n}\n",
@@ -8553,6 +8562,12 @@ fn demo_imports() {
             true,
         ),
         ("ws/NOTES.md#Notes", "ws/asm/tests/lines.rs#out_line", false),
+        (
+            "ws/asm/src/user.rs#asm_guide",
+            "ws/asm/conf.yaml#guide_step",
+            false,
+        ),
+        ("ws/tool.py#run_notes", "ws/NOTES.md#Notes", false),
         (
             "ws/asm/src/user.rs#asm_user",
             "ws/floppy/src/only.rs#floppy_only",

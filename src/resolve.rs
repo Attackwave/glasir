@@ -41,8 +41,20 @@ fn lang_of(file_of: &HashMap<NodeId, &str>, node: NodeId) -> Option<crate::parse
 /// Files whose definitions should not be considered. Test files define names
 /// that shadow production ones (`main`, `run`, `setup`), and linking a real
 /// call onto a test definition is worse than leaving it unlinked.
+///
+/// Judged by path components: a substring test took `latest_x.rs` for a
+/// test and missed `tests/` at the root.
 fn is_test_path(file: &str) -> bool {
-    file.contains("/test") || file.contains("test_") || file.contains("_test.")
+    let (dirs, name) = file.rsplit_once('/').unwrap_or(("", file));
+    dirs.split('/').any(|d| {
+        matches!(
+            d,
+            "test" | "tests" | "testing" | "testdata" | "__tests__" | "spec"
+        )
+    }) || name.starts_with("test_")
+        || ["_test.", ".test.", ".spec."]
+            .iter()
+            .any(|m| name.contains(m))
 }
 
 /// Links a call to the function it calls when the parser could not tell:
@@ -249,12 +261,15 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // even when one of the two is out of reach — a local closure `run` is
         // no call of the crate's only `run`.
         if let Some(dirs) = target.and_then(|t| t.strip_prefix('~')) {
+            // Rust definitions only: a crate reaches no Markdown heading or
+            // YAML key, whatever its name.
             let defs: Vec<NodeId> = by_name
                 .get(bare)
                 .into_iter()
                 .flatten()
                 .copied()
                 .filter(|d| *d != placeholder)
+                .filter(|&d| lang_of(&file_of, d) == Some(crate::parse_ast::Lang::Rust))
                 .collect();
             let found: Vec<NodeId> = defs
                 .iter()
@@ -368,11 +383,14 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         //
         // A placeholder reached from two languages links only into one of
         // them: `fill` called in Rust and in assembly is no Rust call of an
-        // assembly label.
+        // assembly label. (Its callers share the node, so the other
+        // language's callers get that edge too; linking nowhere instead cost
+        // a structural set six points.) A definition in a file of no language
+        // (a Markdown heading) is no call target.
         let want = registry.placeholder_langs(placeholder);
         if let Some(&definition) = defs.iter().find(|&&d| {
             d != placeholder
-                && (want.is_empty() || lang_of(&file_of, d).is_none_or(|l| want.contains(&l)))
+                && lang_of(&file_of, d).is_some_and(|l| want.is_empty() || want.contains(&l))
         }) {
             // Assembly has no namespaces: a label is global to the unit the
             // assembler builds, and a unit defining it twice does not
@@ -435,4 +453,23 @@ pub(crate) fn in_crates(dirs: &str, file: &str) -> bool {
     dirs.split('|')
         .filter(|dir| !dir.is_empty())
         .any(|dir| dir == "." || file.strip_prefix(dir).is_some_and(|r| r.starts_with('/')))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_test_path_is_judged_by_its_components() {
+        for test in [
+            "tests/common/mod.rs",
+            "src/test_checks.rs",
+            "pkg/a_test.go",
+            "web/a.spec.ts",
+            "x/__tests__/a.js",
+        ] {
+            assert!(super::is_test_path(test), "{test}");
+        }
+        for code in ["src/latest_x.rs", "src/contest_entry.py", "src/attest.rs"] {
+            assert!(!super::is_test_path(code), "{code}");
+        }
+    }
 }
