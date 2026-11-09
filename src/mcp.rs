@@ -2273,6 +2273,24 @@ pub fn check_rev(rev: &str) -> Result<(), String> {
 }
 
 /// The working tree against HEAD for an empty `rev`, or `rev` against HEAD.
+/// A unified diff split at its `diff --git` lines, keyed by that line. A
+/// content line starts with `+`, `-`, ` ` or `\`, so it is never taken for one.
+fn diff_sections(diff: &str) -> std::collections::HashMap<&str, &str> {
+    let mut sections = std::collections::HashMap::new();
+    let mut starts: Vec<usize> = diff
+        .match_indices("diff --git ")
+        .map(|(i, _)| i)
+        .filter(|&i| i == 0 || diff.as_bytes()[i - 1] == b'\n')
+        .collect();
+    starts.push(diff.len());
+    for pair in starts.windows(2) {
+        let section = &diff[pair[0]..pair[1]];
+        let header = section.lines().next().unwrap_or_default();
+        sections.insert(header, section);
+    }
+    sections
+}
+
 fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
     let rev = rev.trim();
     check_rev(rev)?;
@@ -2343,55 +2361,75 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         Default::default();
     let base = against[0];
     let mut removed: Vec<(String, String)> = Vec::new();
-    for (file, repo, local, untracked) in &located {
-        // A new file has no diff to narrow by: all of it is the change.
-        if *untracked {
+    // Per repository one diff for all its files and one `cat-file` per side,
+    // not three processes per file: measured 15.5 s for a thousand changed
+    // files. A file whose section is not found (a rename, a quoted path, a
+    // diff over the output bound) is diffed on its own.
+    for repo in &repos {
+        let mine: Vec<&(String, &crate::repos::Repo, String, bool)> = located
+            .iter()
+            .filter(|(_, r, _, untracked)| r.root == repo.root && !untracked)
+            .collect();
+        if mine.is_empty() {
             continue;
         }
-        let new_src = if working {
-            std::fs::read_to_string(root.join(file)).ok()
-        } else {
+        let unified = |paths: &[&str]| {
             git(
                 &repo.root,
-                &["show", "--no-textconv", &format!("HEAD:{local}")],
+                &[
+                    &[
+                        "diff",
+                        "-U0",
+                        "--no-color",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                    ][..],
+                    &against,
+                    &["--"],
+                    paths,
+                ]
+                .concat(),
             )
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         };
-        let hunks = git(
+        let whole = unified(&[]).unwrap_or_default();
+        let sections = diff_sections(&whole);
+        let old = crate::commits::cat_files(
             &repo.root,
-            &[
-                &[
-                    "diff",
-                    "-U0",
-                    "--no-color",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                ][..],
-                &against,
-                &["--", local],
-            ]
-            .concat(),
-        )
-        .ok()
-        .map(|o| crate::commits::hunk_lines(&String::from_utf8_lossy(&o.stdout)));
-        let old_src = git(
-            &repo.root,
-            &["show", "--no-textconv", &format!("{base}:{local}")],
-        )
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        removed.extend(
-            removed_names(served, file, old_src.as_deref(), new_src.as_deref())
-                .into_iter()
-                .map(|name| (file.clone(), name)),
+            mine.iter()
+                .map(|(_, _, local, _)| format!("{base}:{local}")),
         );
-        if let (Some(src), Some(hunks)) = (new_src, hunks)
-            && let Some(names) = touched_names(served, file, &src, &hunks)
-        {
-            narrowed.insert(file.clone(), names);
+        let new = if working {
+            Vec::new()
+        } else {
+            crate::commits::cat_files(
+                &repo.root,
+                mine.iter().map(|(_, _, local, _)| format!("HEAD:{local}")),
+            )
+        };
+        for (k, (file, _, local, _)) in mine.into_iter().enumerate() {
+            let new_src = if working {
+                std::fs::read_to_string(root.join(file)).ok()
+            } else {
+                new.get(k).cloned().flatten()
+            };
+            let hunks = match sections.get(format!("diff --git a/{local} b/{local}").as_str()) {
+                Some(body) => Some(crate::commits::hunk_lines(body)),
+                None => unified(&[local.as_str()]).map(|d| crate::commits::hunk_lines(&d)),
+            };
+            let old_src = old.get(k).cloned().flatten();
+            removed.extend(
+                removed_names(served, file, old_src.as_deref(), new_src.as_deref())
+                    .into_iter()
+                    .map(|name| (file.clone(), name)),
+            );
+            if let (Some(src), Some(hunks)) = (new_src, hunks)
+                && let Some(names) = touched_names(served, file, &src, &hunks)
+            {
+                narrowed.insert(file.clone(), names);
+            }
         }
     }
     let files: Vec<String> = located.into_iter().map(|(f, _, _, _)| f).collect();
@@ -5607,4 +5645,18 @@ pub fn handle_for_test(served: &Served, msg: &Value) -> Option<Value> {
 /// anything at all, and its precedence rules are worth testing directly.
 pub fn seeds_for_test(served: &Served, query: &str) -> Vec<(NodeId, f32)> {
     served.seeds(query)
+}
+
+#[cfg(test)]
+mod diff_tests {
+    #[test]
+    fn a_diff_splits_at_its_file_headers_only() {
+        let diff = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-a\n+diff --git a/y b/y\n\
+                    diff --git a/z.rs b/z.rs\n@@ -0,0 +2,3 @@\n+b\n";
+        let sections = super::diff_sections(diff);
+        assert_eq!(sections.len(), 2, "{sections:?}");
+        let z = sections["diff --git a/z.rs b/z.rs"];
+        assert_eq!(crate::commits::hunk_lines(z), vec![(2, 4)]);
+        assert!(sections["diff --git a/x.rs b/x.rs"].contains("+diff --git a/y"));
+    }
 }
