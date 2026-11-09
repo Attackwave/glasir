@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 pub const MAX_RULE_BYTES: usize = 64 * 1024;
 // Bump when scanner semantics change, even if the rule schema does not.
-const IMPLEMENTATION_VERSION: &str = "native-scanners/54";
+const IMPLEMENTATION_VERSION: &str = "native-scanners/55";
 /// Every language whose rules live in a file, with how it is scanned.
 ///
 /// One table rather than three lists: the rule name, the `Language` it serves
@@ -1261,6 +1261,8 @@ mod tests {
             (&["ts"], "= <a"),
             (&["html", "xml"], "<a"),
             (&["html", "xml"], "<!--"),
+            (&["c", "cpp", "java", "go", "rs", "ts", "cs"], "#"),
+            (&["ex"], ".R"),
         ] {
             for extension in extensions {
                 let language = Language::from_extension(extension).unwrap();
@@ -1279,6 +1281,43 @@ mod tests {
                     "{extension} {pattern:?} {small:?} {large:?}"
                 );
             }
+        }
+    }
+
+    /// Inputs a repeated pattern cannot build: one long run of blanks after
+    /// an operand's comma, and comments inside deeply nested functions.
+    #[test]
+    fn shaped_inputs_cost_their_length() {
+        let rules = RuleSet::load(None).unwrap();
+        type Shape = fn(usize) -> String;
+        let cases: [(Language, Shape); 2] = [
+            (Language::Assembly, |n| {
+                format!("table:\n DC.L a,{}b\n", " ".repeat(n))
+            }),
+            (Language::Rust, |n| {
+                // Depth and comment count both grow with the input.
+                let depth = n / 1024;
+                format!(
+                    "{}{}{}",
+                    "fn a(){\n".repeat(depth),
+                    "// c\n".repeat(n / 12),
+                    "}\n".repeat(depth)
+                )
+            }),
+        ];
+        for (language, make) in cases {
+            let parse = |bytes: usize| {
+                let src = make(bytes);
+                let started = std::time::Instant::now();
+                rules.parse(language, &src);
+                started.elapsed()
+            };
+            let small = parse((1 << 20) / 4);
+            let large = parse(1 << 20);
+            assert!(
+                large < small * 9 + std::time::Duration::from_secs(2),
+                "{language:?} {small:?} {large:?}"
+            );
         }
     }
 

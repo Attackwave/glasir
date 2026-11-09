@@ -164,6 +164,11 @@ pub struct Lexer<'a, 's> {
     jsx_closes: Option<std::collections::HashMap<&'a str, usize>>,
     /// A backslash between backticks escapes nothing, as in Go.
     pub raw_backticks: bool,
+    /// C#'s `@"…"`: no escapes but `""`, across lines.
+    pub verbatim_strings: bool,
+    /// Lua's long brackets: `[[…]]`, `[==[…]==]`, and `--` before one opens a
+    /// comment of that level.
+    pub long_brackets: bool,
     interpolation_depth: u32,
     heredocs: Vec<String>,
 }
@@ -173,7 +178,8 @@ impl<'a, 's> Lexer<'a, 's> {
         Self {
             src,
             bytes: src.as_bytes(),
-            pos: 0,
+            // A byte order mark is not part of the first word.
+            pos: if src.starts_with('\u{feff}') { 3 } else { 0 },
             comment_style,
             sigils: false,
             nested_comments: false,
@@ -191,6 +197,8 @@ impl<'a, 's> Lexer<'a, 's> {
             jsx_open: Vec::new(),
             jsx_closes: None,
             raw_backticks: false,
+            verbatim_strings: false,
+            long_brackets: false,
             interpolation_depth: 0,
             heredocs: Vec::new(),
         }
@@ -291,6 +299,29 @@ impl<'a, 's> Lexer<'a, 's> {
             };
         }
 
+        if self.long_brackets {
+            let comment = self.starts_with("--");
+            let at = if comment { self.pos + 2 } else { self.pos };
+            if let Some(level) = long_bracket(self.bytes, at) {
+                let close = format!("]{}]", "=".repeat(level));
+                let body = at + level + 2;
+                self.pos = self.bytes[body.min(self.bytes.len())..]
+                    .windows(close.len())
+                    .position(|w| w == close.as_bytes())
+                    .map_or(self.bytes.len(), |i| body + i + close.len());
+                let text = self.slice(start, self.pos);
+                return Token {
+                    kind: if comment {
+                        TokenKind::BlockComment(text)
+                    } else {
+                        TokenKind::StringLit(text)
+                    },
+                    start: start as u32,
+                    end: self.pos as u32,
+                };
+            }
+        }
+
         // Check for block comments first (e.g. /* ... */, {- ... -}, (* ... *), --[[ ... ]], =pod ... =cut)
         if let (Some(b_start), Some(b_end)) = (
             self.comment_style.block_comment_start,
@@ -300,9 +331,10 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.pos += b_start.len();
                 let mut depth = 1;
                 while self.pos < self.bytes.len() && depth > 0 {
+                    // Lua's and Ruby's block comments do not nest.
                     if self.starts_with(b_start)
                         && b_start != b_end
-                        && (self.nested_comments || b_start != "/*")
+                        && (self.nested_comments || !matches!(b_start, "/*" | "--[[" | "=begin"))
                     {
                         depth += 1;
                         self.pos += b_start.len();
@@ -393,8 +425,10 @@ impl<'a, 's> Lexer<'a, 's> {
             }
         }
 
-        // Check for Swift / Hash-prefixed raw strings: #"..."#, ##"..."## (where # is not a comment)
-        if self.bytes[self.pos] == b'#' {
+        // Check for Swift / Hash-prefixed raw strings: #"..."#, ##"..."## (where # is not a comment).
+        // Probed at the first `#` of a run only: probing at each one rereads
+        // the run, quadratic in its length.
+        if self.bytes[self.pos] == b'#' && (self.pos == 0 || self.bytes[self.pos - 1] != b'#') {
             let mut hash_count = 0;
             let mut k = self.pos;
             while k < self.bytes.len() && self.bytes[k] == b'#' {
@@ -1326,9 +1360,14 @@ impl<'a, 's> Lexer<'a, 's> {
             }
         }
 
-        // 2. C++ raw strings: R"delim( ... )delim"
-        if remaining.starts_with("R\"") {
-            let delim_start = self.pos + 2;
+        // 2. C++ raw strings: R"delim( ... )delim", also with an encoding
+        // prefix (u8R, uR, UR, LR).
+        let encoded = ["u8R\"", "uR\"", "UR\"", "LR\""]
+            .iter()
+            .find(|p| self.cpp_raw && remaining.starts_with(**p))
+            .map(|p| p.len());
+        if remaining.starts_with("R\"") || encoded.is_some() {
+            let delim_start = self.pos + encoded.unwrap_or(2);
             let mut paren_idx = None;
             let max_idx = bytes.len().min(delim_start + 17);
             for (idx, &b) in bytes.iter().enumerate().take(max_idx).skip(delim_start) {
@@ -1366,6 +1405,31 @@ impl<'a, 's> Lexer<'a, 's> {
                     end: end as u32,
                 });
             }
+        }
+
+        // C# verbatim: `""` is the only escape, a backslash is a character.
+        let verbatim = ["@\"", "$@\"", "@$\"", "$$@\"", "@$$\""]
+            .iter()
+            .find(|p| self.verbatim_strings && remaining.starts_with(**p));
+        if let Some(open) = verbatim {
+            self.pos += open.len();
+            while self.pos < bytes.len() {
+                if bytes[self.pos] == b'"' {
+                    if bytes.get(self.pos + 1) == Some(&b'"') {
+                        self.pos += 2;
+                        continue;
+                    }
+                    self.pos += 1;
+                    break;
+                }
+                self.pos += 1;
+            }
+            let end = self.pos.min(bytes.len());
+            return Some(Token {
+                kind: TokenKind::StringLit(self.slice(start, end)),
+                start: start as u32,
+                end: end as u32,
+            });
         }
 
         // 3. Prefixed string literals (Python/Julia/Scala/C#): f"...", b"...", u"...", raw"...", $""...
@@ -1599,8 +1663,19 @@ pub fn configure(lexer: &mut Lexer<'_, '_>, language: crate::Language) {
             lexer.multi_line_quotes = true;
         }
         L::Go => lexer.raw_backticks = true,
+        L::CSharp => lexer.verbatim_strings = true,
+        L::Lua | L::Luau => lexer.long_brackets = true,
         _ => {}
     }
+}
+
+/// The level of a long bracket opening at `at` (`[[` is 0, `[==[` is 2).
+fn long_bracket(bytes: &[u8], at: usize) -> Option<usize> {
+    if bytes.get(at) != Some(&b'[') {
+        return None;
+    }
+    let level = bytes[at + 1..].iter().take_while(|&&b| b == b'=').count();
+    (bytes.get(at + 1 + level) == Some(&b'[')).then_some(level)
 }
 
 /// The token after a `<` closing at `k` or later, one level in.
