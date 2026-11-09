@@ -22,7 +22,7 @@ jobs:
           toolchain: nightly
       - run: cargo install cargo-fuzz@0.13.2 --locked
       - working-directory: parsers
-        run: cargo fuzz run parse -- -max_total_time=1200 -timeout=10 -rss_limit_mb=4096
+        run: cargo fuzz run parse -- -max_total_time=1200 -timeout=10 -rss_limit_mb=4096 -max_len=131072
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

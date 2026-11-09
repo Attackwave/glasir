@@ -351,6 +351,9 @@ unless a proxy terminates TLS in front of this process. Pass --tls-cert and \
         let (state, cfg, live) = (state.clone(), cfg.clone(), live.clone());
         std::thread::spawn(move || {
             let _guard = LiveGuard(live);
+            // Accepted from a non-blocking listener, which some platforms
+            // pass on: the timeouts below apply only to a blocking socket.
+            let _ = stream.set_nonblocking(false);
             // A client that stops talking must not hold the slot forever.
             let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
             let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
@@ -482,7 +485,8 @@ pub fn refuses_to_start(cfg: &HttpConfig) -> bool {
 }
 
 fn is_loopback(addr: &str) -> bool {
-    addr.starts_with("127.") || addr.starts_with("localhost:") || addr.starts_with("[::1]")
+    addr.parse::<std::net::SocketAddr>()
+        .map_or_else(|_| addr.starts_with("localhost:"), |a| a.ip().is_loopback())
 }
 
 /// An `Origin` a browser could send. Only same-origin loopback is allowed: a
@@ -493,10 +497,18 @@ pub fn origin_allowed(origin: Option<&str>) -> bool {
         return true;
     };
     let host = origin.split("://").nth(1).unwrap_or(origin);
-    // Split the port off before comparing: a prefix test alone accepts
-    // `localhost.evil.com`, which is exactly the attack being defended against.
-    let host = host.split(['/', ':']).next().unwrap_or(host);
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1")
+    loopback_host(host.split('/').next().unwrap_or(host))
+}
+
+/// Whether `host[:port]` names this machine's loopback. The port is split off
+/// before comparing: a prefix test alone accepts `localhost.evil.com`, which
+/// is exactly the attack being defended against.
+fn loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(rest),
+        None => host.split(':').next().unwrap_or(host),
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "::1")
 }
 
 /// Turns a `--http` value into a bind address. A bare port means loopback:
@@ -593,9 +605,10 @@ impl Metrics {
             self.errors[i].fetch_add(1, Ordering::Relaxed);
         }
         self.micros[i].fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
-        let ms = elapsed.as_millis() as u64;
+        // In microseconds: whole milliseconds put 1.9 ms under `le="1"`.
+        let us = elapsed.as_micros() as u64;
         for (b, bound) in LATENCY_BOUNDS.iter().enumerate() {
-            if ms <= *bound {
+            if us <= bound * 1000 {
                 self.buckets[b].fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -746,32 +759,53 @@ impl Request {
     }
 }
 
-fn read_line_retry<R: Read>(
+/// Longest a request may take to arrive, however slowly it trickles in.
+const REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Longest request or header line.
+const MAX_LINE: u64 = 16 << 10;
+
+/// A reader that fails once its deadline has passed. A read timeout bounds
+/// each read; this bounds the request.
+struct Deadline<R> {
+    inner: R,
+    until: std::time::Instant,
+}
+
+impl<R: Read> Read for Deadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.until {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// One line, at most `MAX_LINE` bytes. A read timeout surfaces as an error,
+/// never as a retry.
+fn read_line_bounded<R: Read>(
     stream: &mut BufReader<R>,
     line: &mut String,
 ) -> std::io::Result<usize> {
     loop {
-        match stream.read_line(line) {
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                // A socket read timeout is already configured by `serve`.
-                // Some platforms surface an in-flight TLS record as WouldBlock
-                // before that timeout, so retry rather than rejecting a valid
-                // request that has not finished arriving.
-                std::thread::sleep(std::time::Duration::from_millis(5));
+        match stream.by_ref().take(MAX_LINE).read_line(line) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Ok(n) if n as u64 == MAX_LINE && !line.ends_with('\n') => {
+                return Err(std::io::Error::other("request line too long"));
             }
             result => return result,
         }
     }
 }
 
-fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Request>> {
+fn read_request<R: Read>(stream: R) -> std::io::Result<Option<Request>> {
+    let mut stream = BufReader::new(Deadline {
+        inner: stream,
+        until: std::time::Instant::now() + REQUEST_DEADLINE,
+    });
+    let stream = &mut stream;
     let mut start = String::new();
-    if read_line_retry(stream, &mut start)? == 0 {
+    if read_line_bounded(stream, &mut start)? == 0 {
         return Ok(None); // client closed
     }
     let mut parts = start.split_whitespace();
@@ -787,15 +821,15 @@ fn read_request<R: Read>(stream: &mut BufReader<R>) -> std::io::Result<Option<Re
             return Err(std::io::Error::other("too many headers"));
         }
         let mut line = String::new();
-        if read_line_retry(stream, &mut line)? == 0 {
+        if read_line_bounded(stream, &mut line)? == 0 {
             break;
         }
         if line == "\r\n" || line == "\n" {
             break;
         }
-        if let Some((k, v)) = line.split_once(':') {
-            headers.push((k.trim().to_string(), v.trim().to_string()));
-        }
+        // A line without a colon still counts: it is still a line read.
+        let (k, v) = line.split_once(':').unwrap_or(("", ""));
+        headers.push((k.trim().to_string(), v.trim().to_string()));
     }
 
     let length: usize = headers
@@ -860,7 +894,7 @@ fn handle_connection<S: Read + Write>(
     // Read the request through a borrow so `stream` stays usable for the
     // reply: TLS gives back one object that both reads and writes, where a
     // `TcpStream` could simply be borrowed twice.
-    let Some(req) = read_request(&mut BufReader::new(&mut stream))? else {
+    let Some(req) = read_request(&mut stream)? else {
         return Ok(());
     };
 
@@ -1129,6 +1163,14 @@ pub fn serve_view(
     page: &str,
     answer: impl Fn(&str, &str) -> Option<String> + Sync,
 ) -> std::io::Result<()> {
+    let local = listener.local_addr()?.ip().is_loopback();
+    if !local {
+        eprintln!(
+            "glasir: the map is served on {} without authentication: anyone who can reach \
+             that address can read the graph",
+            listener.local_addr()?
+        );
+    }
     let live = Arc::new(AtomicUsize::new(0));
     // The cap, the deadlines and the thread per connection of the MCP
     // endpoint: one client that opens a socket and says nothing, or one
@@ -1151,12 +1193,15 @@ pub fn serve_view(
                 let _guard = LiveGuard(live);
                 let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-                let Ok(Some(req)) = read_request(&mut BufReader::new(&stream)) else {
+                let Ok(Some(req)) = read_request(&stream) else {
                     return;
                 };
                 // Same rebinding defence as the MCP endpoint: this serves a map
-                // of someone's source, so a foreign page must not read it.
-                if !origin_allowed(req.header("origin")) {
+                // of someone's source, so a foreign page must not read it. A
+                // same-origin GET carries no Origin, so on loopback the Host
+                // must name loopback too: a rebound name does not.
+                let host_ok = !local || req.header("host").is_some_and(loopback_host);
+                if !host_ok || !origin_allowed(req.header("origin")) {
                     let _ = respond(
                         &mut stream,
                         "403 Forbidden",
@@ -1196,7 +1241,7 @@ mod view_tests {
         let _idle = std::net::TcpStream::connect(addr).unwrap();
         let slow = std::net::TcpStream::connect(addr).unwrap();
         (&slow)
-            .write_all(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .unwrap();
         let started = std::time::Instant::now();
         let mut stream = std::net::TcpStream::connect(addr).unwrap();
@@ -1204,12 +1249,62 @@ mod view_tests {
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .unwrap();
         stream
-            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .unwrap();
         let mut reply = String::new();
         stream.read_to_string(&mut reply).unwrap();
         assert!(reply.contains("<p>map</p>"), "{reply}");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// A rebound name reaches the loopback listener with a foreign Host and,
+    /// on a same-origin GET, no Origin.
+    #[test]
+    fn a_rebound_host_is_refused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || serve_view(listener, "<p>map</p>", |_, _| None));
+        let ask = |host: &str| {
+            let mut stream = std::net::TcpStream::connect(addr).unwrap();
+            write!(stream, "GET / HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            reply
+        };
+        assert!(ask("evil.example:7878").starts_with("HTTP/1.1 403"));
+        assert!(ask(&format!("localhost:{}", addr.port())).contains("<p>map</p>"));
+        assert!(ask(&format!("[::1]:{}", addr.port())).contains("<p>map</p>"));
+    }
+
+    struct Stalled;
+    impl Read for Stalled {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    /// An expired read timeout ends the request; it is not retried.
+    #[test]
+    fn a_stalled_client_is_dropped() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(read_request(Stalled).is_err()));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(true));
+        let late = Deadline {
+            inner: &b"GET / HTTP/1.1\r\n\r\n"[..],
+            until: std::time::Instant::now(),
+        };
+        assert!(BufReader::new(late).read_line(&mut String::new()).is_err());
+    }
+
+    /// Lines are bounded before authentication, whatever they hold.
+    #[test]
+    fn request_lines_are_bounded() {
+        let long = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(1 << 20));
+        assert!(read_request(long.as_bytes()).is_err());
+        let many = format!("GET / HTTP/1.1\r\n{}\r\n", "x\r\n".repeat(200));
+        assert!(read_request(many.as_bytes()).is_err());
+        let fine = read_request(&b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"[..]);
+        assert!(fine.unwrap().is_some());
     }
 }
 

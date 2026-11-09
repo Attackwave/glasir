@@ -17,7 +17,29 @@ permissions:
   contents: read
 
 jobs:
+  # What can be checked from the tag alone, before anything is built or
+  # published: a failure after the images are pushed would leave `latest`
+  # naming a version that has no release.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The notes are part of the release and travel through its pull request:
+      # a tag without its file does not publish.
+      - name: release notes
+        run: test -f ".github/releases/$GITHUB_REF_NAME.md"
+      - name: server.json names this release
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          version=$(jq -r .version server.json)
+          image=$(jq -r '.packages[0].identifier' server.json)
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "server.json says ${version}"; exit 1; }
+          test "${image##*:}" = "${GITHUB_REF_NAME}" || { echo "server.json image is ${image}"; exit 1; }
+
   build:
+    needs: [preflight]
     strategy:
       matrix:
         include:
@@ -54,7 +76,10 @@ jobs:
       # The gates run on the tag too, not only on the branch it came from: a
       # tag can be moved, and a release nobody re-checked is a release nobody
       # can trust.
+      # bash on every runner: under Windows' default pwsh only the last
+      # command's exit code counts.
       - name: gates
+        shell: bash
         run: |
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
@@ -218,7 +243,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/glasir
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - id: manifest
         name: publish multi-architecture manifest
         env:
@@ -278,10 +303,6 @@ jobs:
         with:
           path: artifacts
           pattern: "!*.dockerbuild"
-      # The notes are part of the release and travel through its pull request:
-      # a tag without its file does not publish.
-      - name: release notes
-        run: test -f ".github/releases/$GITHUB_REF_NAME.md"
       # Provenance for the archives as for the image: an archive is then
       # verifiable against this workflow and commit (`gh attestation verify`),
       # not only against the checksum published beside it.
@@ -365,10 +386,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: check server.json names this release
-        run: |
-          version=$(jq -r .version server.json)
-          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "server.json says ${version}"; exit 1; }
       - name: publish to the MCP registry
         run: |
           dir=$(mktemp -d)
