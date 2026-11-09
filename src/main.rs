@@ -5911,6 +5911,44 @@ fn demo_resolve() {
         "tier 3 links must not accumulate"
     );
 
+    // A bare name is one placeholder per language family: a script's call
+    // never shares the Swift caller's link, and C reaches C++.
+    let dir = std::env::temp_dir().join(format!("glasir-family-{}", fixture_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (file, text) in [
+        ("app.swift", "func set() {}\nfunc use_set() { set() }\n"),
+        ("page.js", "function caller() { set(); }\n"),
+        ("lib.cpp", "void cpp_only() {}\n"),
+        ("main.c", "void c_caller(void) { cpp_only(); }\n"),
+    ] {
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    let a = analyse(&dir).unwrap();
+    let links = |placeholder: &str, definition: &str| {
+        let (Some(p), Some(d)) = (
+            a.registry.node_of(placeholder),
+            a.registry.node_of(definition),
+        ) else {
+            return false;
+        };
+        a.snap.neighbors(p).any(|e| e.target == d)
+    };
+    let js_set = a.registry.node_of("set from =javascript");
+    assert!(
+        js_set.is_some(),
+        "the script's call has its own placeholder"
+    );
+    assert!(
+        !links("set from =javascript", "app.swift#set"),
+        "a script call must not reach a Swift definition"
+    );
+    assert!(
+        links("cpp_only from =c", "lib.cpp#cpp_only"),
+        "C reaches a C++ definition"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
     println!("tier 3 ok: exact links only, ambiguity and test shadowing refused");
 }
 
