@@ -135,6 +135,8 @@ pub struct ServedState {
     /// Who uses each symbol without calling it, built on first use.
     pub references: std::sync::OnceLock<References>,
     pub root: std::path::PathBuf,
+    /// While asleep: nodes and symbols of the graph that left memory.
+    pub asleep: Option<(usize, usize)>,
 }
 
 /// Builds the node-id -> name table the tools read.
@@ -151,6 +153,12 @@ pub fn name_table(registry: &SymbolRegistry, width: usize) -> Vec<String> {
 }
 
 impl ServedState {
+    /// Nodes and symbols of the served graph, asleep or not.
+    pub fn counts(&self) -> (usize, usize) {
+        self.asleep
+            .unwrap_or((self.snap.width(), self.registry.len()))
+    }
+
     pub fn as_served(&self) -> Served<'_> {
         Served {
             snap: &self.snap,

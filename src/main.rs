@@ -2580,7 +2580,7 @@ fn run_serve(args: &cli::Args) -> std::io::Result<()> {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30));
-                sleeper.sleep_if_idle(servers::idle_for(now()), sleep_after);
+                sleeper.sleep_if_idle(|| servers::idle_for(now()), sleep_after);
             }
         });
     }
@@ -4053,7 +4053,9 @@ fn shared_options(args: &cli::Args) -> Vec<String> {
 }
 
 /// What a sleeping server holds: nothing, until a request wakes it.
-fn asleep_state() -> mcp::ServedState {
+/// What a server serves asleep: no graph, but the counts and the index time
+/// of the one that left, so a probe reports what a request will get.
+fn asleep_state(was: &mcp::ServedState) -> mcp::ServedState {
     let g = graph::Graph::new(csr::CsrBuilder::new().build());
     let snap = g.load();
     let registry = ingest::SymbolRegistry::new(0);
@@ -4070,11 +4072,12 @@ fn asleep_state() -> mcp::ServedState {
             pendants: Vec::new(),
         },
         physics: physics::Physics::default(),
-        now: now(),
+        now: was.now,
         files: std::sync::OnceLock::new(),
         mentions: std::sync::OnceLock::new(),
         references: std::sync::OnceLock::new(),
         root: std::path::PathBuf::new(),
+        asleep: Some(was.counts()),
     }
 }
 
@@ -4097,6 +4100,7 @@ fn served_state(root: &std::path::Path) -> std::io::Result<mcp::ServedState> {
         mentions: std::sync::OnceLock::new(),
         references: std::sync::OnceLock::new(),
         root: root.to_path_buf(),
+        asleep: None,
     })
 }
 
@@ -11491,6 +11495,27 @@ fn demo_http_events() {
             "readiness must expose a loaded graph and its re-index state: {ready_reply}"
         );
 
+        // Asleep, the probe reports the graph a request will bring back and
+        // when it was indexed, not an empty graph indexed just now.
+        let awake = state.load();
+        state.store(Arc::new(asleep_state(&awake)));
+        let mut slept = std::net::TcpStream::connect(addr).unwrap();
+        write!(slept, "GET /ready HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+        slept
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut slept_reply = String::new();
+        slept.read_to_string(&mut slept_reply).unwrap();
+        let (nodes, _) = awake.counts();
+        assert!(nodes > 0, "the fixture has a graph");
+        assert!(
+            slept_reply.contains("\"asleep\":true")
+                && slept_reply.contains(&format!("\"indexed_at\":{},", awake.now))
+                && slept_reply.contains(&format!("\"nodes\":{nodes},")),
+            "{slept_reply}"
+        );
+        state.store(awake);
+
         let mut denied = std::net::TcpStream::connect(addr).unwrap();
         write!(
             denied,
@@ -14327,18 +14352,22 @@ fn demo_servers() {
     let counted = loads.clone();
     let sleeper = servers::Sleeper::new(
         state.clone(),
-        || 0,
+        |was| was + 100,
         move || {
             let n = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             (n > 0).then_some(7)
         },
     );
-    sleeper.sleep_if_idle(599, 600);
+    sleeper.sleep_if_idle(|| 599, 600);
     assert_eq!(*state.load(), 7, "not idle long enough");
-    sleeper.sleep_if_idle(601, 0);
+    sleeper.sleep_if_idle(|| 601, 0);
     assert_eq!(*state.load(), 7, "0 keeps the graph");
-    sleeper.sleep_if_idle(601, 600);
-    assert_eq!(*state.load(), 0);
+    sleeper.sleep_if_idle(|| 601, 600);
+    assert_eq!(
+        *state.load(),
+        107,
+        "the empty state is made from the one that left"
+    );
     assert!(sleeper.is_asleep());
     sleeper.wake();
     assert!(sleeper.is_asleep(), "a failed load stays asleep");
