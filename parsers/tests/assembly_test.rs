@@ -357,3 +357,33 @@ own:
         2
     );
 }
+
+/// Registers passed along a call come out in one order, run after run: the
+/// order is stored with the graph.
+#[test]
+fn passed_registers_come_out_in_one_order() {
+    let src = "\
+mount:
+    LEA     ffs_ops,A0
+    MOVE.L  A0,MN_OPS(A1)
+    RTS
+call:
+    MOVE.L  MN_OPS(A1),A2
+    MOVE.L  MN_OPS(A1),A3
+    MOVE.L  MN_OPS(A1),A4
+    MOVE.L  MN_OPS(A1),A5
+    BRA     tail
+tail:
+    RTS
+";
+    let parse = || {
+        native_parsers::rules::active()
+            .parse(native_parsers::Language::Assembly, src)
+            .passes
+    };
+    let first = parse();
+    assert!(first.len() >= 2, "{first:?}");
+    for _ in 0..8 {
+        assert_eq!(parse(), first);
+    }
+}

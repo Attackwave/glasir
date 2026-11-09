@@ -47,7 +47,7 @@ use std::path::Path;
 /// 39: library calls through A6 apart from untraced ones (`dispatch.library`).
 /// 40: Rust module-qualified calls mint a scoped placeholder (`f from src/m.rs`).
 /// 41: workflows and actions are read (`workflow`), with `.github/{workflows,actions,scripts}` in scope.
-const FORMAT_VERSION: u32 = 63;
+const FORMAT_VERSION: u32 = 64;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Snapshot {
@@ -134,7 +134,7 @@ impl Snapshot {
 /// can be queried.
 pub fn write(snapshot: &Snapshot, path: &Path) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(snapshot).map_err(std::io::Error::other)?;
-    std::fs::write(path, &bytes)
+    crate::files::replace(path, &bytes)
 }
 
 /// Loads the analysed graph kept between runs, or `None` if it is missing,

@@ -39,6 +39,27 @@ fn is_repo(dir: &Path) -> bool {
 pub fn git(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).env("GIT_OPTIONAL_LOCKS", "0");
+    // Off here as well as refused in `check`: the programs a repository's
+    // configuration can start on a log, a diff or a missing object.
+    cmd.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "log.showSignature=false",
+    ])
+    .args(["-c", "core.quotePath=false"])
+    .env("GIT_NO_LAZY_FETCH", "1");
+    // `-C` names the repository; one exported by a calling hook must not.
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
@@ -131,6 +152,7 @@ fn runs_commands(key: &str, value: &str) -> bool {
         _ => return false,
     };
     match section {
+        "core" if matches!(name, "sshcommand" | "gitproxy") => true,
         // `true` and friends run git's own daemon; anything else is a hook.
         "core" => {
             name == "fsmonitor"
@@ -141,13 +163,18 @@ fn runs_commands(key: &str, value: &str) -> bool {
         }
         "diff" => matches!(name, "external" | "command" | "textconv"),
         "filter" => matches!(name, "clean" | "smudge" | "process"),
+        "gpg" => name == "program",
+        "remote" => matches!(name, "uploadpack" | "receivepack" | "proxy"),
+        "extensions" => name == "partialclone",
         _ => false,
     }
 }
 
-/// Refuses a repository whose own configuration names a command.
+/// Refuses a repository whose own configuration names a command. Read with
+/// scopes, so a file the repository includes, or a worktree's own file,
+/// counts as the repository's.
 fn check(repo: &Path) -> Result<(), String> {
-    let out = output(git(repo).args(["config", "--local", "--list", "-z"]))
+    let out = output(git(repo).args(["config", "--list", "--show-scope", "-z"]))
         .map_err(|e| format!("git could not run in {}: {e}", repo.display()))?;
     if !out.status.success() {
         return Err(format!(
@@ -156,7 +183,12 @@ fn check(repo: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    for entry in out.stdout.split(|b| *b == 0) {
+    let fields: Vec<&[u8]> = out.stdout.split(|b| *b == 0).collect();
+    for pair in fields.chunks(2) {
+        let [scope, entry] = pair else { continue };
+        if !matches!(*scope, b"local" | b"worktree") {
+            continue;
+        }
         let entry = String::from_utf8_lossy(entry);
         let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
         if runs_commands(key, value) {

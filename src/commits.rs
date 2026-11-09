@@ -41,6 +41,8 @@ pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec
                 "--no-merges",
                 "--no-renames",
                 "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
                 "--relative",
                 "-U0",
                 "-p",
@@ -105,6 +107,9 @@ pub fn changes(root: &Path, file: &str, name: &str, window: usize) -> Result<Vec
     Ok(out)
 }
 
+/// Largest file read back from history: a source file, not a generated blob.
+const MAX_BLOB: usize = 8 << 20;
+
 /// File contents at given revisions, `rev:path` each, through one
 /// `git cat-file --batch`. `None` for an object that does not exist or is not
 /// text.
@@ -123,7 +128,12 @@ fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<Str
         return vec![None; specs.len()];
     };
     let mut stdin = child.stdin.take().expect("piped");
-    let input = specs.join("\n") + "\n";
+    // A path holding a newline would split into two requests and shift every
+    // later answer; it is asked as an object that cannot exist instead.
+    let input: String = specs
+        .iter()
+        .map(|s| if s.contains('\n') { "0".repeat(40) } else { s.clone() } + "\n")
+        .collect();
     // Written from a thread: git answers while it reads, and a large request
     // would otherwise fill both pipes and stop both processes.
     let writer = std::thread::spawn(move || {
@@ -146,6 +156,15 @@ fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<Str
             result.push(None);
             continue;
         };
+        if size > MAX_BLOB {
+            let skipped =
+                std::io::copy(&mut (&mut out).take(size as u64 + 1), &mut std::io::sink());
+            if skipped.is_err() {
+                break;
+            }
+            result.push(None);
+            continue;
+        }
         let mut body = vec![0u8; size + 1];
         if out.read_exact(&mut body).is_err() {
             break;
@@ -157,6 +176,8 @@ fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<Str
                 .flatten(),
         );
     }
+    // Stopped early, git may still be writing: it would never exit.
+    let _ = child.kill();
     let _ = writer.join();
     let _ = child.wait();
     result.resize(specs.len(), None);
