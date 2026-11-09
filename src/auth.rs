@@ -83,14 +83,9 @@ pub fn read(path: &Path) -> Vec<Entry> {
 /// briefly world-readable is a file that can be read.
 pub fn append(path: &Path, entry: &Entry) -> std::io::Result<()> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    opts.open(path)?.write_all(entry.line().as_bytes())
+    crate::files::append_options(0o600)
+        .open(path)?
+        .write_all(entry.line().as_bytes())
 }
 
 /// Removes every entry with this name, returning how many went.
@@ -103,7 +98,7 @@ pub fn revoke(path: &Path, name: &str) -> std::io::Result<usize> {
     let gone = read(path).len() - kept.len();
     if gone > 0 {
         let body: String = kept.iter().map(|e| e.line()).collect();
-        std::fs::write(path, body)?;
+        crate::files::replace(path, body.as_bytes())?;
     }
     Ok(gone)
 }

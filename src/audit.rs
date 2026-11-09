@@ -183,17 +183,10 @@ fn write_line(path: &Path, tree: &str, rec: &Record, missed: u64) -> std::io::Re
         line["dropped_before"] = missed.into();
     }
 
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
     // Same reasoning as the token file: the questions people ask about a
     // codebase are not public, and a file that is briefly world-readable is a
     // file that can be read.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    writeln!(opts.open(path)?, "{line}")
+    writeln!(crate::files::append_options(0o600).open(path)?, "{line}")
 }
 
 /// What `serve` prints and `status` reports: how many records, and when the

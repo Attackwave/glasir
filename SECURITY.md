@@ -35,7 +35,15 @@ could reach:
   `SessionStart` hook in `.claude/settings.local.json` that runs `glasir hook`
   (reads the event from stdin, prints a note). Existing files are merged
   into, never replaced; a registration file it creates is gitignored.
-  `uninstall` removes exactly what it wrote.
+  `uninstall` removes exactly what it wrote. A hook is appended to only when
+  it is a shell script; the block runs in a subshell, so it cannot end the
+  rest of the hook.
+- **It never writes through a symbolic link inside the tree.** Every file
+  above, and every hook, is replaced through a sibling file and a rename or
+  opened with `O_NOFOLLOW`; a link planted where one of them goes is refused,
+  so a tree cannot redirect a write to a file outside it. User-level
+  registrations (`install --user`) still follow links, as dotfile managers
+  expect.
 - **The Claude Code plugin runs in every project you open.** It starts
   `glasir serve --plugin` on the session's directory, which refuses a directory
   outside a git repository, and adds the generated file names to that
