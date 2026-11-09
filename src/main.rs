@@ -6389,6 +6389,10 @@ fn demo_community() {
         "a hub must not merge unrelated modules"
     );
     assert!(c.members(c.of_node[0]).contains(&1));
+    // One pass for all communities gives what one pass each gives.
+    for (cid, group) in c.grouped().iter().enumerate() {
+        assert_eq!(*group, c.members(cid as u32));
+    }
 
     // **The same graph, but every node in one file: nothing is a hub.**
     //
@@ -10751,6 +10755,20 @@ thread scheduling"
         1,
         "one query word is one term covered, however many posting lists its          stem reaches"
     );
+    // A word written three times is one term, and a split half never lowers
+    // a word the question also wrote.
+    assert_eq!(stem_index.coverage_for_test("spawn spawn spawn", 0), 1);
+    let mut split_reg = ingest::SymbolRegistry::new(0);
+    split_reg.insert("src/g.rs#graph_store".into(), 0);
+    split_reg.insert("src/b.rs#basis_value".into(), 1);
+    let split_index = SearchIndex::build(&split_reg);
+    assert_eq!(split_index.split_for_test("basisgraph"), ["basis", "graph"]);
+    assert_eq!(
+        split_index.coverage_for_test("graph store basisgraph", 0),
+        2
+    );
+    // Lower case beyond ASCII: a capitalised German word meets its index form.
+    assert_eq!(search::tokenize("Änderungen"), ["änderungen"]);
 
     // Covering more of the query must beat a single common-word hit.
     let both = index.search("added edges", 3);
@@ -12774,6 +12792,14 @@ fn demo_snapshot() {
 /// deliberate: only JavaScript and Go define a `@doc` capture in their tags
 /// query, so relying on that would mean no docs for Rust.
 fn demo_docs() {
+    // A heading repeated in one file is numbered, not overwritten.
+    let repeated = docs::sections(
+        "## A\nx\n### Example\none\n## B\ny\n### Example\ntwo\n",
+        "f",
+    );
+    let titles: Vec<&str> = repeated.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["A", "Example", "B", "Example [2]"]);
+    assert!(repeated[3].prose.contains("two"));
     use parse_ast::{Lang, parse};
 
     // See `docs::NOT_DOCUMENTATION`; `demo_scope` covers the opt-in.
