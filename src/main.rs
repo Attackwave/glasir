@@ -13224,8 +13224,39 @@ fn demo_repos() {
     assert!(repos::repos(&dir).is_err(), "an external diff is a command");
     git(&dir.join("client"), &["config", "--unset", "diff.external"]);
     assert!(repos::repos(&dir).is_ok());
+    // A file the repository includes is the repository's configuration too.
+    std::fs::write(
+        dir.join("client/.git/extra.cfg"),
+        "[gpg]\n\tprogram = /bin/true\n",
+    )
+    .unwrap();
+    git(
+        &dir.join("client"),
+        &["config", "include.path", "extra.cfg"],
+    );
+    let refused = repos::repos(&dir).unwrap_err();
+    assert!(refused.contains("gpg.program"), "{refused}");
+    git(&dir.join("client"), &["config", "--unset", "include.path"]);
+    assert!(repos::repos(&dir).is_ok());
+    // The programs it could start are off for every command run here.
+    let args: Vec<String> = repos::git(&dir)
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    for off in ["core.fsmonitor=false", "log.showSignature=false"] {
+        assert!(args.iter().any(|a| a == off), "{args:?}");
+    }
+
+    // A name outside ASCII, which git prints quoted unless told otherwise.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 1; }\n").unwrap();
+    git(&dir.join("client"), &["add", "."]);
+    git(
+        &dir.join("client"),
+        &["commit", "-qm", "größe", "--no-verify"],
+    );
 
     // Uncommitted edits in two repositories read as one change.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 2; }\n").unwrap();
     std::fs::write(
         dir.join("client/src/app.rs"),
         "fn fetch() { render(); }\nfn render() { 1; }\n",
@@ -13256,6 +13287,10 @@ fn demo_repos() {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert!(symbols.contains(&"client/src/app.rs#render"), "{symbols:?}");
+    assert!(
+        symbols.contains(&"client/src/größe.rs#groesse"),
+        "{symbols:?}"
+    );
     assert!(symbols.contains(&"server/src/api.rs#handle"), "{symbols:?}");
     assert!(
         !symbols.contains(&"server/src/api.rs#store"),
