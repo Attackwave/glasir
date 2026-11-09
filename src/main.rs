@@ -22,6 +22,7 @@ mod csr;
 mod delta;
 mod docs;
 mod embed;
+mod files;
 mod graph;
 mod guard;
 mod history;
@@ -779,7 +780,12 @@ pub(crate) fn read_source(path: &std::path::Path) -> Option<String> {
     }
     match std::fs::read(path) {
         Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(text) => Some(text),
+            // Without its byte order mark: no scanner reads it as part of
+            // the first word, and every reader sees the same offsets.
+            Ok(text) => Some(match text.strip_prefix('\u{feff}') {
+                Some(rest) => rest.to_string(),
+                None => text,
+            }),
             // Latin-1 fallback. Refusing the file loses all of it over bytes
             // that are almost never in the code: measured on five real
             // non-UTF-8 files, every one
@@ -1626,6 +1632,7 @@ fn write_registration(
     dry: bool,
 ) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let tree = root;
     let (exe, root) = (exe.to_string_lossy(), root.to_string_lossy());
 
     let updated = match target.format.store() {
@@ -1678,7 +1685,7 @@ fn write_registration(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, updated)?;
+        files::replace_in(tree, path, updated.as_bytes())?;
     }
     Ok(true)
 }
@@ -1782,7 +1789,7 @@ fn install_assistant_hook(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, format!("{doc:#}\n"))?;
+        files::replace(path, format!("{doc:#}\n").as_bytes())?;
     }
     Ok(true)
 }
@@ -1820,7 +1827,7 @@ fn uninstall_assistant_hook(
         if doc.as_object().is_some_and(|d| d.is_empty()) {
             std::fs::remove_file(path)?;
         } else {
-            std::fs::write(path, format!("{doc:#}\n"))?;
+            files::replace(path, format!("{doc:#}\n").as_bytes())?;
         }
     }
     Ok(true)
@@ -1954,7 +1961,7 @@ fn run_uninstall(args: &cli::Args) -> std::io::Result<()> {
 
         if !dry {
             match updated {
-                Some(text) => std::fs::write(&path, text)?,
+                Some(text) => files::replace_in(root, &path, text.as_bytes())?,
                 None => std::fs::remove_file(&path)?,
             }
         }
@@ -2399,7 +2406,9 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     // `--check` is what makes the benchmark a guard rather than a report: CI
     // runs it, and a set that falls below its floor breaks the build.
     if args.has("check") {
-        enforce_floors(&measured, &root.join("bench/baseline.txt"), false)?;
+        // Strict for the full run: a set that went missing is a floor gone.
+        let strict = args.value("questions").is_none();
+        enforce_floors(&measured, &root.join("bench/baseline.txt"), strict)?;
     }
     Ok(())
 }
@@ -2412,8 +2421,34 @@ fn enforce_floors(
     strict: bool,
 ) -> std::io::Result<()> {
     let baseline = bench::load_baseline(path)?;
-    let mut failed = Vec::new();
     println!("\n=== against {}", path.display());
+    let failed = floor_failures(measured, &baseline, strict);
+    if !failed.is_empty() {
+        eprintln!("\nretrieval regressed:");
+        for f in &failed {
+            eprintln!("  {f}");
+        }
+        eprintln!(
+            "\nIf the drop is intended, lower the floor in {} in the \n\
+             same commit, with the reason in the message.",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// What breaks the build: a set below its floor, a floor nothing measured
+/// (strict), or nothing measured at all.
+fn floor_failures(
+    measured: &[(String, f32)],
+    baseline: &bench::Baseline,
+    strict: bool,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    if measured.is_empty() {
+        failed.push("nothing was measured".to_string());
+    }
     if strict {
         for (name, _) in &baseline.floors {
             if !measured.iter().any(|(m, _)| m == name) {
@@ -2439,19 +2474,7 @@ fn enforce_floors(
             failed.push(format!("{name}: {got:.0}% against a floor of {floor:.0}%"));
         }
     }
-    if !failed.is_empty() {
-        eprintln!("\nretrieval regressed:");
-        for f in &failed {
-            eprintln!("  {f}");
-        }
-        eprintln!(
-            "\nIf the drop is intended, lower the floor in {} in the \n\
-             same commit, with the reason in the message.",
-            path.display()
-        );
-        std::process::exit(1);
-    }
-    Ok(())
+    failed
 }
 
 /// Explains one question: what it seeded on, what came back, and where the
@@ -3797,6 +3820,8 @@ fn hook_script(hook: &str, exe: &std::path::Path, graph: Option<&std::path::Path
         "{HOOK_BEGIN}\n\
          # Keeps the code graph current after the tree changes under it.\n\
          # Installed by: glasir install — remove with: glasir uninstall\n\
+         # A subshell: its `exit` ends this block, never the rest of the hook.\n\
+         (\n\
          [ \"${{GLASIR_SKIP_HOOK:-0}}\" = \"1\" ] && exit 0\n\
          {guard}\n\
          # Mid-operation states are not worth indexing: a rebase or merge in\n\
@@ -3814,6 +3839,7 @@ fn hook_script(hook: &str, exe: &std::path::Path, graph: Option<&std::path::Path
          _log=\"${{TMPDIR:-/tmp}}/glasir-refresh.log\"\n\
          ({exe} analyse {tree} >>\"$_log\" 2>&1 || \\\n\
          \techo \"$(date): glasir analyse failed, graph may be stale\" >>\"$_log\") &\n\
+         )\n\
          {HOOK_END}\n",
         // Single-quoted, with any embedded quote escaped. `current_exe` is not
         // under our control: a path with a space silently breaks the hook, and
@@ -3897,6 +3923,20 @@ fn install_hooks(root: &std::path::Path, exe: &std::path::Path, dry: bool) -> Ve
     notes
 }
 
+/// A `#!` line naming a POSIX-style shell, directly or through `env`.
+fn is_shell_script(text: &str) -> bool {
+    let Some(line) = text.lines().next().and_then(|l| l.strip_prefix("#!")) else {
+        return false;
+    };
+    let mut words = line.split_whitespace();
+    let mut prog = words.next().unwrap_or("");
+    if prog.ends_with("/env") {
+        prog = words.find(|w| !w.starts_with('-')).unwrap_or("");
+    }
+    let name = prog.rsplit('/').next().unwrap_or("");
+    matches!(name, "sh" | "bash" | "dash" | "zsh" | "ksh" | "ash")
+}
+
 fn install_hooks_in(
     root: &std::path::Path,
     exe: &std::path::Path,
@@ -3913,12 +3953,16 @@ fn install_hooks_in(
 
     for hook in HOOKS {
         let path = dir.join(hook);
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            notes.push(format!("{hook}: is a symbolic link, leaving it alone"));
+            continue;
+        }
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         if existing.contains(HOOK_BEGIN) {
             notes.push(format!("{hook}: already installed"));
             continue;
         }
-        if !existing.trim().is_empty() && !existing.starts_with("#!") {
+        if !existing.trim().is_empty() && !is_shell_script(&existing) {
             notes.push(format!(
                 "{hook}: exists but is not a shell script, leaving it alone"
             ));
@@ -3934,7 +3978,7 @@ fn install_hooks_in(
             notes.push(format!("{hook}: would write {}", path.display()));
             continue;
         }
-        if std::fs::write(&path, body).is_err() {
+        if files::replace(&path, body.as_bytes()).is_err() {
             notes.push(format!("{hook}: could not write {}", path.display()));
             continue;
         }
@@ -3992,7 +4036,7 @@ fn uninstall_hooks(root: &std::path::Path, dry: bool) -> Vec<String> {
         let done = if bare {
             std::fs::remove_file(&path)
         } else {
-            std::fs::write(&path, rest)
+            files::replace(&path, rest.as_bytes())
         };
         notes.push(match done {
             Ok(()) => format!("{hook}: removed"),
@@ -4028,7 +4072,7 @@ fn add_ignore_lines(path: &std::path::Path, names: &[&str]) {
         };
         current = format!("{current}{sep}{name}\n");
     }
-    let _ = std::fs::write(path, current);
+    let _ = files::replace(path, current.as_bytes());
 }
 
 /// Everything an analysis or a served tree writes beside the sources.
@@ -5901,7 +5945,7 @@ fn demo_scip() {
         .unwrap();
     let mut edited_reg = ingest::SymbolRegistry::new(0);
     let edited = import_scip::import(&path, &root, &mut edited_reg).unwrap();
-    assert_eq!(edited.stale_files, vec!["src/checkout.rs".to_string()]);
+    assert_eq!(edited.stale_files, ["src/checkout.rs".to_string()].into());
     assert!(
         edited.edges.is_empty(),
         "the edge is attributed to the edited file, so it must not be served"
@@ -5959,7 +6003,7 @@ fn demo_scip() {
     let r2 = import_scip::import(&idx, &dir, &mut reg2).unwrap();
     assert_eq!(
         r2.stale_files,
-        vec!["src/new.rs".to_string()],
+        std::collections::BTreeSet::from(["src/new.rs".to_string()]),
         "an edited file must be reported stale"
     );
     let fresh: Vec<&String> = r2.fresh_files().collect();
@@ -5968,6 +6012,19 @@ fn demo_scip() {
         vec!["src/old.rs"],
         "an untouched file must stay covered — staleness is per file, not per index"
     );
+    // Committed, the index came from somewhere else: refused, not trusted.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "index.scip"]);
+    let mut reg3 = ingest::SymbolRegistry::new(0);
+    assert!(import_scip::import(&idx, &dir, &mut reg3).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 
     println!(
@@ -6156,6 +6213,25 @@ fn demo_embed() {
         ab < 0.999,
         "two distinct nodes must not collapse onto one vector: {ab}"
     );
+
+    // A sink ends only its own step. Sinks at even ids, each odd id calling
+    // the next: every caller must have moved off its starting vector, however
+    // the nodes are split across threads.
+    let mut chain = csr::CsrBuilder::new();
+    for i in 0..64u32 {
+        chain.add_node(i + 1);
+    }
+    for i in (1..63u32).step_by(2) {
+        chain.add_edge(i, e(i + 1));
+    }
+    let chain = graph::Graph::new(chain.build()).load();
+    let (moved, start) = (embed::embed(&chain, 4), embed::embed(&chain, 0));
+    for i in (1..63u32).step_by(2) {
+        assert!(
+            moved.get(i) != start.get(i),
+            "node {i} kept its starting vector"
+        );
+    }
 
     // Vectors are L2-normalised, so self-similarity is 1.
     assert!((emb.similarity(0, 0) - 1.0).abs() < 1e-4);
@@ -9393,8 +9469,10 @@ fn demo_change_tools() {
         ("k/Cargo.toml", "[package]\nname = \"k\"\n"),
         (
             "k/src/lib.rs",
-            "mod a;\nmod b {\n    mod c;\n}\n#[path = \"other/d.rs\"]\nmod d;\ninclude!(\"inc.rs\");\n",
+            "mod a;\nmod b {\n    mod c;\n}\n#[path = \"other/d.rs\"]\nmod d;\ninclude!(\"inc.rs\");\n\
+             #[path = \"../shared/e.rs\"]\nmod e;\n",
         ),
+        ("k/shared/e.rs", "pub fn e_fn() {}\n"),
         ("k/src/a.rs", "mod sub;\npub fn a_fn() {}\n"),
         ("k/src/a/sub.rs", "pub fn sub_fn() {}\n"),
         ("k/src/b/c.rs", "pub fn c_fn() {}\n"),
@@ -9426,6 +9504,14 @@ fn demo_change_tools() {
     };
     assert_eq!(impact_of("k/src/stray.rs#stray_fn"), json!(true));
     assert!(impact_of("k/src/inc.rs#inc_fn").is_null());
+    // A path is resolved before it is read, and never read outside the tree.
+    assert_eq!(
+        imports::within("k/src/../shared/e.rs").as_deref(),
+        Some("k/shared/e.rs")
+    );
+    for outside in ["/dev/zero", "../x.rs", "k/../../x.rs"] {
+        assert_eq!(imports::within(outside), None, "{outside}");
+    }
     // A trait's methods are called by whoever holds the trait.
     std::fs::write(
         dir.join("src/server.rs"),
@@ -11754,19 +11840,28 @@ fn demo_baseline() {
         base.tolerance
     );
 
-    // The comparison itself, on numbers rather than on a benchmark run: the
-    // run costs seconds and this is the arithmetic that decides a build.
-    let below = |got: f32, floor: f32| got + base.tolerance < floor;
+    // The comparison itself, through the function `--check` runs, on numbers
+    // rather than on a benchmark run.
+    let one = |got: f32, floor: f32| {
+        let b = bench::Baseline {
+            floors: vec![("s".to_string(), floor)],
+            tolerance: base.tolerance,
+        };
+        !floor_failures(&[("s".to_string(), got)], &b, false).is_empty()
+    };
+    assert!(one(56.0, 69.0), "a thirteen-point drop must fail the build");
+    assert!(!one(56.0, 56.0), "holding the floor must pass");
     assert!(
-        below(56.0, 69.0),
-        "a thirteen-point drop must fail the build"
-    );
-    assert!(!below(56.0, 56.0), "holding the floor must pass");
-    assert!(
-        !below(54.0, 56.0),
+        !one(54.0, 56.0),
         "a two-point wobble is question wording, not a regression"
     );
-    assert!(below(52.0, 56.0), "past the tolerance it fails");
+    assert!(
+        one(56.0 - base.tolerance, 56.0),
+        "a drop of exactly the tolerance fails"
+    );
+    // A full run that lost a set, or measured nothing, fails too.
+    assert!(!floor_failures(&[], &base, false).is_empty());
+    assert!(!floor_failures(&[("questions".to_string(), 100.0)], &base, true).is_empty());
 
     println!("phase D.2 ok: {} floors guard retrieval", base.floors.len());
 }
@@ -11909,6 +12004,46 @@ fn demo_hooks() {
             .contains("npm test")
     );
 
+    // A hook in another language, and one linked to a tracked script, are
+    // left as they are; the block's own exits end only the block.
+    let hooks = dir.join(".git/hooks");
+    std::fs::write(
+        hooks.join("post-merge"),
+        "#!/usr/bin/env python3
+print(1)
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tracked-hook"),
+        "#!/bin/sh
+echo mine
+",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("tracked-hook"), hooks.join("post-rewrite")).unwrap();
+    let notes = install_hooks(&dir, exe, false);
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("post-merge")).unwrap(),
+        "#!/usr/bin/env python3\nprint(1)\n",
+        "{notes:?}"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_to_string(dir.join("tracked-hook")).unwrap(),
+        "#!/bin/sh\necho mine\n",
+        "{notes:?}"
+    );
+    let block = hook_script("post-checkout", exe, None);
+    let ran = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{block}\necho after"))
+        .args(["sh", "a", "a", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "after\n", "{block}");
+
     // The stored graph must be ignored, or an analysis leaves the tree dirty
     // and git refuses the next branch switch: "Please commit your changes".
     // This was found by a hook doing exactly that.
@@ -12000,6 +12135,27 @@ fn demo_auth() {
     assert_eq!(tokens.identify(Some(&other), now), None, "unknown token");
     assert_eq!(tokens.identify(None, now), None, "no token at all");
     assert!(tokens.configured());
+
+    // A token file that arrived with the tree (readable by others, as a clone
+    // leaves it) is not believed; one the operator wrote is.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let planted = dir.join("planted-tokens");
+        std::fs::copy(&path, &planted).unwrap();
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(auth::read(&planted).is_empty());
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!auth::read(&planted).is_empty());
+        // Emptied after tokens were in effect: nobody gets in, not everybody.
+        let once = Tokens::new(planted.clone());
+        assert!(once.configured());
+        std::fs::write(&planted, "").unwrap();
+        assert!(once.configured(), "per-user auth stays in effect");
+        assert_eq!(once.identify(Some(&secret), now), None);
+        std::fs::remove_file(&planted).unwrap();
+        assert!(once.configured(), "a deleted file admits nobody");
+    }
 
     let rotated = auth::rotate(&path, "anna", 0).unwrap();
     let rotated_entries = auth::read(&path);
@@ -12414,6 +12570,18 @@ fn demo_snapshot() {
         snapshot::source_times(&dir, std::slice::from_ref(&src)),
     );
     snapshot::write(&stored, &path).unwrap();
+
+    // A link planted where an output goes is never written through.
+    #[cfg(unix)]
+    {
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "mine").unwrap();
+        let link = dir.join("linked-graph");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(snapshot::write(&stored, &link).is_err());
+        assert!(files::append_options(0o600).open(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine");
+    }
 
     // Names are the reason this exists: a bare CSR stores interned keys whose
     // strings live in an arena that was never written, so reading one back
@@ -13145,8 +13313,39 @@ fn demo_repos() {
     assert!(repos::repos(&dir).is_err(), "an external diff is a command");
     git(&dir.join("client"), &["config", "--unset", "diff.external"]);
     assert!(repos::repos(&dir).is_ok());
+    // A file the repository includes is the repository's configuration too.
+    std::fs::write(
+        dir.join("client/.git/extra.cfg"),
+        "[gpg]\n\tprogram = /bin/true\n",
+    )
+    .unwrap();
+    git(
+        &dir.join("client"),
+        &["config", "include.path", "extra.cfg"],
+    );
+    let refused = repos::repos(&dir).unwrap_err();
+    assert!(refused.contains("gpg.program"), "{refused}");
+    git(&dir.join("client"), &["config", "--unset", "include.path"]);
+    assert!(repos::repos(&dir).is_ok());
+    // The programs it could start are off for every command run here.
+    let args: Vec<String> = repos::git(&dir)
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    for off in ["core.fsmonitor=false", "log.showSignature=false"] {
+        assert!(args.iter().any(|a| a == off), "{args:?}");
+    }
+
+    // A name outside ASCII, which git prints quoted unless told otherwise.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 1; }\n").unwrap();
+    git(&dir.join("client"), &["add", "."]);
+    git(
+        &dir.join("client"),
+        &["commit", "-qm", "größe", "--no-verify"],
+    );
 
     // Uncommitted edits in two repositories read as one change.
+    std::fs::write(dir.join("client/src/größe.rs"), "fn groesse() { 2; }\n").unwrap();
     std::fs::write(
         dir.join("client/src/app.rs"),
         "fn fetch() { render(); }\nfn render() { 1; }\n",
@@ -13177,6 +13376,10 @@ fn demo_repos() {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert!(symbols.contains(&"client/src/app.rs#render"), "{symbols:?}");
+    assert!(
+        symbols.contains(&"client/src/größe.rs#groesse"),
+        "{symbols:?}"
+    );
     assert!(symbols.contains(&"server/src/api.rs#handle"), "{symbols:?}");
     assert!(
         !symbols.contains(&"server/src/api.rs#store"),
@@ -13511,6 +13714,20 @@ fn demo_scope() {
 fn demo_ignored_paths() {
     use std::path::Path;
     let root = Path::new("/home/u/repo");
+
+    // A tree that itself sits inside a hidden or build directory is judged
+    // below its root only, or nothing in it is indexed.
+    for parent in ["/home/u/.claude/worktrees/w", "/home/u/target/w"] {
+        let tree = Path::new(parent);
+        assert!(
+            !watcher::ignored_under(&tree.join("src/f.rs"), Some(tree)),
+            "{parent}"
+        );
+        assert!(
+            watcher::ignored_under(&tree.join(".cache/f.rs"), Some(tree)),
+            "{parent}"
+        );
+    }
 
     // Scratch space at the top of the tree, ignored.
     assert!(watcher::ignored_under(
@@ -14628,6 +14845,15 @@ fn demo_bench() {
         ),
         ("src/b.rs".to_string(), "fn beta() {}".to_string()),
     ];
+    // A word with a multibyte character before its fifth: stemmed by
+    // characters, never cut inside one.
+    let _ = bench::grep_answer(
+        &files,
+        &bench::Question {
+            text: "wie groß ist die größe".to_string(),
+            expected: Vec::new(),
+        },
+    );
     let hit = bench::grep_answer(&files, &questions[0]);
     assert_eq!(hit.found, 2, "both symbols live in the file it opened");
     // A question whose words appear nowhere opens nothing, and scores nothing:
@@ -14832,6 +15058,26 @@ fn demo_overview() {
 /// `ambiguous` two same-named functions in different files collapse onto one
 /// placeholder and invent a cycle between files that never reference each other.
 fn demo_cycles() {
+    // Shortest first, whatever order the files come in: a 3-file loop on low
+    // ids must not crowd out a 2-file one with `limit: 1`.
+    let set = |v: &[usize]| {
+        v.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<usize>>()
+    };
+    let adj = vec![set(&[1]), set(&[2]), set(&[0]), set(&[4]), set(&[3])];
+    assert_eq!(guard::simple_cycles(&adj, 5, 1), (vec![vec![3, 4]], false));
+    // A dense graph without a single cycle has more paths than any request can
+    // walk: the search stops at its budget and says so.
+    let dag: Vec<_> = (0..60usize).map(|i| (i + 1..60).collect()).collect();
+    let t = std::time::Instant::now();
+    let (none, truncated) = guard::simple_cycles(&dag, 12, 20);
+    assert!(none.is_empty() && truncated);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t.elapsed()
+    );
     let mut b = csr::CsrBuilder::new();
     for _ in 0..7u32 {
         b.add_node(0);
@@ -14946,6 +15192,9 @@ fn demo_cycles() {
     // max_len is a bound, not decoration: a 3-file cycle is out of reach at 2.
     let short = call(serde_json::json!({"max_len": 2}));
     assert!(short.contains("no cycles"), "max_len must bound: {short}");
+    // A misspelt tier is refused, not read as the weakest.
+    let typo = call(serde_json::json!({"min_confidence": "EXTRACTED"}));
+    assert!(typo.contains("min_confidence must be"), "{typo}");
 }
 
 /// The subsystem rings in the map are named after the file most of their
@@ -15314,6 +15563,22 @@ fn demo_langcheck() {
         check(&absent, &floors).is_empty(),
         "a floor for a language that is not present must not fire"
     );
+
+    // A byte order mark is read away: scanners, snippets and ranges all see
+    // the file from its first character.
+    let marked = std::env::temp_dir().join(format!("glasir-bom-{}.py", fixture_id()));
+    std::fs::write(&marked, "\u{feff}def first():\n    pass\n").unwrap();
+    assert_eq!(
+        read_source(&marked).as_deref(),
+        Some("def first():\n    pass\n")
+    );
+    let _ = std::fs::remove_file(&marked);
+
+    // A line that does not parse is an error, never a floor quietly gone.
+    let typo = std::env::temp_dir().join(format!("glasir-langs-{}.txt", fixture_id()));
+    std::fs::write(&typo, "Rust 10 5 30\nGo 10 five 30\n").unwrap();
+    assert!(crate::langcheck::load_expectations(&typo).is_err());
+    let _ = std::fs::remove_file(&typo);
 
     let path = std::path::Path::new("bench/languages.txt");
     let Ok(expected) = crate::langcheck::load_expectations(path) else {
