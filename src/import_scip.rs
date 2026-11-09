@@ -268,6 +268,12 @@ pub fn import(
     let mut definitions = 0;
 
     for doc in &index.documents {
+        // A file that is gone is reported stale below; its definitions are
+        // not minted, or tier 3 would link calls to names nothing defines.
+        if !root.join(&doc.relative_path).exists() {
+            file_nodes.entry(doc.relative_path.clone()).or_default();
+            continue;
+        }
         for occ in &doc.occurrences {
             if occ.symbol_roles & ROLE_DEFINITION == 0 {
                 continue;
