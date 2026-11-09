@@ -1892,8 +1892,18 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
             .as_deref()
             .is_some_and(|d| d == "." || name.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
     };
+    let family = full.split_once('#').and_then(|(file, _)| {
+        use crate::parse_ast::LangExt;
+        crate::parse_ast::Lang::from_path(std::path::Path::new(file))
+    });
     let mut undecided: Vec<NodeId> = bare
-        .and_then(|name| served.registry.node_of(name))
+        .and_then(|name| match family {
+            Some(lang) => served.registry.node_of(&crate::imports::scoped(
+                name,
+                &crate::ingest::family_scope(lang),
+            )),
+            None => served.registry.node_of(name),
+        })
         .map(|placeholder| direct_callers(served, reverse, placeholder, floor))
         .unwrap_or_default()
         .into_iter()
@@ -2475,6 +2485,7 @@ fn dangling_callers(served: &Served, removed: &[(String, String)]) -> Vec<String
                 && target.is_none_or(|t| {
                     t == file
                         || t.starts_with('@')
+                        || t.starts_with('=')
                         || t.strip_prefix('~')
                             .is_some_and(|dirs| crate::resolve::in_crates(dirs, file))
                 })

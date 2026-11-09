@@ -467,17 +467,10 @@ impl SymbolRegistry {
     /// names defined twice are most of them. Run once the batch's definitions
     /// are all known. A Markdown section is not a definition.
     pub fn prune_refs(&mut self) {
-        // Languages that read each other's names: a script and its typings, C
-        // and C++, the JVM. A name elsewhere is a coincidence, not a use.
+        // A name in another family is a coincidence, not a use.
         let family = |file: &str| {
             use crate::parse_ast::LangExt;
-            let lang = Lang::from_path(Path::new(file));
-            match lang {
-                Some(Lang::TypeScript) => Some(Lang::JavaScript),
-                Some(Lang::Cpp) => Some(Lang::C),
-                Some(Lang::Kotlin | Lang::Scala) => Some(Lang::Java),
-                other => other,
-            }
+            Lang::from_path(Path::new(file)).map(family)
         };
         let mut defs: HashMap<&str, (u32, Option<Lang>)> = HashMap::new();
         for key in self.by_name.keys() {
@@ -639,6 +632,23 @@ impl SymbolRegistry {
 /// define `main` without colliding.
 pub(crate) fn qualify(file: &str, name: &str) -> String {
     format!("{file}#{name}")
+}
+
+/// Languages that read each other's names: a script and its typings, C and
+/// C++, the JVM. Every other language is a family of its own.
+pub(crate) fn family(lang: Lang) -> Lang {
+    match lang {
+        Lang::TypeScript => Lang::JavaScript,
+        Lang::Cpp | Lang::ObjC | Lang::Cuda => Lang::C,
+        Lang::Kotlin | Lang::Scala | Lang::Groovy => Lang::Java,
+        other => other,
+    }
+}
+
+/// The target of a bare name called from `lang`: `=` and its family, so a
+/// name called from two families is two placeholders.
+pub(crate) fn family_scope(lang: Lang) -> String {
+    format!("={:?}", family(lang)).to_lowercase()
 }
 
 /// Bare name -> the one symbol defining it; `None` marks a name defined more
@@ -1309,11 +1319,14 @@ fn prepare_facts(
                         .clone()
                 })
                 .flatten();
-            let node = match scope {
-                Some(dirs) => {
+            let node = match (scope, Lang::from_path(path)) {
+                (Some(dirs), _) => {
                     registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
                 }
-                None => registry.get_or_mint(callee),
+                (None, Some(lang)) => {
+                    registry.get_or_mint(&crate::imports::scoped(callee, &family_scope(lang)))
+                }
+                (None, None) => registry.get_or_mint(callee),
             };
             if let Some(lang) = Lang::from_path(path) {
                 registry.note_placeholder_lang(node, lang);
