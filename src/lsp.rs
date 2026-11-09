@@ -44,10 +44,88 @@ const SERVERS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+/// Largest message read from a server; its `Content-Length` is its own claim.
+const MAX_MESSAGE: usize = 64 << 20;
+
+/// Reads `Content-Length` framed messages until the server closes its output
+/// or sends one that cannot be read.
+fn reader(mut from: BufReader<ChildStdout>) -> std::sync::mpsc::Receiver<Value> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                match from.read_line(&mut line) {
+                    Ok(0) | Err(_) => return, // server exited
+                    Ok(_) => {}
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = rest.trim().parse().unwrap_or(0);
+                }
+            }
+            if length == 0 || length > MAX_MESSAGE {
+                return;
+            }
+            let mut buf = vec![0u8; length];
+            if std::io::Read::read_exact(&mut from, &mut buf).is_err() {
+                return;
+            }
+            let Ok(msg) = serde_json::from_slice(&buf) else {
+                return;
+            };
+            if tx.send(msg).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// A `file://` URI, percent-encoded: a space or `#` in a path is not a URI.
+fn uri(path: &Path) -> String {
+    let mut out = String::from("file://");
+    for b in path.to_string_lossy().bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// The path a `file://` URI names, percent-decoded.
+fn path_of(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?.as_bytes();
+    let mut out = Vec::with_capacity(rest.len());
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == b'%'
+            && let Some(b) = rest
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(rest[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 pub struct LspClient {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// Messages from the server, read on a thread of their own so that a
+    /// deadline bounds the wait for one: a read on the pipe blocks.
+    stdout: std::sync::mpsc::Receiver<Value>,
     next_id: i64,
     /// Which language id this server was started for, for didOpen.
     language: &'static str,
@@ -78,7 +156,7 @@ impl LspClient {
             .ok()?;
 
         let stdin = child.stdin.take()?;
-        let stdout = BufReader::new(child.stdout.take()?);
+        let stdout = reader(BufReader::new(child.stdout.take()?));
         let mut client = LspClient {
             child,
             stdin,
@@ -88,7 +166,7 @@ impl LspClient {
             ready: false,
         };
 
-        let root_uri = format!("file://{}", root.display());
+        let root_uri = uri(root);
         let id = client.request(
             "initialize",
             json!({
@@ -126,26 +204,10 @@ impl LspClient {
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
 
-    fn read_message(&mut self) -> Option<Value> {
-        let mut length = 0usize;
-        loop {
-            let mut line = String::new();
-            if self.stdout.read_line(&mut line).ok()? == 0 {
-                return None; // server exited
-            }
-            if line == "\r\n" || line == "\n" {
-                break;
-            }
-            if let Some(rest) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = rest.trim().parse().ok()?;
-            }
-        }
-        if length == 0 {
-            return None;
-        }
-        let mut buf = vec![0u8; length];
-        std::io::Read::read_exact(&mut self.stdout, &mut buf).ok()?;
-        serde_json::from_slice(&buf).ok()
+    fn read_message(&mut self, until: Instant) -> Option<Value> {
+        self.stdout
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+            .ok()
     }
 
     /// Reads until the reply to `id` arrives, answering the server's own
@@ -153,7 +215,7 @@ impl LspClient {
     fn await_response(&mut self, id: i64, timeout: Duration) -> Option<Value> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            let msg = self.read_message()?;
+            let msg = self.read_message(deadline)?;
             // The server asks us to create a progress token before reporting
             // against it, and blocks on the answer.
             if msg["method"] == "window/workDoneProgress/create" {
@@ -185,7 +247,7 @@ impl LspClient {
         self.notify(
             "textDocument/didOpen",
             json!({"textDocument": {
-                "uri": format!("file://{}", path.display()),
+                "uri": uri(path),
                 "languageId": self.language,
                 "version": 1,
                 "text": text
@@ -200,7 +262,7 @@ impl LspClient {
         self.notify(
             "textDocument/didChange",
             json!({
-                "textDocument": {"uri": format!("file://{}", path.display()), "version": version},
+                "textDocument": {"uri": uri(path), "version": version},
                 "contentChanges": [{"text": text}]
             }),
         )
@@ -210,7 +272,7 @@ impl LspClient {
     pub fn document_symbols(&mut self, path: &Path) -> Option<Vec<(String, u32)>> {
         let id = self.request(
             "textDocument/documentSymbol",
-            json!({"textDocument": {"uri": format!("file://{}", path.display())}}),
+            json!({"textDocument": {"uri": uri(path)}}),
         )?;
         let result = self.await_response(id, REQUEST_TIMEOUT)?;
         let mut out = Vec::new();
@@ -239,7 +301,7 @@ impl LspClient {
             .request(
                 "textDocument/references",
                 json!({
-                    "textDocument": {"uri": format!("file://{}", path.display())},
+                    "textDocument": {"uri": uri(path)},
                     "position": {"line": line, "character": character},
                     "context": {"includeDeclaration": false}
                 }),
@@ -253,7 +315,7 @@ impl LspClient {
             .ok_or("reply was not a location list")?
             .iter()
             .filter_map(|loc| {
-                let uri = loc["uri"].as_str()?.strip_prefix("file://")?.to_string();
+                let uri = path_of(loc["uri"].as_str()?)?;
                 let line = loc["range"]["start"]["line"].as_u64()? as u32;
                 Some((uri, line))
             })
@@ -352,5 +414,47 @@ fn collect_symbols(value: &Value, out: &mut Vec<(String, u32)>) {
         if let Some(children) = item.get("children") {
             collect_symbols(children, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_survives_its_uri() {
+        let path = Path::new("/tmp/a dir/x#1/ü.rs");
+        let u = uri(path);
+        assert!(!u.contains(' ') && !u[7..].contains('#'), "{u}");
+        assert_eq!(path_of(&u).as_deref(), Some("/tmp/a dir/x#1/ü.rs"));
+    }
+
+    /// A server that says nothing does not hold the caller past its deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_server_times_out() {
+        let mut child = Command::new("sleep")
+            .arg("5")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = reader(BufReader::new(child.stdout.take().unwrap()));
+        let mut client = LspClient {
+            child,
+            stdin,
+            stdout,
+            next_id: 1,
+            language: "rust",
+            ready: false,
+        };
+        let started = Instant::now();
+        assert!(
+            client
+                .await_response(1, Duration::from_millis(300))
+                .is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

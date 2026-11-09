@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// Symbol identities, snapshot metadata and contracts are persisted across
 /// operating systems. Keeping this conversion at the ingestion boundary
 /// prevents Windows separators from creating a second identity for a file.
-fn relative_path(path: &Path, root: &Path) -> String {
+pub(crate) fn relative_path(path: &Path, root: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -637,7 +637,7 @@ impl SymbolRegistry {
 
 /// Qualified symbol name. Definitions are file-scoped so two files may each
 /// define `main` without colliding.
-fn qualify(file: &str, name: &str) -> String {
+pub(crate) fn qualify(file: &str, name: &str) -> String {
     format!("{file}#{name}")
 }
 

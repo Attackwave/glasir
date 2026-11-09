@@ -62,7 +62,9 @@ could reach:
   `affected_tests` and `impact-of`, and the commit history for `co_changes`),
   an indexer such as `rust-analyzer scip` when one is
   configured for the language, and a language server for tier-1 upgrades
-  during `watch`. The last two are optional.
+  during `watch`. The last two run only with `watch --lsp`: rust-analyzer and
+  the other servers run a tree's build scripts and procedural macros, which a
+  tree is not trusted to do unasked.
   Whoever can write to those binaries can already run code as the user, but the
   dependency belongs stated rather than discovered. A revision a client passes
   to `detect_changes` or `affected_tests` is refused when it starts with `-`,
