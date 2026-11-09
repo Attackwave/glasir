@@ -2401,7 +2401,9 @@ fn run_benchmark(args: &cli::Args) -> std::io::Result<()> {
     // `--check` is what makes the benchmark a guard rather than a report: CI
     // runs it, and a set that falls below its floor breaks the build.
     if args.has("check") {
-        enforce_floors(&measured, &root.join("bench/baseline.txt"), false)?;
+        // Strict for the full run: a set that went missing is a floor gone.
+        let strict = args.value("questions").is_none();
+        enforce_floors(&measured, &root.join("bench/baseline.txt"), strict)?;
     }
     Ok(())
 }
@@ -2414,8 +2416,34 @@ fn enforce_floors(
     strict: bool,
 ) -> std::io::Result<()> {
     let baseline = bench::load_baseline(path)?;
-    let mut failed = Vec::new();
     println!("\n=== against {}", path.display());
+    let failed = floor_failures(measured, &baseline, strict);
+    if !failed.is_empty() {
+        eprintln!("\nretrieval regressed:");
+        for f in &failed {
+            eprintln!("  {f}");
+        }
+        eprintln!(
+            "\nIf the drop is intended, lower the floor in {} in the \n\
+             same commit, with the reason in the message.",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// What breaks the build: a set below its floor, a floor nothing measured
+/// (strict), or nothing measured at all.
+fn floor_failures(
+    measured: &[(String, f32)],
+    baseline: &bench::Baseline,
+    strict: bool,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    if measured.is_empty() {
+        failed.push("nothing was measured".to_string());
+    }
     if strict {
         for (name, _) in &baseline.floors {
             if !measured.iter().any(|(m, _)| m == name) {
@@ -2441,19 +2469,7 @@ fn enforce_floors(
             failed.push(format!("{name}: {got:.0}% against a floor of {floor:.0}%"));
         }
     }
-    if !failed.is_empty() {
-        eprintln!("\nretrieval regressed:");
-        for f in &failed {
-            eprintln!("  {f}");
-        }
-        eprintln!(
-            "\nIf the drop is intended, lower the floor in {} in the \n\
-             same commit, with the reason in the message.",
-            path.display()
-        );
-        std::process::exit(1);
-    }
-    Ok(())
+    failed
 }
 
 /// Explains one question: what it seeded on, what came back, and where the
@@ -11781,19 +11797,28 @@ fn demo_baseline() {
         base.tolerance
     );
 
-    // The comparison itself, on numbers rather than on a benchmark run: the
-    // run costs seconds and this is the arithmetic that decides a build.
-    let below = |got: f32, floor: f32| got + base.tolerance < floor;
+    // The comparison itself, through the function `--check` runs, on numbers
+    // rather than on a benchmark run.
+    let one = |got: f32, floor: f32| {
+        let b = bench::Baseline {
+            floors: vec![("s".to_string(), floor)],
+            tolerance: base.tolerance,
+        };
+        !floor_failures(&[("s".to_string(), got)], &b, false).is_empty()
+    };
+    assert!(one(56.0, 69.0), "a thirteen-point drop must fail the build");
+    assert!(!one(56.0, 56.0), "holding the floor must pass");
     assert!(
-        below(56.0, 69.0),
-        "a thirteen-point drop must fail the build"
-    );
-    assert!(!below(56.0, 56.0), "holding the floor must pass");
-    assert!(
-        !below(54.0, 56.0),
+        !one(54.0, 56.0),
         "a two-point wobble is question wording, not a regression"
     );
-    assert!(below(52.0, 56.0), "past the tolerance it fails");
+    assert!(
+        one(56.0 - base.tolerance, 56.0),
+        "a drop of exactly the tolerance fails"
+    );
+    // A full run that lost a set, or measured nothing, fails too.
+    assert!(!floor_failures(&[], &base, false).is_empty());
+    assert!(!floor_failures(&[("questions".to_string(), 100.0)], &base, true).is_empty());
 
     println!("phase D.2 ok: {} floors guard retrieval", base.floors.len());
 }
@@ -14777,6 +14802,15 @@ fn demo_bench() {
         ),
         ("src/b.rs".to_string(), "fn beta() {}".to_string()),
     ];
+    // A word with a multibyte character before its fifth: stemmed by
+    // characters, never cut inside one.
+    let _ = bench::grep_answer(
+        &files,
+        &bench::Question {
+            text: "wie groß ist die größe".to_string(),
+            expected: Vec::new(),
+        },
+    );
     let hit = bench::grep_answer(&files, &questions[0]);
     assert_eq!(hit.found, 2, "both symbols live in the file it opened");
     // A question whose words appear nowhere opens nothing, and scores nothing:
@@ -15463,6 +15497,12 @@ fn demo_langcheck() {
         check(&absent, &floors).is_empty(),
         "a floor for a language that is not present must not fire"
     );
+
+    // A line that does not parse is an error, never a floor quietly gone.
+    let typo = std::env::temp_dir().join(format!("glasir-langs-{}.txt", fixture_id()));
+    std::fs::write(&typo, "Rust 10 5 30\nGo 10 five 30\n").unwrap();
+    assert!(crate::langcheck::load_expectations(&typo).is_err());
+    let _ = std::fs::remove_file(&typo);
 
     let path = std::path::Path::new("bench/languages.txt");
     let Ok(expected) = crate::langcheck::load_expectations(path) else {
