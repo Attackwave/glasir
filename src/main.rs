@@ -5935,7 +5935,7 @@ fn demo_scip() {
         .unwrap();
     let mut edited_reg = ingest::SymbolRegistry::new(0);
     let edited = import_scip::import(&path, &root, &mut edited_reg).unwrap();
-    assert_eq!(edited.stale_files, vec!["src/checkout.rs".to_string()]);
+    assert_eq!(edited.stale_files, ["src/checkout.rs".to_string()].into());
     assert!(
         edited.edges.is_empty(),
         "the edge is attributed to the edited file, so it must not be served"
@@ -5993,7 +5993,7 @@ fn demo_scip() {
     let r2 = import_scip::import(&idx, &dir, &mut reg2).unwrap();
     assert_eq!(
         r2.stale_files,
-        vec!["src/new.rs".to_string()],
+        std::collections::BTreeSet::from(["src/new.rs".to_string()]),
         "an edited file must be reported stale"
     );
     let fresh: Vec<&String> = r2.fresh_files().collect();
@@ -6002,6 +6002,19 @@ fn demo_scip() {
         vec!["src/old.rs"],
         "an untouched file must stay covered — staleness is per file, not per index"
     );
+    // Committed, the index came from somewhere else: refused, not trusted.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "index.scip"]);
+    let mut reg3 = ingest::SymbolRegistry::new(0);
+    assert!(import_scip::import(&idx, &dir, &mut reg3).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 
     println!(
@@ -9436,8 +9449,10 @@ fn demo_change_tools() {
         ("k/Cargo.toml", "[package]\nname = \"k\"\n"),
         (
             "k/src/lib.rs",
-            "mod a;\nmod b {\n    mod c;\n}\n#[path = \"other/d.rs\"]\nmod d;\ninclude!(\"inc.rs\");\n",
+            "mod a;\nmod b {\n    mod c;\n}\n#[path = \"other/d.rs\"]\nmod d;\ninclude!(\"inc.rs\");\n\
+             #[path = \"../shared/e.rs\"]\nmod e;\n",
         ),
+        ("k/shared/e.rs", "pub fn e_fn() {}\n"),
         ("k/src/a.rs", "mod sub;\npub fn a_fn() {}\n"),
         ("k/src/a/sub.rs", "pub fn sub_fn() {}\n"),
         ("k/src/b/c.rs", "pub fn c_fn() {}\n"),
@@ -9469,6 +9484,14 @@ fn demo_change_tools() {
     };
     assert_eq!(impact_of("k/src/stray.rs#stray_fn"), json!(true));
     assert!(impact_of("k/src/inc.rs#inc_fn").is_null());
+    // A path is resolved before it is read, and never read outside the tree.
+    assert_eq!(
+        imports::within("k/src/../shared/e.rs").as_deref(),
+        Some("k/shared/e.rs")
+    );
+    for outside in ["/dev/zero", "../x.rs", "k/../../x.rs"] {
+        assert_eq!(imports::within(outside), None, "{outside}");
+    }
     // A trait's methods are called by whoever holds the trait.
     std::fs::write(
         dir.join("src/server.rs"),
@@ -15015,6 +15038,26 @@ fn demo_overview() {
 /// `ambiguous` two same-named functions in different files collapse onto one
 /// placeholder and invent a cycle between files that never reference each other.
 fn demo_cycles() {
+    // Shortest first, whatever order the files come in: a 3-file loop on low
+    // ids must not crowd out a 2-file one with `limit: 1`.
+    let set = |v: &[usize]| {
+        v.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<usize>>()
+    };
+    let adj = vec![set(&[1]), set(&[2]), set(&[0]), set(&[4]), set(&[3])];
+    assert_eq!(guard::simple_cycles(&adj, 5, 1), (vec![vec![3, 4]], false));
+    // A dense graph without a single cycle has more paths than any request can
+    // walk: the search stops at its budget and says so.
+    let dag: Vec<_> = (0..60usize).map(|i| (i + 1..60).collect()).collect();
+    let t = std::time::Instant::now();
+    let (none, truncated) = guard::simple_cycles(&dag, 12, 20);
+    assert!(none.is_empty() && truncated);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t.elapsed()
+    );
     let mut b = csr::CsrBuilder::new();
     for _ in 0..7u32 {
         b.add_node(0);
@@ -15129,6 +15172,9 @@ fn demo_cycles() {
     // max_len is a bound, not decoration: a 3-file cycle is out of reach at 2.
     let short = call(serde_json::json!({"max_len": 2}));
     assert!(short.contains("no cycles"), "max_len must bound: {short}");
+    // A misspelt tier is refused, not read as the weakest.
+    let typo = call(serde_json::json!({"min_confidence": "EXTRACTED"}));
+    assert!(typo.contains("min_confidence must be"), "{typo}");
 }
 
 /// The subsystem rings in the map are named after the file most of their

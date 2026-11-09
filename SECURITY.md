@@ -70,7 +70,9 @@ could reach:
   `affected_tests` and `impact-of`, and the commit history for `co_changes`),
   an indexer such as `rust-analyzer scip` when one is
   configured for the language, and a language server for tier-1 upgrades
-  during `watch`. The last two are optional.
+  during `watch`. The last two are optional. An `index.scip` that git tracks
+  is not read: its edges claim compiler provenance, and one committed to the
+  repository was built from some other checkout.
   Whoever can write to those binaries can already run code as the user, but the
   dependency belongs stated rather than discovered. A revision a client passes
   to `detect_changes` or `affected_tests` is refused when it starts with `-`,

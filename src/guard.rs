@@ -273,65 +273,87 @@ fn cycles_of(
         }
     }
 
-    // Never stepping onto a lower-numbered file, so a rotation cannot be found
-    // twice and the first hit is stable rather than whichever came up first.
-    let mut stack = Vec::new();
-    let mut on_stack = vec![false; files.len()];
-    let mut found = Vec::new();
-    for start in 0..files.len() {
-        if found.len() >= limit {
-            break;
-        }
-        stack.push(start);
-        on_stack[start] = true;
-        dfs(
-            start,
-            start,
-            &adj,
-            &mut stack,
-            &mut on_stack,
-            limit,
-            &mut found,
-        );
-        on_stack[start] = false;
-        stack.pop();
-    }
+    let (found, _) = simple_cycles(&adj, 8, limit);
     found
         .into_iter()
-        .map(|c| c.iter().map(|&i| files[i].to_string()).collect())
+        .map(|c| {
+            let mut names: Vec<String> = c.iter().map(|&i| files[i].to_string()).collect();
+            names.push(files[c[0]].to_string());
+            names
+        })
         .collect()
 }
 
-fn dfs(
-    start: usize,
-    node: usize,
+/// Steps a cycle search may take before it stops and says so: an acyclic
+/// graph of a few hundred files otherwise walks every path for minutes.
+const CYCLE_BUDGET: usize = 2_000_000;
+
+/// Up to `limit` simple cycles of at most `max_len` nodes, shortest first,
+/// each listed once from its lowest node, and whether the step budget ran out
+/// before the search was complete.
+pub fn simple_cycles(
     adj: &[BTreeSet<usize>],
-    stack: &mut Vec<usize>,
-    on_stack: &mut [bool],
+    max_len: usize,
     limit: usize,
-    found: &mut Vec<Vec<usize>>,
-) {
-    if stack.len() > 8 {
-        return;
+) -> (Vec<Vec<usize>>, bool) {
+    let mut search = Search {
+        adj,
+        stack: Vec::new(),
+        on_stack: vec![false; adj.len()],
+        found: Vec::new(),
+        steps: 0,
+        limit,
+    };
+    // One pass per length, so a short cycle is never crowded out by long ones
+    // found first.
+    for len in 2..=max_len {
+        for start in 0..adj.len() {
+            if search.found.len() >= limit || search.steps >= CYCLE_BUDGET {
+                return (search.found, search.steps >= CYCLE_BUDGET);
+            }
+            search.stack.push(start);
+            search.on_stack[start] = true;
+            search.walk(start, start, len);
+            search.on_stack[start] = false;
+            search.stack.pop();
+        }
     }
-    for &next in &adj[node] {
-        if found.len() >= limit {
-            return;
+    (search.found, false)
+}
+
+struct Search<'a> {
+    adj: &'a [BTreeSet<usize>],
+    stack: Vec<usize>,
+    on_stack: Vec<bool>,
+    found: Vec<Vec<usize>>,
+    steps: usize,
+    limit: usize,
+}
+
+impl Search<'_> {
+    /// Cycles of exactly `len` nodes through `start`. Never stepping onto a
+    /// node below `start`, so a rotation is found once, from its lowest node.
+    fn walk(&mut self, start: usize, at: usize, len: usize) {
+        for &next in &self.adj[at] {
+            self.steps += 1;
+            if self.found.len() >= self.limit || self.steps >= CYCLE_BUDGET {
+                return;
+            }
+            if next == start {
+                if self.stack.len() == len {
+                    self.found.push(self.stack.clone());
+                }
+                continue;
+            }
+            if next < start || self.on_stack[next] || self.stack.len() >= len {
+                continue;
+            }
+            self.stack.push(next);
+            self.on_stack[next] = true;
+            self.walk(start, next, len);
+            self.on_stack[next] = false;
+            self.stack.pop();
         }
-        if next == start {
-            let mut cycle = stack.clone();
-            cycle.push(start);
-            found.push(cycle);
-            continue;
-        }
-        if next < start || on_stack[next] {
-            continue;
-        }
-        stack.push(next);
-        on_stack[next] = true;
-        dfs(start, next, adj, stack, on_stack, limit, found);
-        on_stack[next] = false;
-        stack.pop();
     }
 }
 
