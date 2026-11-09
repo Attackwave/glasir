@@ -359,3 +359,47 @@ fn every_check_is_wrapped() {
         "checks with no #[test] wrapper, so they cannot be run on their own: {missing:?}"
     );
 }
+
+/// Live edges are kept per saved file and point at that file's definition:
+/// a save used to replace every file's set, and a bare name joined every
+/// definition of that name.
+#[test]
+fn live_edges_belong_to_their_file() {
+    let root = std::path::Path::new("/w");
+    let g = std::sync::Arc::new(crate::graph::Graph::new(
+        crate::csr::CsrBuilder::new().build(),
+    ));
+    let mut reg = crate::ingest::SymbolRegistry::new(0);
+    let mut live = Default::default();
+    let fact = |caller: &str, def: &str| vec![(format!("/w/{caller}"), 1, def.to_string())];
+    crate::upgrade_edges(
+        &g,
+        &mut reg,
+        root,
+        std::path::Path::new("/w/a.rs"),
+        fact("c.rs", "run"),
+        &mut live,
+    );
+    crate::upgrade_edges(
+        &g,
+        &mut reg,
+        root,
+        std::path::Path::new("/w/b.rs"),
+        fact("c.rs", "run"),
+        &mut live,
+    );
+    let snap = g.load();
+    let caller = reg.node_of("c.rs").unwrap();
+    let mut targets: Vec<String> = snap
+        .neighbors(caller)
+        .map(|e| {
+            reg.entries()
+                .find(|&(_, &n)| n == e.target)
+                .unwrap()
+                .0
+                .clone()
+        })
+        .collect();
+    targets.sort();
+    assert_eq!(targets, ["a.rs#run", "b.rs#run"]);
+}

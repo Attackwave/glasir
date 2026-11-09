@@ -92,7 +92,7 @@ pub fn indexer_for(
 /// Returns the command it started, or `None` when no indexer applies.
 pub fn rebuild_in_background(root: &Path) -> Option<&'static str> {
     let (_, argv, name) = indexer_for(root)?;
-    std::process::Command::new(argv[0])
+    let mut child = std::process::Command::new(argv[0])
         .args(&argv[1..])
         .current_dir(root)
         .stdin(std::process::Stdio::null())
@@ -100,6 +100,8 @@ pub fn rebuild_in_background(root: &Path) -> Option<&'static str> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
+    // Waited for, or it stays a zombie for the rest of the watch.
+    std::thread::spawn(move || child.wait());
     Some(name)
 }
 

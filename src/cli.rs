@@ -29,6 +29,7 @@ pub const FLAG_OPTIONS: &[&str] = &[
     "check",
     "dry-run",
     "help",
+    "lsp",
     "no-hook",
     "own-process",
     "plugin",
@@ -187,6 +188,8 @@ RUNNING
     --rules <file>      Use a different contract
   analyse [path]        Refresh the stored graph and exit (what the git hooks run)
   watch [path]          Index the tree and follow edits, printing what changes
+    --lsp               Also ask language servers and rebuild the compiler index;
+                        both run the tree's build scripts and macros
   view [path]           Open the graph as a map in the browser
     --port <n>          Port for the map (default 7878)
 

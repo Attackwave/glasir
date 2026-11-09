@@ -26,11 +26,22 @@ pub struct DeltaStore {
     /// Which nodes a file owns, so saving a file can invalidate exactly its
     /// outgoing edges. The base CSR does not carry this mapping.
     file_nodes: HashMap<u32, Vec<NodeId>>,
+    /// Kinds `replace_edges_of_kind` recomputes as a whole; kept out of the base.
+    pub(crate) recomputed: std::collections::BTreeSet<u16>,
 }
 
 impl DeltaStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Ownership and recomputed kinds, without edges.
+    pub fn carried(&self) -> DeltaStore {
+        DeltaStore {
+            file_nodes: self.file_nodes.clone(),
+            recomputed: self.recomputed.clone(),
+            ..DeltaStore::default()
+        }
     }
 
     /// Number of buffered mutations, used to trigger compaction.
@@ -40,6 +51,16 @@ impl DeltaStore {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// `len` without the recomputed kinds, which stay where they are.
+    pub fn foldable(&self) -> usize {
+        self.added_edges
+            .values()
+            .flatten()
+            .filter(|e| !self.recomputed.contains(&e.edge_kind))
+            .count()
+            + self.tombstoned_edges.len()
     }
 
     /// Registers which nodes belong to a file. Called by the parser when a file
@@ -101,6 +122,7 @@ impl DeltaStore {
     /// rather than per file, so they have no owning file to be scoped by;
     /// without this they accumulate a duplicate set on every batch.
     pub fn replace_edges_of_kind(&mut self, kind: u16, edges: Vec<(NodeId, Edge)>) {
+        self.recomputed.insert(kind);
         for es in self.added_edges.values_mut() {
             es.retain(|e| e.edge_kind != kind);
         }

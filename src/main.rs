@@ -97,7 +97,7 @@ fn main() -> std::io::Result<()> {
         "view" => run_view(&args),
         "benchlayout" => bench_layout(&args.path),
         "token" => run_token(&args),
-        "watch" => run_watch(&args.path),
+        "watch" => run_watch(&args.path, args.has("lsp")),
         "impact-of" => run_impact_of(&args),
         "review" => run_review(&args),
         "export" => run_export(&args),
@@ -1056,7 +1056,7 @@ fn store_snapshot(
 ) -> std::io::Result<()> {
     // Compacting first folds the delta into a base CSR, which is the only form
     // that can be stored — the delta is runtime state.
-    let compacted = snap.compact();
+    let compacted = snap.compact(false);
     let mut names = vec![String::new(); compacted.base.node_count()];
     for (symbol, &node) in reg.entries() {
         if let Some(slot) = names.get_mut(node as usize) {
@@ -4211,9 +4211,14 @@ fn upgrade_edges(
     g: &std::sync::Arc<graph::Graph>,
     reg: &mut ingest::SymbolRegistry,
     root: &std::path::Path,
+    saved: &std::path::Path,
     facts: Vec<(String, u32, String)>,
-    now: u64,
+    live: &mut std::collections::BTreeMap<String, Vec<(csr::NodeId, csr::Edge)>>,
 ) -> usize {
+    let now = now();
+    // The definitions are the saved file's, named as tier 2 names them: a bare
+    // name would join every same-named definition in one node.
+    let saved = ingest::relative_path(saved, root);
     let mut edges = Vec::new();
     for (caller_file, _line, definition) in facts {
         let caller_rel = std::path::Path::new(&caller_file)
@@ -4225,7 +4230,7 @@ fn upgrade_edges(
         // enclosing function, and resolving that would need a second query per
         // reference. File-level is enough to say "this file calls that".
         let source = reg.get_or_mint(&caller_rel);
-        let target = reg.get_or_mint(&definition);
+        let target = reg.get_or_mint(&ingest::qualify(&saved, &definition));
         edges.push((
             source,
             csr::Edge {
@@ -4238,7 +4243,9 @@ fn upgrade_edges(
         ));
     }
     let count = edges.len();
-    g.update(|_, d| d.replace_edges_of_kind(LSP_EDGE, edges.clone()));
+    live.insert(saved, edges);
+    let all: Vec<(csr::NodeId, csr::Edge)> = live.values().flatten().copied().collect();
+    g.update(|_, d| d.replace_edges_of_kind(LSP_EDGE, all.clone()));
     count
 }
 
@@ -4256,7 +4263,10 @@ fn link_placeholders_quiet(g: &std::sync::Arc<graph::Graph>, reg: &ingest::Symbo
 }
 
 /// Watches a directory and keeps the graph in sync with what is on disk.
-fn run_watch(root: &str) -> std::io::Result<()> {
+/// `live` (`--lsp`) starts language servers and rebuilds the compiler index:
+/// both run the tree's build scripts and macros, which a tree is not trusted
+/// to do unasked.
+fn run_watch(root: &str, live: bool) -> std::io::Result<()> {
     use std::sync::Arc;
 
     // Canonical, or strip_prefix fails against the absolute paths the watcher
@@ -4447,6 +4457,9 @@ fn run_watch(root: &str) -> std::io::Result<()> {
     // not the next cold start.
     let mut drifted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut rebuilding = false;
+    // The live edges per saved file: a save replaces its own, never another's.
+    let mut live_edges: std::collections::BTreeMap<String, Vec<(csr::NodeId, csr::Edge)>> =
+        Default::default();
 
     println!("watching {} (ctrl-c to stop)", root.display());
     watcher::watch(root, |batch| {
@@ -4467,7 +4480,7 @@ fn run_watch(root: &str) -> std::io::Result<()> {
             // Then upgrade what tier 2 just guessed, where a server can do
             // better. Starting one costs seconds, so it is kept for the life of
             // the watch; a tree with no server installed simply keeps tier 2.
-            let upgraded = (!src.is_empty())
+            let upgraded = (live && !src.is_empty())
                 .then(|| lsp::server_for(&path))
                 .flatten()
                 .and_then(|(command, language)| {
@@ -4481,11 +4494,12 @@ fn run_watch(root: &str) -> std::io::Result<()> {
                     });
                     lsp::file_facts(slot.as_mut()?, &path, &src)
                 })
-                .map(|facts| upgrade_edges(&g, &mut reg, root, facts, now()))
+                .map(|facts| upgrade_edges(&g, &mut reg, root, &path, facts, &mut live_edges))
                 .unwrap_or(0);
 
             // Track drift against the index and heal it before it matters.
-            if scip.exists()
+            if live
+                && scip.exists()
                 && let Ok(rel) = path.strip_prefix(root)
             {
                 drifted.insert(rel.to_string_lossy().to_string());
@@ -4781,7 +4795,7 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
     );
 
     // Compaction folds the delta back into the base and preserves the view.
-    let compacted = g.load().compact();
+    let compacted = g.load().compact(false);
     assert!(compacted.delta.is_empty());
     assert_eq!(
         compacted
@@ -4818,6 +4832,41 @@ fn demo_delta(file: u32, checkout: csr::NodeId, payment: csr::NodeId, logger: cs
             .count(),
         to_payment,
         "compaction must preserve the union view"
+    );
+
+    // Kept for later edits: ownership and a recomputed kind.
+    g.update(|s, d| {
+        d.replace_file_edges(
+            file,
+            |n| s.base_targets(n),
+            vec![(checkout, call(payment))],
+            &[checkout],
+        )
+    });
+    let linked = Edge {
+        edge_kind: 9,
+        ..call(logger)
+    };
+    g.update(|_, d| d.replace_edges_of_kind(9, vec![(payment, linked)]));
+    let folded = g.load().compact(true);
+    assert_eq!(folded.delta.file_nodes(file), [checkout]);
+    assert_eq!(
+        folded.delta.len(),
+        1,
+        "the recomputed edge stays in the delta"
+    );
+    assert_eq!(
+        folded.delta.foldable(),
+        0,
+        "and does not call for another compaction"
+    );
+    // Past the last node a reverse lookup is empty, not a panic.
+    assert_eq!(
+        folded
+            .reverse()
+            .callers(folded.width() as csr::NodeId)
+            .count(),
+        0
     );
 
     demo_import();
@@ -5692,7 +5741,7 @@ def pay(self):
         .map(|n| g.load().neighbors(n).count())
         .sum();
     assert!(before > 0);
-    let compacted = g.load().compact();
+    let compacted = g.load().compact(false);
     let after: usize = (0..compacted.width() as csr::NodeId)
         .map(|n| compacted.neighbors(n).count())
         .sum();

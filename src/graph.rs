@@ -49,7 +49,8 @@ impl Reverse {
     pub fn callers(&self, node: NodeId) -> impl Iterator<Item = (NodeId, Edge)> + '_ {
         let start = *self.offsets.get(node as usize).unwrap_or(&0) as usize;
         let end = *self.offsets.get(node as usize + 1).unwrap_or(&0) as usize;
-        self.entries[start..end].iter().copied()
+        // Empty past the last node, where `start` is the total and `end` 0.
+        self.entries.get(start..end).unwrap_or(&[]).iter().copied()
     }
 }
 
@@ -145,7 +146,8 @@ impl GraphSnapshot {
 
     /// Folds delta into base and returns a snapshot with an empty delta. The
     /// symbol table is carried over unchanged; compaction never invents nodes.
-    pub fn compact(&self) -> GraphSnapshot {
+    /// `live` keeps ownership and recomputed kinds for later edits.
+    pub fn compact(&self, live: bool) -> GraphSnapshot {
         // The delta mints ids past the base for symbols the base never had, so
         // the rebuild must cover those too — stopping at base.node_count()
         // silently drops every edge the parser added for a new symbol.
@@ -155,15 +157,27 @@ impl GraphSnapshot {
             let symbol = self.base.symbol(node).unwrap_or_default();
             b.add_node(symbol);
         }
+        // Ownership survives, or a later re-parse cannot retract the file's
+        // old edges; a recomputed kind stays in the delta, or the next
+        // replacement stacks a second set on the one folded into the base.
+        let mut delta = if live {
+            self.delta.carried()
+        } else {
+            DeltaStore::new()
+        };
         for node in 0..width as NodeId {
             for edge in self.neighbors(node) {
-                b.add_edge(node, edge);
+                if delta.recomputed.contains(&edge.edge_kind) {
+                    delta.add_edge(node, edge);
+                } else {
+                    b.add_edge(node, edge);
+                }
             }
         }
         GraphSnapshot {
             reverse: std::sync::OnceLock::new(),
             base: Arc::new(b.build()),
-            delta: DeltaStore::new(),
+            delta,
             generation: self.generation,
         }
     }
@@ -213,7 +227,7 @@ impl Graph {
             let prev = self.current.load_full();
             let mut delta = prev.delta.clone();
             f(&prev, &mut delta);
-            let oversized = delta.len() >= COMPACTION_THRESHOLD;
+            let oversized = delta.foldable() >= COMPACTION_THRESHOLD;
 
             let next = GraphSnapshot {
                 reverse: std::sync::OnceLock::new(),
@@ -308,7 +322,7 @@ impl Graph {
             let busy = Busy(graph);
 
             let source = busy.0.current.load_full();
-            let mut compacted = source.compact();
+            let mut compacted = source.compact(true);
             compacted.generation = source.generation + 1;
 
             // Publish only if no writer moved the graph on while we rebuilt.

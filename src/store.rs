@@ -44,7 +44,9 @@ pub struct MappedCsr {
 impl MappedCsr {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let graph = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        let graph: BaseCsr = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        // A file read back is checked before it is walked, as a snapshot is.
+        graph.validate().map_err(std::io::Error::other)?;
         Ok(Self { graph })
     }
 
