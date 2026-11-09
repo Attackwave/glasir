@@ -451,6 +451,7 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "file": {"type": "string", "description": "Relative to the indexed root"},
                     "line": {"type": "integer", "description": "1-based, where the definition starts"},
@@ -530,6 +531,10 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "crates": {"type": "array", "description": "Rust crates when the tree holds several", "items": {"type": "object", "properties": {"name": {"type": "string"}, "dir": {"type": "string"}, "symbols": {"type": "integer"}}}},
+                    "rust_outside_modules": {"type": "array", "items": {"type": "string"}, "description": "Rust files no `mod` reaches from a crate root"},
+                    "server_version": {"type": "string"},
+                    "indexed_at": {"type": "integer", "description": "Unix seconds the graph was built"},
             "symbols": {"type": "integer"},
             "files": {"type": "integer"},
             "shown": {"type": "integer", "description": "How many subsystems this page holds"},
@@ -621,6 +626,11 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "untraced": {"type": "array", "description": "Callers through a pointer or table the graph cannot follow, nearest first", "items": {"type": "object", "properties": {"symbol": {"type": "string"}, "line": {"type": "integer"}}}},
+                    "untraced_total": {"type": "integer"},
+                    "library_calls": {"type": "integer", "description": "Calls into code outside the tree, which may lead back in"},
+    "named_elsewhere": {"type": "array", "items": {"type": "string"}, "description": "Files that name the symbol with no edge to it"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
             "symbol": {"type": "string"},
             "dependents": {"type": "integer"},
             "within": {"type": "integer", "description": "Hops the dependents span"},
@@ -671,6 +681,7 @@ fn tool_list() -> Value {
         "properties": {
             "min_confidence": {"type": "string"},
             "max_len": {"type": "integer"},
+            "truncated": {"type": "boolean", "description": "The search stopped at its step budget; longer cycles may exist"},
             "cycles": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
@@ -699,6 +710,7 @@ fn tool_list() -> Value {
             "outputSchema": {
         "type": "object",
         "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
             "symbol": {"type": "string"},
             "role": {"type": "string", "enum": ["member", "connector"]},
             "community": {"type": "integer"},
@@ -758,6 +770,10 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "untraced": {"type": "array", "description": "Callers through a pointer or table the graph cannot follow, nearest first", "items": {"type": "object", "properties": {"symbol": {"type": "string"}, "line": {"type": "integer"}}}},
+                    "untraced_total": {"type": "integer"},
+                    "library_calls": {"type": "integer", "description": "Calls into code outside the tree, which may lead back in"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "count": {"type": "integer"},
                     "next_offset": {"type": "integer", "description": "Present when more remain"},
@@ -867,6 +883,8 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "named_elsewhere": {"type": "array", "items": {"type": "string"}, "description": "Files that name the symbol with no edge to it"},
+    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "target": {"type": "string"},
                     "count": {"type": "integer"},
                     "files": {"type": "array", "items": {"type": "string"}},
@@ -1012,6 +1030,7 @@ fn tool_list() -> Value {
             "outputSchema": {
                 "type": "object",
                 "properties": {
+                    "resolved_from": {"type": "string", "description": "The name asked for, when it matched this symbol only in part"},
                     "symbol": {"type": "string"},
                     "scanned": {"type": "integer", "description": "Commits of the file read"},
                     "changes": {"type": "array", "items": {
@@ -1020,7 +1039,8 @@ fn tool_list() -> Value {
                             "commit": {"type": "string"},
                             "date": {"type": "string"},
                             "subject": {"type": "string"},
-                            "body": {"type": "string"}
+                            "body": {"type": "string"},
+                            "body_lines_left_out": {"type": "integer", "description": "Body lines past body_lines, not returned"}
                         },
                         "required": ["commit", "date", "subject", "body"]
                     }}
@@ -1075,11 +1095,16 @@ fn confidence_label(c: Confidence) -> &'static str {
     }
 }
 
-fn parse_confidence(s: &str) -> Confidence {
+/// A misspelt tier is an error: read as the weakest, it widened the answer
+/// silently.
+fn parse_confidence(s: &str) -> Result<Confidence, String> {
     match s {
-        "extracted" => Confidence::Extracted,
-        "inferred" => Confidence::Inferred,
-        _ => Confidence::Ambiguous,
+        "extracted" => Ok(Confidence::Extracted),
+        "inferred" => Ok(Confidence::Inferred),
+        "ambiguous" => Ok(Confidence::Ambiguous),
+        other => Err(format!(
+            "min_confidence must be extracted, inferred or ambiguous, not {other:?}"
+        )),
     }
 }
 
@@ -1349,7 +1374,7 @@ this tree may name your concept differently.\n",
 fn shortest_path(served: &Served, args: &Value) -> Result<Value, String> {
     let from = args["from"].as_str().ok_or("from must be a string")?;
     let to = args["to"].as_str().ok_or("to must be a string")?;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
 
     // `resolve_one`, not `seeds().first()`. A bare name is a registry key, so
     // the seed path took the *placeholder* and answered about it without
@@ -1712,7 +1737,7 @@ placed in a subsystem\n\n",
 fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let symbol = args["symbol"].as_str().ok_or("symbol must be a string")?;
     let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let node = served.resolve_one(symbol)?;
     let mut levels = reverse_levels(served, &[node], depth, floor);
     if levels.is_empty() {
@@ -1829,7 +1854,7 @@ fn more_line(v: &Value, total: u64) -> String {
 /// strict, as in `impact`.
 fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     let symbol = args["symbol"].as_str().ok_or("symbol must be a string")?;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let node = served.resolve_one(symbol)?;
 
     let reverse = served.snap.reverse();
@@ -2308,21 +2333,38 @@ fn changed_symbols(served: &Served, rev: &str) -> Result<Diff, String> {
         let new_src = if working {
             std::fs::read_to_string(root.join(file)).ok()
         } else {
-            git(&repo.root, &["show", &format!("HEAD:{local}")])
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            git(
+                &repo.root,
+                &["show", "--no-textconv", &format!("HEAD:{local}")],
+            )
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         };
         let hunks = git(
             &repo.root,
-            &[&["diff", "-U0", "--no-color"][..], &against, &["--", local]].concat(),
+            &[
+                &[
+                    "diff",
+                    "-U0",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ][..],
+                &against,
+                &["--", local],
+            ]
+            .concat(),
         )
         .ok()
         .map(|o| hunk_lines(&String::from_utf8_lossy(&o.stdout)));
-        let old_src = git(&repo.root, &["show", &format!("{base}:{local}")])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let old_src = git(
+            &repo.root,
+            &["show", "--no-textconv", &format!("{base}:{local}")],
+        )
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         removed.extend(
             removed_names(served, file, old_src.as_deref(), new_src.as_deref())
                 .into_iter()
@@ -3223,7 +3265,7 @@ const TEST_DEPTH: u64 = 12;
 /// guess which of them are tests.
 fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
     let depth = args["depth"].as_u64().unwrap_or(TEST_DEPTH).clamp(1, 30) as usize;
-    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"));
+    let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let mut single = None;
     let (target, seeds, unknown) = match args["symbol"].as_str() {
         Some(symbol) => {
@@ -3372,7 +3414,10 @@ fn render_affected_tests(v: &Value) -> String {
         }
         out.push('\n');
     }
-    if tests.is_empty() {
+    // By the total, not this page: an offset past the end is an empty page
+    // of a set that has tests.
+    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
+    if count == 0 {
         out.push_str(&format!(
             "no test in the graph reaches this within {} hops. That is not \
 proof it is untested: a test in a file the graph does not index, or one that \
@@ -3395,7 +3440,6 @@ run them:\n",
         return out;
     }
     let files = v["files"].as_array().map_or(0, Vec::len);
-    let count = v["count"].as_u64().unwrap_or(tests.len() as u64);
     out.push_str(&format!(
         "{count} test(s) in {files} file(s), nearest first:\n"
     ));
@@ -3572,7 +3616,7 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 200) as usize;
     // A commit body can be pages of release notes; its first lines say why.
     let keep = args["body_lines"].as_u64().unwrap_or(6) as usize;
-    let all = crate::commits::changes(root, file, def, window)?;
+    let (all, read) = crate::commits::changes(root, file, def, window)?;
     let changes: Vec<Value> = all
         .iter()
         .take(limit)
@@ -3593,7 +3637,7 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
             })
         })
         .collect();
-    Ok(json!({"symbol": name, "scanned": window, "changes": changes}))
+    Ok(json!({"symbol": name, "scanned": read, "changes": changes}))
 }
 
 fn render_change_history(v: &Value) -> String {
@@ -4949,7 +4993,7 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
     // to syntactic ones when it does not: a tree with no index would otherwise
     // report "no cycles" for want of a single edge strong enough to walk.
     let floor = match args["min_confidence"].as_str() {
-        Some(named) => parse_confidence(named),
+        Some(named) => parse_confidence(named)?,
         None => crate::guard::cycle_default(served.snap),
     };
 
@@ -4964,38 +5008,12 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
         }
     }
 
-    // Each cycle is reported once, from its lowest-numbered file: a search
-    // starting at `start` never steps onto a file below it, so a rotation
-    // cannot be found twice and no separate dedup pass is needed.
-    let mut found: Vec<Vec<usize>> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    let mut on_stack = vec![false; files.len()];
-    for start in 0..files.len() {
-        if found.len() >= limit {
-            break;
-        }
-        stack.push(start);
-        on_stack[start] = true;
-        walk(
-            start,
-            start,
-            &adj,
-            &mut stack,
-            &mut on_stack,
-            max_len,
-            limit,
-            &mut found,
-        );
-        on_stack[start] = false;
-        stack.pop();
-    }
-
-    found.sort_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)));
-    found.truncate(limit);
+    let (found, truncated) = crate::guard::simple_cycles(&adj, max_len, limit);
 
     Ok(json!({
         "min_confidence": confidence_label(floor),
         "max_len": max_len,
+        "truncated": truncated,
         // The files in loop order, without repeating the first at the end: the
         // prose says "back to X" instead, and a consumer closing the loop
         // itself is better served than one that has to know the last entry is
@@ -5012,10 +5030,19 @@ fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
 
 fn render_cycles(v: &Value) -> String {
     let found = v["cycles"].as_array().map_or(&[][..], Vec::as_slice);
+    let cut = if v["truncated"] == true {
+        "the search stopped at its step budget, so longer cycles may exist; lower max_len to search fewer\n"
+    } else {
+        ""
+    };
     if found.is_empty() {
+        let none = if cut.is_empty() {
+            "every dependency runs one way\n"
+        } else {
+            cut
+        };
         return format!(
-            "no cycles up to {} files among {}-confidence edges: every \
-dependency runs one way\n",
+            "no cycles up to {} files among {}-confidence edges: {none}",
             v["max_len"].as_u64().unwrap_or(0),
             v["min_confidence"].as_str().unwrap_or("")
         );
@@ -5035,52 +5062,8 @@ dependency runs one way\n",
         ));
         out.push_str(&format!("  back to {}\n", names.first().unwrap_or(&"")));
     }
+    out.push_str(cut);
     out
-}
-
-/// One step of the cycle search. Split out because the recursion needs a name;
-/// everything it touches is owned by `cycles`.
-#[allow(clippy::too_many_arguments)]
-fn walk(
-    start: usize,
-    at: usize,
-    adj: &[std::collections::BTreeSet<usize>],
-    stack: &mut Vec<usize>,
-    on_stack: &mut [bool],
-    max_len: usize,
-    limit: usize,
-    found: &mut Vec<Vec<usize>>,
-) {
-    if found.len() >= limit {
-        return;
-    }
-    for &next in &adj[at] {
-        if next == start {
-            found.push(stack.clone());
-            if found.len() >= limit {
-                return;
-            }
-            continue;
-        }
-        // Below `start` means this cycle has a lower entry point and will be
-        // (or was) found from there instead.
-        if next < start || on_stack[next] {
-            continue;
-        }
-        // The bound stops the *descent*, not the check above it: a cycle of
-        // `max_len` files is found by walking `max_len` nodes and then seeing
-        // the edge back to `start`. Testing before the loop returned one step
-        // early, so `max_len: 2` reported "every dependency runs one way" on a
-        // tree holding `audit.rs -> main.rs -> audit.rs`.
-        if stack.len() >= max_len {
-            continue;
-        }
-        stack.push(next);
-        on_stack[next] = true;
-        walk(start, next, adj, stack, on_stack, max_len, limit, found);
-        on_stack[next] = false;
-        stack.pop();
-    }
 }
 
 /// Rounds to the precision the prose prints at.
@@ -5428,8 +5411,23 @@ const INSTRUCTIONS: &str = "A graph of this codebase, served as tools. Start wit
             before reading files.";
 
 pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
-    let method = msg["method"].as_str()?;
     let id = msg.get("id").cloned();
+    let Some(method) = msg["method"].as_str() else {
+        // A request without a method, or a batch, still gets an answer, or
+        // the client waits for it forever. A reply (`result`/`error`) and a
+        // notification get none.
+        if msg.is_array() {
+            return Some(error(
+                Value::Null,
+                -32600,
+                "batches are not supported".into(),
+            ));
+        }
+        let reply = msg.get("result").is_some() || msg.get("error").is_some();
+        return id
+            .filter(|_| !reply)
+            .map(|id| error(id, -32600, "invalid request: no method".into()));
+    };
 
     // A notification has no id and must never be answered, not even on error.
     let id = id?;
@@ -5441,7 +5439,7 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
             // ours — the client then decides whether to continue.
             let requested = msg["params"]["protocolVersion"].as_str();
             let version = match requested {
-                Some(v) if v <= LEGACY_VERSION => v,
+                Some(v) if KNOWN_VERSIONS.contains(&v) => v,
                 _ => LEGACY_VERSION,
             };
             json!({"jsonrpc": "2.0", "id": id, "result": {
@@ -5492,6 +5490,14 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
                             format!("{asked:?} names no symbol exactly; this is {got}\n\n{text}");
                         value["resolved_from"] = json!(asked);
                     }
+                    #[cfg(debug_assertions)]
+                    {
+                        let undeclared = undeclared_fields(name, &value);
+                        assert!(
+                            undeclared.is_empty(),
+                            "{name} returns fields its outputSchema lacks: {undeclared:?}"
+                        );
+                    }
                     json!({"jsonrpc": "2.0", "id": id, "result": {
                         "content": [{"type": "text", "text": text}],
                         "structuredContent": value,
@@ -5518,6 +5524,51 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
         result.insert("resultType".into(), json!("complete"));
     }
     Some(response)
+}
+
+/// Revisions this server answers in; another is answered with the one it
+/// speaks, never echoed.
+const KNOWN_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", LEGACY_VERSION];
+
+/// Fields a tool returns that its `outputSchema` does not declare, by path.
+/// Checked on every call in debug builds, so the schemas cannot drift.
+#[cfg(debug_assertions)]
+fn undeclared_fields(tool: &str, value: &Value) -> Vec<String> {
+    fn walk(value: &Value, schema: &Value, at: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) => {
+                let Some(props) = schema["properties"].as_object() else {
+                    return;
+                };
+                for (k, v) in fields {
+                    match props.get(k) {
+                        Some(s) => walk(v, s, &format!("{at}.{k}"), out),
+                        None => out.push(format!("{at}.{k}")),
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for v in items {
+                    walk(v, &schema["items"], &format!("{at}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let tools = tool_definitions();
+    let Some(def) = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["name"] == tool)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    walk(value, &def["outputSchema"], "", &mut out);
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The answer to a line that is no JSON.

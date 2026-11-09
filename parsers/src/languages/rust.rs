@@ -14,6 +14,13 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
     let mut scope = ScopeStack::new();
     // Brace depth at which an `extern` block opened, if one is open.
     let mut extern_depth: Option<i32> = None;
+    // The current function's parameters and `let` bindings: `key(x)` on a
+    // closure bound to `key` calls that value, not a function named `key`.
+    let mut locals: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // A `let` name, in scope from the end of its statement: in
+    // `let parse = parse(x);` the call is still the function's.
+    // Pending, one per open statement: a closure's body has `let`s of its own.
+    let mut binding: Vec<(&str, i32)> = Vec::new();
 
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -63,11 +70,16 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                 continue;
             }
             TokenKind::Symbol(';') => {
+                while let Some(&(name, _)) = binding.last().filter(|&&(_, d)| d >= scope.depth) {
+                    locals.insert(name);
+                    binding.pop();
+                }
                 scope.on_statement_end(tok.end as usize, &mut facts);
                 i += 1;
                 continue;
             }
-            TokenKind::Symbol('.') => {
+            // `a()?.b()` lexes `?.` as one symbol, and it is still a method call.
+            TokenKind::Symbol('.') | TokenKind::DoubleSymbol("?.") => {
                 scope.on_receiver();
                 // `community.get(i)` is a value's method: only `::` names a
                 // module, so a variable sharing a file's name is no module.
@@ -134,6 +146,18 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                     continue;
                 }
 
+                if *ident == "let" {
+                    let mut k = i + 1;
+                    while matches!(
+                        tokens.get(k).map(|t| &t.kind),
+                        Some(TokenKind::Ident("mut" | "ref"))
+                    ) {
+                        k += 1;
+                    }
+                    if let Some(TokenKind::Ident(name)) = tokens.get(k).map(|t| &t.kind) {
+                        binding.push((name, scope.depth));
+                    }
+                }
                 match *ident {
                     "fn" => {
                         let start_byte = tok.start;
@@ -150,6 +174,9 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                                     &mut facts,
                                 );
                                 scope.on_word(fn_name);
+                                locals.clear();
+                                binding.clear();
+                                params(&tokens[i + 2..], &mut locals);
                                 i += 2;
                                 continue;
                             }
@@ -232,6 +259,7 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
                             // `Operand::Memory(x)` and `Wrapper(x)` build or
                             // match a value: a function is named in snake case.
                             && !ident.starts_with(|c: char| c.is_ascii_uppercase())
+                            && !(locals.contains(ident) && !scope.had_receiver)
                         {
                             scope.record_call(ident, &mut facts);
                         }
@@ -253,4 +281,52 @@ pub(crate) fn parse(src: &str, style: CommentStyle<'_>, calls: &crate::rules::Ca
 
     scope.finish(src.len(), &mut facts);
     facts
+}
+
+/// The parameter names of a signature starting at `tokens`: each name
+/// followed by `:` inside the first parentheses.
+fn params<'a>(tokens: &[crate::lexer::Token<'a>], into: &mut std::collections::HashSet<&'a str>) {
+    // The first `(` outside the generics: `fn f<T: Fn()>(x: T)`.
+    let mut angles = 0i32;
+    let Some(open) = tokens
+        .iter()
+        .take(crate::lexer::LOOKAHEAD)
+        .position(|t| {
+            match t.kind {
+                TokenKind::Symbol('<') => angles += 1,
+                TokenKind::Symbol('>') => angles -= 1,
+                _ => {}
+            }
+            angles <= 0 && matches!(t.kind, TokenKind::Symbol('(' | '{' | ';'))
+        })
+        .filter(|&k| tokens[k].kind == TokenKind::Symbol('('))
+    else {
+        return;
+    };
+    let mut depth = 0i32;
+    for (k, t) in tokens
+        .iter()
+        .enumerate()
+        .skip(open)
+        .take(crate::lexer::LOOKAHEAD)
+    {
+        match t.kind {
+            TokenKind::Symbol('(' | '<' | '[') => depth += 1,
+            TokenKind::Symbol(')' | '>' | ']') => {
+                depth -= 1;
+                if depth == 0 {
+                    return;
+                }
+            }
+            TokenKind::Ident(name)
+                if depth == 1
+                    && tokens
+                        .get(k + 1)
+                        .is_some_and(|n| n.kind == TokenKind::Symbol(':')) =>
+            {
+                into.insert(name);
+            }
+            _ => {}
+        }
+    }
 }

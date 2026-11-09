@@ -39,6 +39,27 @@ fn is_repo(dir: &Path) -> bool {
 pub fn git(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).env("GIT_OPTIONAL_LOCKS", "0");
+    // Off here as well as refused in `check`: the programs a repository's
+    // configuration can start on a log, a diff or a missing object.
+    cmd.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "log.showSignature=false",
+    ])
+    .args(["-c", "core.quotePath=false"])
+    .env("GIT_NO_LAZY_FETCH", "1");
+    // `-C` names the repository; one exported by a calling hook must not.
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
@@ -55,7 +76,11 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // Each pipe is read on a thread that reports through a channel, so the
+    // wait for it has the same deadline: a helper git started can keep a pipe
+    // open after git itself has exited.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut kept = Vec::new();
             let mut over = false;
@@ -72,8 +97,9 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
                     }
                 }
             }
-            (kept, over)
-        })
+            let _ = tx.send((kept, over));
+        });
+        rx
     };
     let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
     let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
@@ -92,8 +118,17 @@ fn output_within(cmd: &mut Command, limit: Duration) -> std::io::Result<Output> 
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let (stdout, over_out) = stdout.join().unwrap_or_default();
-    let (stderr, over_err) = stderr.join().unwrap_or_default();
+    let collect = |rx: std::sync::mpsc::Receiver<(Vec<u8>, bool)>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "git exited but its output stayed open",
+                )
+            })
+    };
+    let (stdout, over_out) = collect(stdout)?;
+    let (stderr, over_err) = collect(stderr)?;
     if over_out || over_err {
         return Err(std::io::Error::other(format!(
             "git produced more than {} MiB",
@@ -117,6 +152,7 @@ fn runs_commands(key: &str, value: &str) -> bool {
         _ => return false,
     };
     match section {
+        "core" if matches!(name, "sshcommand" | "gitproxy") => true,
         // `true` and friends run git's own daemon; anything else is a hook.
         "core" => {
             name == "fsmonitor"
@@ -127,13 +163,18 @@ fn runs_commands(key: &str, value: &str) -> bool {
         }
         "diff" => matches!(name, "external" | "command" | "textconv"),
         "filter" => matches!(name, "clean" | "smudge" | "process"),
+        "gpg" => name == "program",
+        "remote" => matches!(name, "uploadpack" | "receivepack" | "proxy"),
+        "extensions" => name == "partialclone",
         _ => false,
     }
 }
 
-/// Refuses a repository whose own configuration names a command.
+/// Refuses a repository whose own configuration names a command. Read with
+/// scopes, so a file the repository includes, or a worktree's own file,
+/// counts as the repository's.
 fn check(repo: &Path) -> Result<(), String> {
-    let out = output(git(repo).args(["config", "--local", "--list", "-z"]))
+    let out = output(git(repo).args(["config", "--list", "--show-scope", "-z"]))
         .map_err(|e| format!("git could not run in {}: {e}", repo.display()))?;
     if !out.status.success() {
         return Err(format!(
@@ -142,7 +183,12 @@ fn check(repo: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    for entry in out.stdout.split(|b| *b == 0) {
+    let fields: Vec<&[u8]> = out.stdout.split(|b| *b == 0).collect();
+    for pair in fields.chunks(2) {
+        let [scope, entry] = pair else { continue };
+        if !matches!(*scope, b"local" | b"worktree") {
+            continue;
+        }
         let entry = String::from_utf8_lossy(entry);
         let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
         if runs_commands(key, value) {
@@ -240,6 +286,21 @@ mod tests {
         let err =
             output_within(Command::new("sleep").arg("30"), Duration::from_millis(100)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    /// A helper left running in the background keeps the pipe open after
+    /// the command exits; the deadline holds for that wait too.
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_pipe_does_not_outlast_the_deadline() {
+        let started = Instant::now();
+        let err = output_within(
+            Command::new("sh").args(["-c", "sleep 3 & echo x"]),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[cfg(unix)]

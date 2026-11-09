@@ -899,10 +899,20 @@ pub fn rust_outside_modules(root: &Path, files: &[&str]) -> Vec<String> {
         let mut reached: HashSet<String> = HashSet::new();
         let mut waiting: Vec<(String, bool)> = roots.into_iter().map(|r| (r, true)).collect();
         while let Some((file, is_root)) = waiting.pop() {
+            // `include!` and `#[path]` name any path, and the tree chooses it:
+            // only one inside the tree, a regular file of source size, is read.
+            let Some(file) = within(&file) else {
+                continue;
+            };
             if !reached.insert(file.clone()) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(root.join(&file)) else {
+            let readable = std::fs::metadata(root.join(&file))
+                .is_ok_and(|m| m.is_file() && m.len() <= 4 << 20);
+            let Some(text) = readable
+                .then(|| std::fs::read_to_string(root.join(&file)).ok())
+                .flatten()
+            else {
                 continue;
             };
             let path = Path::new(&file);
@@ -1798,6 +1808,23 @@ fn normalize(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// `path` with `.` and `..` resolved, or `None` when it is absolute or leaves
+/// the tree.
+pub(crate) fn within(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for c in Path::new(path).components() {
+        match c {
+            std::path::Component::Normal(p) => parts.push(p.to_str()?),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop()?;
+            }
+            _ => return None,
+        }
+    }
+    Some(parts.join("/"))
 }
 
 fn slash(p: &Path) -> String {

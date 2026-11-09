@@ -14,7 +14,31 @@ pub struct Args {
     pub rest: Vec<String>,
     flags: Vec<String>,
     values: Vec<(String, String)>,
+    /// Options that were misspelt or misused; `main` refuses to run with any.
+    pub problems: Vec<String>,
 }
+
+/// The options that take no value. With `VALUE_OPTIONS` the whole surface:
+/// an option in neither is refused, so `--dryrun` or `--dry-run=true` cannot
+/// turn into a run that writes. `demo_cli` checks every key the code reads.
+pub const FLAG_OPTIONS: &[&str] = &[
+    "anomalies",
+    "backend",
+    "behind-control-plane",
+    "by-dir",
+    "check",
+    "dry-run",
+    "help",
+    "no-hook",
+    "own-process",
+    "plugin",
+    "purge",
+    "quiet",
+    "stop-replaced",
+    "user",
+    "version",
+    "watch",
+];
 
 /// The options that take a value, so `--key value` is read as one. Any
 /// other `--key` is a flag, and a word after it is the path: a key missing
@@ -58,20 +82,33 @@ impl Args {
         let mut flags = Vec::new();
         let mut values = Vec::new();
         let mut rest = Vec::new();
+        let mut problems = Vec::new();
 
         while let Some(arg) = argv.next() {
             if let Some(name) = arg.strip_prefix("--") {
                 // `--key value` and `--key=value` are both accepted; a flag
                 // with no value is a boolean.
                 if let Some((k, v)) = name.split_once('=') {
+                    if FLAG_OPTIONS.contains(&k) {
+                        problems.push(format!("--{k} takes no value"));
+                    } else if !VALUE_OPTIONS.contains(&k) {
+                        problems.push(format!("unknown option --{k}"));
+                    }
                     values.push((k.to_string(), v.to_string()));
                 } else if VALUE_OPTIONS.contains(&name) {
-                    if let Some(v) = argv.next() {
-                        values.push((name.to_string(), v));
-                    } else {
-                        flags.push(name.to_string());
+                    match argv.next_if(|v| !v.starts_with("--")) {
+                        Some(v) => values.push((name.to_string(), v)),
+                        None if argv.peek().is_some() => {
+                            problems.push(format!("--{name} needs a value"));
+                        }
+                        // Last on the line: `--language-rules` alone means
+                        // the default directory.
+                        None => flags.push(name.to_string()),
                     }
                 } else {
+                    if !FLAG_OPTIONS.contains(&name) {
+                        problems.push(format!("unknown option --{name}"));
+                    }
                     flags.push(name.to_string());
                 }
             } else if path.is_none() {
@@ -87,6 +124,7 @@ impl Args {
             rest,
             flags,
             values,
+            problems,
         }
     }
 
