@@ -170,6 +170,17 @@ impl Communities {
         seen.len()
     }
 
+    /// Every community's members, in one pass. `members` per community is a
+    /// pass each, quadratic over all of them.
+    pub fn grouped(&self) -> Vec<Vec<NodeId>> {
+        let len = self.of_node.iter().max().map_or(0, |&m| m as usize + 1);
+        let mut out = vec![Vec::new(); len];
+        for (n, &c) in self.of_node.iter().enumerate() {
+            out[c as usize].push(n as NodeId);
+        }
+        out
+    }
+
     pub fn members(&self, community: u32) -> Vec<NodeId> {
         self.of_node
             .iter()

@@ -112,6 +112,16 @@ pub fn sections(source: &str, file_stem: &str) -> Vec<Section> {
     if !current.prose.trim().is_empty() || !current.mentions.is_empty() {
         out.push(current);
     }
+    // A title repeated in one file (`### Example` under each command) is a
+    // name repeated: numbered, or every one but the last is lost.
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in &mut out {
+        let n = seen.entry(s.title.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            s.title = format!("{} [{n}]", s.title);
+        }
+    }
     out
 }
 

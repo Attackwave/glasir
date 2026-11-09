@@ -122,10 +122,9 @@ pub fn graph_json(served: &Served) -> Value {
 
     // Communities worth naming: one holding a single symbol is not a subsystem.
     let mut communities = Vec::new();
-    for cid in 0..served.communities.count() as u32 {
-        let members: Vec<NodeId> = served
-            .communities
-            .members(cid)
+    for (cid, all) in served.communities.grouped().into_iter().enumerate() {
+        let cid = cid as u32;
+        let members: Vec<NodeId> = all
             .into_iter()
             .filter(|n| served.defined.contains(n) && shown.contains(n))
             .collect();
@@ -327,10 +326,9 @@ pub fn overview_json(served: &Served, layout: &Layout) -> Value {
     // the `overview` tool: several `mcp` circles named alike say nothing.
     let mut by_file: std::collections::BTreeMap<String, (Vec<u32>, Vec<NodeId>)> =
         Default::default();
-    for cid in 0..served.communities.count() as u32 {
-        let members: Vec<NodeId> = served
-            .communities
-            .members(cid)
+    for (cid, all) in served.communities.grouped().into_iter().enumerate() {
+        let cid = cid as u32;
+        let members: Vec<NodeId> = all
             .into_iter()
             .filter(|n| served.defined.contains(n))
             .collect();
