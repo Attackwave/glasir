@@ -285,11 +285,21 @@ jobs:
       # Provenance for the archives as for the image: an archive is then
       # verifiable against this workflow and commit (`gh attestation verify`),
       # not only against the checksum published beside it.
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+      # The same bundle as a release file, for verifying offline
+      # (`gh attestation verify <archive> --bundle <file>`).
+      - name: provenance file
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          test -s "$BUNDLE"
+          mkdir -p artifacts/provenance
+          jq -c . "$BUNDLE" > "artifacts/provenance/glasir-${GITHUB_REF_NAME#v}.intoto.jsonl"
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # A tag with a suffix (`v0.1.0-rc.6`) is a release candidate. Unmarked,
