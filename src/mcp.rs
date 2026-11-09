@@ -452,7 +452,7 @@ fn tool_list() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"},
-                    "max_lines": {"type": "integer", "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
+                    "max_lines": {"type": "integer", "minimum": 1, "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
                 },
                 "required": ["symbol"]
             },
@@ -493,7 +493,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Symbol name, substring, or a plain-language question"},
-                    "max_nodes": {"type": "integer", "description": "Result cap (default 40)"},
+                    "max_nodes": {"type": "integer", "minimum": 1, "description": "Result cap (default 40)"},
                     "max_hops": {"type": "integer", "description": "Expansion depth (default 3)"}
                 },
                 "required": ["query"]
@@ -530,7 +530,7 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "How many subsystems (default 12)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many subsystems (default 12)"},
                     "offset": {"type": "integer", "description": "Skip this many, largest first: the `next_offset` of a previous answer"},
                     "entry_points": {"type": "integer", "description": "Entry points per subsystem (default 3)"}
                 },
@@ -626,7 +626,7 @@ fn tool_list() -> Value {
                         "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Weakest edge kind to follow (default ambiguous)"
                     },
-                    "limit": {"type": "integer", "description": "How many dependents to name (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many dependents to name (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many, nearest first: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -675,7 +675,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "max_len": {"type": "integer", "description": "Longest cycle to report, in files (default 5)"},
-                    "limit": {"type": "integer", "description": "How many cycles to return (default 20)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many cycles to return (default 20)"},
                     "min_confidence": {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
@@ -770,7 +770,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to count (default ambiguous)"},
-                    "limit": {"type": "integer", "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -882,7 +882,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
                     "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
                     "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
-                    "limit": {"type": "integer", "description": "How many tests to list (default 50); `count` and `files` cover all"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many tests to list (default 50); `count` and `files` cover all"},
                     "offset": {"type": "integer", "description": "Where the list starts (default 0)"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to follow (default ambiguous)"}
@@ -1000,7 +1000,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Only definitions under this path prefix"},
-                    "limit": {"type": "integer", "description": "How many to name (default 50)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many to name (default 50)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 }
             },
@@ -1029,7 +1029,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "The definition, `path#name` or a unique name"},
-                    "limit": {"type": "integer", "description": "How many changes to return (default 10)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many changes to return (default 10)"},
                     "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"},
                     "body_lines": {"type": "integer", "description": "Lines of each commit body to return (default 6, 0 for the subject only)"}
                 },
@@ -5282,6 +5282,9 @@ fn render_get_code_snippet(v: &Value) -> String {
 }
 
 fn call_tool_json(served: &Served, name: &str, args: &Value) -> Result<Value, String> {
+    if let Some(problem) = argument_problem(name, args) {
+        return Err(problem);
+    }
     match name {
         "get_code_snippet" => get_code_snippet(served, args),
         "query_graph" => query_graph(served, args),
@@ -5472,6 +5475,28 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
 /// Revisions this server answers in; another is answered with the one it
 /// speaks, never echoed.
 const KNOWN_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", LEGACY_VERSION];
+
+/// A whole-number argument that is negative, fractional, a string or below
+/// its declared `minimum`. Read with `as_u64`, each of those fell back to the
+/// default without a word.
+fn argument_problem(tool: &str, args: &Value) -> Option<String> {
+    static TOOLS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let tools = TOOLS.get_or_init(tool_list);
+    let properties =
+        tools.as_array()?.iter().find(|t| t["name"] == tool)?["inputSchema"]["properties"]
+            .as_object()?;
+    properties
+        .iter()
+        .filter(|(_, schema)| schema["type"] == "integer")
+        .find_map(|(key, schema)| {
+            let given = args.get(key).filter(|v| !v.is_null())?;
+            let least = schema["minimum"].as_u64().unwrap_or(0);
+            match given.as_u64() {
+                Some(n) if n >= least => None,
+                _ => Some(format!("{key} must be a whole number of at least {least}")),
+            }
+        })
+}
 
 /// Fields a tool returns that its `outputSchema` does not declare, by path.
 /// Checked on every call in debug builds, so the schemas cannot drift.
