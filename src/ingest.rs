@@ -326,11 +326,6 @@ impl SymbolRegistry {
             .any(|base| !named.contains(base.split('^').next().unwrap_or(base)))
     }
 
-    /// Whether classes in the tree name `class` as a base it does not hold.
-    pub fn base_was_elsewhere(&self, class: &str) -> bool {
-        self.classes.bases_elsewhere.contains(class)
-    }
-
     /// Whether `symbol` extends a type rather than defining it.
     pub fn is_extension(&self, symbol: &str) -> bool {
         self.classes.extensions.contains(symbol)

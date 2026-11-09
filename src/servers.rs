@@ -26,7 +26,7 @@ pub fn directory() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| crate::home().map(|h| h.join(".local").join("state")))?;
+        .or_else(|| crate::files::home().map(|h| h.join(".local").join("state")))?;
     Some(base.join("glasir").join("servers"))
 }
 
