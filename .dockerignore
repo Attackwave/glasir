@@ -6,3 +6,22 @@ tmp
 .glasir-layout-*
 .glasir-tokens
 .glasir-audit.jsonl*
+# Local, per-machine files: absolute paths and notes that do not belong in
+# an image. A clean checkout has none of them; a local build would copy them.
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude
+.mcp.json
+.codex
+.gemini
+.qwen
+.agents
+.cursor
+.vscode
+.continue
+.kiro
+.roo
+.amazonq
+opencode.json
+glasir-mcp.json
