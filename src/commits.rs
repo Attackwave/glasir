@@ -122,7 +122,7 @@ const MAX_BLOB: usize = 8 << 20;
 /// File contents at given revisions, `rev:path` each, through one
 /// `git cat-file --batch`. `None` for an object that does not exist or is not
 /// text.
-fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<String>> {
+pub(crate) fn cat_files(root: &Path, specs: impl Iterator<Item = String>) -> Vec<Option<String>> {
     let specs: Vec<String> = specs.collect();
     if specs.is_empty() {
         return Vec::new();
