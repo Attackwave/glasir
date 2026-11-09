@@ -134,7 +134,7 @@ impl Snapshot {
 /// can be queried.
 pub fn write(snapshot: &Snapshot, path: &Path) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(snapshot).map_err(std::io::Error::other)?;
-    std::fs::write(path, &bytes)
+    crate::files::replace(path, &bytes)
 }
 
 /// Loads the analysed graph kept between runs, or `None` if it is missing,
