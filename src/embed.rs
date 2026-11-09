@@ -213,7 +213,7 @@ pub fn embed(snap: &GraphSnapshot, iterations: usize) -> Embeddings {
                     // another crate. Handled at the caller instead: see
                     // `SINK_DAMP`.
                     out.copy_from_slice(&current[node * DIM..node * DIM + DIM]);
-                    return;
+                    continue;
                 }
                 // The node keeps a share of its own vector, which is what
                 // stops a pure Markov step from erasing the node itself.
