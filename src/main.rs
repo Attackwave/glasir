@@ -2934,7 +2934,9 @@ fn review_report(served: &mcp::Served, rev: &str, depth: u64) -> std::io::Result
         }
         Ok(reply["result"]["structuredContent"].clone())
     };
-    let mut dc_args = json!({"depth": depth});
+    // The largest page: the comment names a few per hop, but counts them all.
+    // At least one hop, as before the schema declared that minimum.
+    let mut dc_args = json!({"depth": depth.max(1), "limit": mcp::PAGE_CEILING});
     let mut at_args = json!({});
     if !rev.is_empty() {
         dc_args["rev"] = json!(rev);
@@ -3032,10 +3034,15 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            if syms.len() > REVIEW_LIST_LIMIT {
-                out.push_str(&format!(" … and {} more", syms.len() - REVIEW_LIST_LIMIT));
+            let count = level["count"].as_u64().unwrap_or(0) as usize;
+            let shown = syms.len().min(REVIEW_LIST_LIMIT);
+            if count > shown {
+                out.push_str(&format!(" … and {} more", count - shown));
             }
             out.push('\n');
+        }
+        if dc.get("next_offset").is_some() {
+            out.push_str("- … and more further out\n");
         }
     }
     let tests = strs(&at["files"]);
@@ -9739,6 +9746,7 @@ fn demo_change_tools() {
     b.add_edge(3, e(0));
     b.add_edge(6, e(1));
     b.add_edge(5, e(4));
+    b.add_edge(23, e(0));
     // export -> render, and no test reaches either. export -> format too, and
     // a test reads `format` by name without calling it.
     b.add_edge(8, e(7));
@@ -10006,8 +10014,8 @@ fn demo_change_tools() {
         json!(["src/report.rs#render"]),
         "{text}"
     );
-    // Paged like `impact`: one changed symbol of several, the counts and the
-    // risk still taken from everything; past the one dependent, an empty page.
+    // Paged like `impact`: two dependents at the first hop, one per page;
+    // the counts and the risk are taken from everything on every page.
     let listed = |v: &serde_json::Value| {
         v["hops"]
             .as_array()
@@ -10016,18 +10024,31 @@ fn demo_change_tools() {
             .map(|l| l["symbols"].as_array().unwrap().len())
             .sum::<usize>()
     };
-    assert_eq!(listed(&v), 1, "{text}");
+    assert_eq!(listed(&v), 2, "{text}");
+    assert_eq!(v["hops"][0]["count"], 2, "{text}");
     assert!(v["changed_symbols_total"].as_u64().unwrap() >= 2, "{text}");
     let (p, ptext) = call("detect_changes", json!({"limit": 1}));
     assert_eq!(listed(&p), 1, "{ptext}");
+    assert_eq!(
+        p["hops"][0]["count"], 2,
+        "a hop counts all it holds: {ptext}"
+    );
+    assert_eq!(p["next_offset"], 1, "{ptext}");
     assert_eq!(p["changed_symbols"].as_array().unwrap().len(), 1, "{ptext}");
     for key in ["changed_symbols_total", "dependents", "within", "risk"] {
         assert_eq!(p[key], v[key], "{key}: {ptext}");
     }
-    assert!(p.get("next_offset").is_none(), "{ptext}");
+    // The text counts what it left out from the full number, not the page.
+    let total = v["changed_symbols_total"].as_u64().unwrap();
+    assert!(
+        ptext.contains(&format!("… and {} more (`changed_symbols`", total - 1)),
+        "{ptext}"
+    );
     let (p, ptext) = call("detect_changes", json!({"limit": 1, "offset": 1}));
-    assert_eq!(listed(&p), 0, "{ptext}");
-    assert_eq!(p["dependents"], v["dependents"], "{ptext}");
+    assert_eq!(listed(&p), 1, "{ptext}");
+    assert!(p.get("next_offset").is_none(), "{ptext}");
+    // `--depth 0` is one hop, as it was before the schema declared a minimum.
+    assert!(review_report(&served, "", 0).is_ok());
     let missed = v["risk"]["missed_partners"].as_array().unwrap();
     assert_eq!(missed.len(), 1, "{text}");
     assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
