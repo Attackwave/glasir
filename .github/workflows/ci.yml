@@ -173,7 +173,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
+          components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Lints per platform: code behind `cfg(unix)` leaves imports unused
+      # elsewhere, and the release gates refuse that.
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --release
       # The self-checks, not just the build: the git hooks, the token file
       # permissions and the path handling are where a platform actually differs.
