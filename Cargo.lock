@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "glasir"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "ignore",
  "libc",
