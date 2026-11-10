@@ -893,6 +893,7 @@ pub fn ingest_docs_from(
         return;
     };
     let file = relative_path(path, root);
+    registry.set_file_lang(&file, facts.lang_by_content);
     for (name, doc) in &facts.docs {
         if let Some(node) = registry.node_of(&qualify(&file, name)) {
             registry.set_doc(node, doc.clone());

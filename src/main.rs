@@ -5863,7 +5863,16 @@ fn demo_resolve() {
             "gc/c.go",
             "package gc\n\nimport . \"example.com/m/gd\"\n\nfunc Run() { Dotted() }\n",
         ),
-        ("gd/d.go", "package gd\n\nfunc Dotted() {}\n"),
+        (
+            "gd/d.go",
+            "package gd\n\nfunc Dotted() {}\n\nfunc Twin() {}\n",
+        ),
+        ("gd/e.go", "package gd\n\nfunc Twin() {}\n"),
+        (
+            "gc/t.go",
+            "package gc\n\nimport . \"example.com/m/gd\"\n\nfunc Both() { Twin() }\n",
+        ),
+        ("pinger.swift", "func pinger() { ping() }\n"),
     ] {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -5963,6 +5972,22 @@ fn demo_resolve() {
         links("open from =python.", "p/util.py#open"),
         "a call through a value still reaches the method"
     );
+    // A refused call from another family's placeholder is still named as a
+    // caller that may be this one.
+    let state = served_state(&dir).unwrap();
+    for (symbol, caller) in [
+        ("legacy.m#ping", "pinger.swift#pinger"),
+        ("gd/e.go#Twin", "gc/t.go#Both"),
+    ] {
+        let v = mcp::handle_for_test(
+            &state.as_served(),
+            &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "find_callers", "arguments": {"symbol": symbol}}}),
+        )
+        .unwrap();
+        let undecided = v["result"]["structuredContent"]["undecided_callers"].to_string();
+        assert!(undecided.contains(caller), "{symbol}: {undecided}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 
     println!("tier 3 ok: exact links only, ambiguity and test shadowing refused");
@@ -10048,15 +10073,23 @@ fn demo_change_tools() {
     for key in ["changed_symbols_total", "dependents", "within", "risk"] {
         assert_eq!(p[key], v[key], "{key}: {ptext}");
     }
-    // The text counts what it left out from the full number, not the page.
-    let total = v["changed_symbols_total"].as_u64().unwrap();
-    assert!(
-        ptext.contains(&format!("… and {} more (`changed_symbols`", total - 1)),
-        "{ptext}"
+    assert!(ptext.contains("call again with `offset: 1`"), "{ptext}");
+    // Pages add up to every changed symbol and every dependent.
+    let total = v["changed_symbols_total"].as_u64().unwrap() as usize;
+    let (mut symbols, mut dependents, mut offset) = (Vec::new(), 0, Some(0));
+    while let Some(at) = offset {
+        let (p, ptext) = call("detect_changes", json!({"limit": 1, "offset": at}));
+        symbols.extend(p["changed_symbols"].as_array().unwrap().clone());
+        dependents += listed(&p);
+        offset = p["next_offset"].as_u64();
+        assert!(offset.is_none_or(|n| n == at + 1), "{ptext}");
+    }
+    assert_eq!(
+        symbols,
+        v["changed_symbols"].as_array().unwrap()[..total],
+        "{text}"
     );
-    let (p, ptext) = call("detect_changes", json!({"limit": 1, "offset": 1}));
-    assert_eq!(listed(&p), 1, "{ptext}");
-    assert!(p.get("next_offset").is_none(), "{ptext}");
+    assert_eq!(dependents, 2, "{text}");
     // `--depth 0` is one hop, as it was before the schema declared a minimum.
     assert!(review_report(&served, "", 0).is_ok());
     let missed = v["risk"]["missed_partners"].as_array().unwrap();
@@ -13271,6 +13304,14 @@ fn demo_doc_coverage() {
         "/// Doc.\nfn other() {}\n",
     );
     assert_eq!(reg.len(), before, "ingest_docs must not mint symbols");
+    // An indexed file still records the language its content names.
+    ingest::ingest_docs(
+        &mut reg,
+        &dir.join("v.m"),
+        &dir,
+        "#import <Foundation/Foundation.h>\n@implementation V\n- (void)go {}\n@end\n",
+    );
+    assert_eq!(reg.lang_of("v.m"), Some(parse_ast::Lang::ObjC));
 
     // And the wiring, against this repository's own tree: `build_graph` must
     // read docs for a file the SCIP index covers. Testing `ingest_docs` alone

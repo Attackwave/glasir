@@ -852,13 +852,13 @@ fn tool_list() -> Value {
                         "required": ["level", "untested", "evaluated", "missed_partners"]
                     },
                     "changed_files": {"type": "integer"},
-                    "changed_symbols": {"type": "array", "items": {"type": "string"}, "description": "The first `limit` of them"},
+                    "changed_symbols": {"type": "array", "items": {"type": "string"}, "description": "One page of them, paged with the dependents"},
                     "changed_symbols_total": {"type": "integer"},
                     "files_without_known_symbols": {"type": "array", "items": {"type": "string"}},
                     "removed_symbols": {"type": "array", "items": {"type": "string"}, "description": "Definitions the base had and the change removed or renamed"},
                     "dependents": {"type": "integer"},
                     "within": {"type": "integer", "description": "Hops that reached something"},
-                    "next_offset": {"type": "integer", "description": "Present when more dependents remain"},
+                    "next_offset": {"type": "integer", "description": "Present when more changed symbols or dependents remain"},
                     "hops": {"type": "array", "items": {
                         "type": "object",
                         "properties": {
@@ -1940,14 +1940,45 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     let placeholders: Vec<NodeId> = bare
         .into_iter()
         .flat_map(|name| match family {
-            Some(lang) => [false, true]
-                .map(|through| {
-                    let scope = crate::ingest::family_scope(lang, file, through);
-                    served
-                        .registry
-                        .node_of(&crate::imports::scoped(name, &scope))
-                })
-                .to_vec(),
+            Some(lang) => {
+                let mut scopes: Vec<String> = [false, true]
+                    .map(|through| crate::ingest::family_scope(lang, file, through))
+                    .to_vec();
+                // Swift's bare calls reach Objective-C too.
+                if lang == crate::parse_ast::Lang::ObjC {
+                    scopes.push(crate::ingest::family_scope(
+                        crate::parse_ast::Lang::Swift,
+                        file,
+                        false,
+                    ));
+                }
+                let mut nodes: Vec<Option<NodeId>> = scopes
+                    .iter()
+                    .map(|scope| {
+                        served
+                            .registry
+                            .node_of(&crate::imports::scoped(name, scope))
+                    })
+                    .collect();
+                // A Go call from a package that dot-imports this one.
+                // ponytail: scans the registry per call; index placeholders by
+                // name if find_callers on Go shows up in a profile.
+                if lang == crate::parse_ast::Lang::Go {
+                    let own = file.rsplit_once('/').map_or("", |(d, _)| d);
+                    let prefix = crate::imports::scoped(name, "=go:");
+                    nodes.extend(
+                        served
+                            .registry
+                            .entries()
+                            .filter(|(key, _)| {
+                                key.strip_prefix(&prefix)
+                                    .is_some_and(|dirs| dirs.split('|').skip(1).any(|d| d == own))
+                            })
+                            .map(|(_, &n)| Some(n)),
+                    );
+                }
+                nodes
+            }
             None => vec![served.registry.node_of(name)],
         })
         .flatten()
@@ -2087,6 +2118,7 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
     let changed: Vec<&str> = diff
         .touched
         .iter()
+        .skip(offset)
         .take(limit)
         .map(|(s, _)| s.as_str())
         .collect();
@@ -2112,7 +2144,8 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
             }))
             .collect::<Vec<_>>(),
     });
-    next_offset(&mut value, offset, limit, reached);
+    // One offset pages both lists; more remain while either has more.
+    next_offset(&mut value, offset, limit, reached.max(diff.touched.len()));
     Ok(value)
 }
 
@@ -3208,15 +3241,19 @@ since the last analysis is not in it yet:\n",
         out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
     }
     let shown = syms.len().min(CHANGE_LIST_LIMIT);
-    if syms_total > shown {
+    if syms.len() > shown {
         out.push_str(&format!(
-            "  … and {} more (`changed_symbols` lists the first `limit`)\n",
-            syms_total - shown
+            "  … and {} more in `changed_symbols`\n",
+            syms.len() - shown
         ));
     }
+    let more = v["next_offset"].as_u64().map_or(String::new(), |next| {
+        format!("\n… more on the next page: call again with `offset: {next}`\n")
+    });
     let total = v["dependents"].as_u64().unwrap_or(0);
     if total == 0 {
         out.push_str("\nnothing in the graph depends on what changed.\n");
+        out.push_str(&more);
         return out;
     }
     out.push_str(&format!("\n{total} symbol(s) depend on the change:\n"));
@@ -3235,11 +3272,7 @@ since the last analysis is not in it yet:\n",
             out.push_str(&format!("  … and {} more\n", count - shown));
         }
     }
-    if let Some(next) = v["next_offset"].as_u64() {
-        out.push_str(&format!(
-            "\n… more dependents: call again with `offset: {next}`\n"
-        ));
-    }
+    out.push_str(&more);
     out
 }
 
