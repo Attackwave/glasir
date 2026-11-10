@@ -11516,6 +11516,22 @@ fn demo_snippet() {
         partial["result"]["structuredContent"]["resolved_from"],
         "alph"
     );
+    // `shortest_path` names both ends, so each says it on its own.
+    let path = mcp::handle_for_test(
+        &served,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "shortest_path", "arguments": {"from": "alph", "to": "src/a.rs#alpha"}}}),
+    )
+    .unwrap();
+    let sc = &path["result"]["structuredContent"];
+    assert_eq!(sc["from_asked"], "alph", "{path}");
+    assert!(sc.get("to_asked").is_none(), "{path}");
+    assert!(
+        path["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("\"alph\" names no symbol exactly")),
+        "{path}"
+    );
 
     // A name matching two symbols is refused with its candidates, exactly as
     // `impact` refuses one — a snippet of the wrong `beta` is worse than none.

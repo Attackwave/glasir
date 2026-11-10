@@ -592,6 +592,8 @@ fn tool_list() -> Value {
         "properties": {
             "from": {"type": "string"},
             "to": {"type": "string"},
+            "from_asked": {"type": "string", "description": "The name asked for as `from`, when it matched only in part"},
+            "to_asked": {"type": "string", "description": "The name asked for as `to`, when it matched only in part"},
             "min_confidence": {"type": "string"},
             "found": {"type": "boolean", "description": "False when no route exists, which is an answer"},
             "hops": {"type": ["integer", "null"]},
@@ -5521,14 +5523,20 @@ pub fn handle(served: &Served, msg: &Value) -> Option<Value> {
                     // A name matched only as part of a longer one is a
                     // different symbol than the one asked for, and the answer
                     // must say so rather than read as the asked one's.
-                    if let (Some(asked), Some(got)) =
-                        (args["symbol"].as_str(), value["symbol"].as_str())
-                        && got != asked
-                        && got.split_once('#').is_none_or(|(_, tail)| tail != asked)
-                    {
-                        text =
-                            format!("{asked:?} names no symbol exactly; this is {got}\n\n{text}");
-                        value["resolved_from"] = json!(asked);
+                    for (key, note) in [
+                        ("symbol", "resolved_from"),
+                        ("from", "from_asked"),
+                        ("to", "to_asked"),
+                    ] {
+                        if let (Some(asked), Some(got)) = (args[key].as_str(), value[key].as_str())
+                            && got != asked
+                            && got.split_once('#').is_none_or(|(_, tail)| tail != asked)
+                        {
+                            text = format!(
+                                "{asked:?} names no symbol exactly; this is {got}\n\n{text}"
+                            );
+                            value[note] = json!(asked);
+                        }
                     }
                     #[cfg(debug_assertions)]
                     {
