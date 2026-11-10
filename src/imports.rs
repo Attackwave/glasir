@@ -1564,7 +1564,7 @@ fn go(src: &str) -> Vec<Import> {
         };
         let spec = spec_line[q + 1..].split('"').next().unwrap_or("");
         let named = spec_line[..q].trim();
-        if named == "_" || named == "." || spec.is_empty() {
+        if named == "_" || spec.is_empty() {
             continue;
         }
         let alias = if named.is_empty() {

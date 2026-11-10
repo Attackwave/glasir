@@ -409,7 +409,10 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         let reachable = |d: NodeId| {
             let file = file_of.get(&d).copied().unwrap_or_default();
             !(receiverless && registry.is_member(&format!("{file}#{bare}")))
-                && package.is_none_or(|dir| file.rsplit_once('/').map_or("", |(d, _)| d) == dir)
+                && package.is_none_or(|dirs| {
+                    let own = file.rsplit_once('/').map_or("", |(d, _)| d);
+                    dirs.split('|').any(|dir| dir == own)
+                })
         };
         let unreachable = defs
             .iter()
