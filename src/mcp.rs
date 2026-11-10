@@ -863,9 +863,10 @@ fn tool_list() -> Value {
                         "type": "object",
                         "properties": {
                             "hop": {"type": "integer"},
+                            "count": {"type": "integer", "description": "Dependents at this hop, on every page"},
                             "symbols": {"type": "array", "items": {"type": "string"}}
                         },
-                        "required": ["hop", "symbols"]
+                        "required": ["hop", "count", "symbols"]
                     }}
                 },
                 "required": ["risk", "changed_files", "changed_symbols", "changed_symbols_total",
@@ -1849,7 +1850,7 @@ fn page(tool: &str, args: &Value, default: usize) -> (usize, usize) {
 }
 
 /// The largest page any paged tool hands out.
-const PAGE_CEILING: usize = 1000;
+pub(crate) const PAGE_CEILING: usize = 1000;
 
 /// An integer argument held to the `minimum` and `maximum` its tool's input
 /// schema declares, so the advertised bounds are the applied ones.
@@ -2106,6 +2107,7 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
             .iter()
             .map(|(hop, level)| json!({
                 "hop": hop,
+                "count": levels[hop - 1].len(),
                 "symbols": level.iter().map(|&(n, _)| served.name(n)).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
@@ -3205,10 +3207,11 @@ since the last analysis is not in it yet:\n",
     for s in syms.iter().take(CHANGE_LIST_LIMIT) {
         out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
     }
-    if syms_total > CHANGE_LIST_LIMIT {
+    let shown = syms.len().min(CHANGE_LIST_LIMIT);
+    if syms_total > shown {
         out.push_str(&format!(
             "  … and {} more (`changed_symbols` lists the first `limit`)\n",
-            syms_total - CHANGE_LIST_LIMIT
+            syms_total - shown
         ));
     }
     let total = v["dependents"].as_u64().unwrap_or(0);
@@ -3219,16 +3222,17 @@ since the last analysis is not in it yet:\n",
     out.push_str(&format!("\n{total} symbol(s) depend on the change:\n"));
     for level in v["hops"].as_array().map_or(&[][..], Vec::as_slice) {
         let ss = level["symbols"].as_array().map_or(&[][..], Vec::as_slice);
+        let count = level["count"].as_u64().unwrap_or(0) as usize;
         out.push_str(&format!(
-            "\n{} hop ({}):\n",
+            "\n{} hop ({count}):\n",
             level["hop"].as_u64().unwrap_or(0),
-            ss.len()
         ));
         for sm in ss.iter().take(CHANGE_LIST_LIMIT) {
             out.push_str(&format!("  {}\n", sm.as_str().unwrap_or("")));
         }
-        if ss.len() > CHANGE_LIST_LIMIT {
-            out.push_str(&format!("  … and {} more\n", ss.len() - CHANGE_LIST_LIMIT));
+        let shown = ss.len().min(CHANGE_LIST_LIMIT);
+        if count > shown {
+            out.push_str(&format!("  … and {} more\n", count - shown));
         }
     }
     if let Some(next) = v["next_offset"].as_u64() {
