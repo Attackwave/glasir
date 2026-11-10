@@ -1908,7 +1908,7 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         .and_then(|name| match family {
             Some(lang) => served.registry.node_of(&crate::imports::scoped(
                 name,
-                &crate::ingest::family_scope(lang),
+                &crate::ingest::family_scope(lang, full.split_once('#').map_or("", |(f, _)| f)),
             )),
             None => served.registry.node_of(name),
         })
