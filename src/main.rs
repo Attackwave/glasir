@@ -5810,6 +5810,14 @@ fn demo_resolve() {
         ("page.js", "function caller() { set(); }\n"),
         ("lib.cpp", "void cpp_only() {}\n"),
         ("main.c", "void c_caller(void) { cpp_only(); }\n"),
+        (
+            "bridge.mm",
+            "@implementation ObjcOnly\n- (void)ping {}\n@end\n",
+        ),
+        (
+            "use.swift",
+            "func swift_caller() { let o = ObjcOnly(); cpp_only() }\n",
+        ),
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
             "p/util.py",
@@ -5848,6 +5856,15 @@ fn demo_resolve() {
     assert!(
         links("cpp_only from =c", "lib.cpp#cpp_only"),
         "C reaches a C++ definition"
+    );
+    assert!(
+        links("ObjcOnly from =swift", "bridge.mm#ObjcOnly"),
+        "Swift reaches an Objective-C definition"
+    );
+    assert!(
+        a.registry.node_of("cpp_only from =swift").is_some()
+            && !links("cpp_only from =swift", "lib.cpp#cpp_only"),
+        "Swift does not reach C++"
     );
     // A call without a receiver reaches no method in Python, JavaScript and
     // Go, in the same file or another, and a Go call no other package.
