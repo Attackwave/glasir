@@ -14,7 +14,7 @@ jobs:
         with:
           # The base commit has to be in the clone for the diff.
           fetch-depth: 0
-      - uses: Attackwave/glasir@70d7c65f01d13f883c3d1c2d9c14d3815a06259f # v0.12.0
+      - uses: Attackwave/glasir@f72940e108b113acff050c2fd527ae247769157f # v0.13.0
         # The binary of the same release as the action, not whatever is latest.
         with:
-          version: v0.12.0
+          version: v0.13.0
