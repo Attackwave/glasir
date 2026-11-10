@@ -1904,17 +1904,27 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
         use crate::parse_ast::LangExt;
         crate::parse_ast::Lang::from_path(std::path::Path::new(file))
     });
-    let mut undecided: Vec<NodeId> = bare
-        .and_then(|name| match family {
-            Some(lang) => served.registry.node_of(&crate::imports::scoped(
-                name,
-                &crate::ingest::family_scope(lang, full.split_once('#').map_or("", |(f, _)| f)),
-            )),
-            None => served.registry.node_of(name),
-        })
-        .map(|placeholder| direct_callers(served, reverse, placeholder, floor))
-        .unwrap_or_default()
+    let file = full.split_once('#').map_or("", |(f, _)| f);
+    let placeholders: Vec<NodeId> = bare
         .into_iter()
+        .flat_map(|name| match family {
+            Some(lang) => [false, true]
+                .map(|through| {
+                    let scope = crate::ingest::family_scope(lang, file, through);
+                    served
+                        .registry
+                        .node_of(&crate::imports::scoped(name, &scope))
+                })
+                .to_vec(),
+            None => vec![served.registry.node_of(name)],
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut undecided: Vec<NodeId> = placeholders
+        .into_iter()
+        .flat_map(|placeholder| direct_callers(served, reverse, placeholder, floor))
         .chain(
             unknown
                 .map(|p| direct_callers(served, reverse, p, floor))

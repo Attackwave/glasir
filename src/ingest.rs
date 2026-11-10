@@ -649,11 +649,14 @@ pub(crate) fn family(lang: Lang) -> Lang {
 }
 
 /// The target of a bare name called from `file` in `lang`: `=` and its
-/// family, so a name called from two families is two placeholders. Go adds
-/// the package directory: a bare call does not leave its package.
-pub(crate) fn family_scope(lang: Lang, file: &str) -> String {
+/// family, so a name called from two families is two placeholders. Where a
+/// call without a receiver reaches no method, one through a value is its own
+/// placeholder (`=family.`), and Go adds the package directory to the other:
+/// a bare call does not leave its package.
+pub(crate) fn family_scope(lang: Lang, file: &str, through_value: bool) -> String {
     let family = format!("={:?}", family(lang)).to_lowercase();
     match lang {
+        _ if through_value && receiverless(lang) => format!("{family}."),
         Lang::Go => format!("{family}:{}", file.rsplit_once('/').map_or("", |(d, _)| d)),
         _ => family,
     }
@@ -1345,8 +1348,10 @@ fn prepare_facts(
                 (Some(dirs), _) => {
                     registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
                 }
-                (None, Some(lang)) => registry
-                    .get_or_mint(&crate::imports::scoped(callee, &family_scope(lang, &file))),
+                (None, Some(lang)) => registry.get_or_mint(&crate::imports::scoped(
+                    callee,
+                    &family_scope(lang, &file, *has_receiver),
+                )),
                 (None, None) => registry.get_or_mint(callee),
             };
             if let Some(lang) = Lang::from_path(path) {

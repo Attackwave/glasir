@@ -253,11 +253,11 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // rule below still applies, with its refusal of an ambiguous name.
         // `=family` only says which callers share the node; the name rule
         // below decides, within that family.
-        // `=go:dir` adds the package a Go call cannot leave.
-        let package = crate::imports::unscope(symbol)
-            .and_then(|(_, t)| t.strip_prefix('='))
-            .and_then(|t| t.split_once(':'))
-            .map(|(_, dir)| dir);
+        // `=go:dir` adds the package a Go call cannot leave; `=family.` is a
+        // call through a value, which may reach a method anywhere.
+        let family = crate::imports::unscope(symbol).and_then(|(_, t)| t.strip_prefix('='));
+        let through_value = family.is_some_and(|t| t.ends_with('.') && !t.contains(':'));
+        let package = family.and_then(|t| t.split_once(':')).map(|(_, dir)| dir);
         let (bare, target) = match crate::imports::unscope(symbol) {
             Some((name, target)) if target.starts_with('=') => (name, None),
             Some((name, target)) => (name, Some(target)),
@@ -399,7 +399,8 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // candidates at all, so a function beside a method of its name links.
         let want = registry.placeholder_langs(placeholder);
         // `@…` names a receiver's type: that call has one.
-        let receiverless = !target.is_some_and(|t| t.starts_with('@'))
+        let receiverless = !through_value
+            && !target.is_some_and(|t| t.starts_with('@'))
             && !want.is_empty()
             && want.iter().all(|&w| crate::ingest::receiverless(w));
         let reachable = |d: NodeId| {

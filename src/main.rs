@@ -5814,7 +5814,7 @@ fn demo_resolve() {
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
             "p/util.py",
-            "class U:\n    def open(self):\n        pass\n\ndef main():\n    return open('x') + sorted([1])\n",
+            "class U:\n    def open(self):\n        pass\n\ndef main():\n    return open('x') + sorted([1])\n\ndef use(u):\n    return u.open()\n",
         ),
         (
             "ga/a.go",
@@ -5870,6 +5870,10 @@ fn demo_resolve() {
     assert!(
         links("local from =go:ga", "ga/h.go#local"),
         "its own package"
+    );
+    assert!(
+        links("open from =python.", "p/util.py#open"),
+        "a call through a value still reaches the method"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
