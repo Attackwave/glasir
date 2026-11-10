@@ -1308,8 +1308,11 @@ fn prepare_facts(
             });
         let unknown_receiver = *has_receiver && imported.is_none() && !path_call;
         // `super.run()` in `run` never means this `run`.
-        // `open()` beside a class method `open` is no call of it.
-        let method_only = lang.is_some_and(receiverless) && registry.is_member(&local);
+        // `open()` beside a class method `open` is no call of it; `self.open()`
+        // is, though the scanner reports no receiver for `self.` and `this.`.
+        let through_self = matches!(module, Some("self" | "this" | "cls" | "super"));
+        let method_only =
+            !through_self && lang.is_some_and(receiverless) && registry.is_member(&local);
         let target = if !*has_receiver
             && !names_base
             && !method_only
@@ -1350,7 +1353,7 @@ fn prepare_facts(
                 }
                 (None, Some(lang)) => registry.get_or_mint(&crate::imports::scoped(
                     callee,
-                    &family_scope(lang, &file, *has_receiver),
+                    &family_scope(lang, &file, *has_receiver || through_self),
                 )),
                 (None, None) => registry.get_or_mint(callee),
             };

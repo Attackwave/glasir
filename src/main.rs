@@ -5814,7 +5814,7 @@ fn demo_resolve() {
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
             "p/util.py",
-            "class U:\n    def open(self):\n        pass\n\ndef main():\n    return open('x') + sorted([1])\n\ndef use(u):\n    return u.open()\n",
+            "class U:\n    def open(self):\n        pass\n\n    def again(self):\n        return self.open()\n\ndef main():\n    return open('x') + sorted([1])\n\ndef use(u):\n    return u.open()\n",
         ),
         (
             "ga/a.go",
@@ -5858,6 +5858,10 @@ fn demo_resolve() {
             .neighbors(a.registry.node_of(from).unwrap())
             .any(|e| e.target == target)
     };
+    assert!(
+        calls("p/util.py#again", "p/util.py#open"),
+        "`self.open()` is"
+    );
     assert!(
         !calls("p/util.py#main", "p/util.py#open"),
         "a method is no bare call's"
