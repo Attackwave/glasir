@@ -253,6 +253,11 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // rule below still applies, with its refusal of an ambiguous name.
         // `=family` only says which callers share the node; the name rule
         // below decides, within that family.
+        // `=go:dir` adds the package a Go call cannot leave; `=family.` is a
+        // call through a value, which may reach a method anywhere.
+        let family = crate::imports::unscope(symbol).and_then(|(_, t)| t.strip_prefix('='));
+        let through_value = family.is_some_and(|t| t.ends_with('.') && !t.contains(':'));
+        let package = family.and_then(|t| t.split_once(':')).map(|(_, dir)| dir);
         let (bare, target) = match crate::imports::unscope(symbol) {
             Some((name, target)) if target.starts_with('=') => (name, None),
             Some((name, target)) => (name, Some(target)),
@@ -388,9 +393,28 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         // a call from Swift and one from a script never share an edge; within
         // a family, C calls C++. A definition in a file of no language (a
         // Markdown heading) is no call target.
+        //
+        // In Python, JavaScript and Go a call without a receiver reaches no
+        // method, and a Go call no other package: those definitions are no
+        // candidates at all, so a function beside a method of its name links.
         let want = registry.placeholder_langs(placeholder);
+        // `@…` names a receiver's type: that call has one.
+        let receiverless = !through_value
+            && !target.is_some_and(|t| t.starts_with('@'))
+            && !want.is_empty()
+            && want.iter().all(|&w| crate::ingest::receiverless(w));
+        let reachable = |d: NodeId| {
+            let file = file_of.get(&d).copied().unwrap_or_default();
+            !(receiverless && registry.is_member(&format!("{file}#{bare}")))
+                && package.is_none_or(|dir| file.rsplit_once('/').map_or("", |(d, _)| d) == dir)
+        };
+        let unreachable = defs
+            .iter()
+            .filter(|&&d| d != placeholder && !reachable(d))
+            .count();
         if let Some(&definition) = defs.iter().find(|&&d| {
             d != placeholder
+                && reachable(d)
                 && lang_of(&file_of, d).is_some_and(|l| {
                     let family = crate::ingest::family(l);
                     want.is_empty() || want.iter().any(|&w| crate::ingest::family(w) == family)
@@ -406,7 +430,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
             links.push(Link {
                 placeholder,
                 definition,
-                candidates: defs.len(),
+                candidates: defs.len() - unreachable,
                 exact: want == [crate::parse_ast::Lang::Assembly],
             });
         }

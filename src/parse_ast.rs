@@ -92,6 +92,9 @@ pub struct FileFacts {
     pub param_calls: Vec<(String, String, Vec<String>, u32)>,
     pub param_stores: Vec<(String, String, String)>,
     pub library_calls: Vec<(String, String, u32)>,
+    /// Names every definition of which is a method: no call without a
+    /// receiver reaches it. See `receiver_only`.
+    pub members: Vec<String>,
 }
 
 /// A language we can extract from.
@@ -352,6 +355,8 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
     let f = native_parsers::rules::active().parse(lang, src);
     let refs = references(lang, src, &f.ranges);
     let http = crate::routes::extract(lang, src, &f.ranges);
+    let imports = crate::imports::read(lang, src);
+    let members = receiver_only(lang, src, &f.ranges, &imports);
     Some(FileFacts {
         defines: f.defines,
         ranges: f.ranges,
@@ -359,7 +364,8 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         calls: f.calls,
         call_modules: f.call_modules,
         call_owners: f.call_owners,
-        imports: crate::imports::read(lang, src),
+        imports,
+        members,
         refs,
         http,
         file_refs: Vec::new(),
@@ -379,6 +385,68 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         param_stores: f.param_stores,
         library_calls: f.library_calls,
     })
+}
+
+/// Names whose every definition in `src` is a method, in the languages where
+/// a call without a receiver cannot reach one: a definition directly inside
+/// a class body (Python, JavaScript, TypeScript) or with a receiver (Go). A
+/// function nested in a method is the method's own and stays reachable.
+fn receiver_only(
+    lang: Lang,
+    src: &str,
+    ranges: &[(String, (u32, u32))],
+    imports: &[crate::imports::Import],
+) -> Vec<String> {
+    let mut count: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    match lang {
+        Lang::Go => {
+            for (name, _) in ranges {
+                count.entry(name).or_default().0 += 1;
+            }
+            for import in imports {
+                if let crate::imports::Import::Method { name, .. } = import
+                    && let Some(slot) = count.get_mut(name.as_str())
+                {
+                    slot.1 += 1;
+                }
+            }
+        }
+        Lang::Python | Lang::JavaScript | Lang::TypeScript => {
+            let is_class = |start: u32| {
+                let text = src.get(start as usize..).unwrap_or_default();
+                let line = text
+                    .lines()
+                    .map(str::trim_start)
+                    .find(|l| !l.starts_with('@'))
+                    .unwrap_or_default();
+                let mut words = line.split_whitespace();
+                let first = words
+                    .by_ref()
+                    .find(|w| !["export", "default", "abstract", "declare"].contains(w));
+                first.is_some_and(|w| w == "class" || w.starts_with("class{"))
+            };
+            let mut order: Vec<&(String, (u32, u32))> = ranges.iter().collect();
+            order.sort_by_key(|(_, (start, end))| (*start, std::cmp::Reverse(*end)));
+            let mut open: Vec<(u32, bool)> = Vec::new();
+            for (name, (start, end)) in order {
+                while open.last().is_some_and(|&(e, _)| e <= *start) {
+                    open.pop();
+                }
+                let slot = count.entry(name).or_default();
+                slot.0 += 1;
+                if open.last().is_some_and(|&(_, class)| class) {
+                    slot.1 += 1;
+                }
+                open.push((*end, is_class(*start)));
+            }
+        }
+        _ => {}
+    }
+    count
+        .into_iter()
+        .filter(|&(_, (all, methods))| methods > 0 && methods >= all)
+        .map(|(name, _)| name.to_string())
+        .collect()
 }
 
 /// Turns each invocation of a macro in `definers` into a definition of its
@@ -450,3 +518,25 @@ fn references(
 
 /// Tier 2 is syntactic: shapes are real, resolution is by name.
 pub const TIER_CONFIDENCE: Confidence = Confidence::Inferred;
+
+#[cfg(test)]
+mod member_tests {
+    use super::{Lang, parse};
+
+    fn members(lang: Lang, src: &str) -> Vec<String> {
+        parse(src, lang).unwrap().members
+    }
+
+    #[test]
+    fn a_method_is_reached_only_through_a_receiver() {
+        let py = "class Box:\n    @staticmethod\n    def open(path):\n        def inner():\n            return 1\n        return inner()\n\n    def close(self):\n        pass\n\ndef close():\n    pass\n";
+        assert_eq!(members(Lang::Python, py), ["open"]);
+        let js =
+            "export class Store {\n  parseInt(x) { return x; }\n}\nfunction run() { return 1; }\n";
+        assert_eq!(members(Lang::JavaScript, js), ["parseInt"]);
+        let ts = "export default class Q {\n  sorted(): number { return 1; }\n}\n";
+        assert_eq!(members(Lang::TypeScript, ts), ["sorted"]);
+        let go = "package b\n\ntype T struct{}\n\nfunc (t *T) append() {}\nfunc (t T) close() {}\nfunc close() {}\n";
+        assert_eq!(members(Lang::Go, go), ["append"]);
+    }
+}

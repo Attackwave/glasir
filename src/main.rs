@@ -5811,8 +5811,21 @@ fn demo_resolve() {
         ("page.js", "function caller() { set(); }\n"),
         ("lib.cpp", "void cpp_only() {}\n"),
         ("main.c", "void c_caller(void) { cpp_only(); }\n"),
+        ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
+        (
+            "p/util.py",
+            "class U:\n    def open(self):\n        pass\n\n    def again(self):\n        return self.open()\n\ndef main():\n    return open('x') + sorted([1])\n\ndef use(u):\n    return u.open()\n",
+        ),
+        (
+            "ga/a.go",
+            "package ga\n\nfunc Run() { helper(); local() }\n",
+        ),
+        ("ga/h.go", "package ga\n\nfunc local() {}\n"),
+        ("gb/b.go", "package gb\n\nfunc helper() {}\n"),
     ] {
-        std::fs::write(dir.join(file), text).unwrap();
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
     let a = analyse(&dir).unwrap();
     let links = |placeholder: &str, definition: &str| {
@@ -5836,6 +5849,35 @@ fn demo_resolve() {
     assert!(
         links("cpp_only from =c", "lib.cpp#cpp_only"),
         "C reaches a C++ definition"
+    );
+    // A call without a receiver reaches no method in Python, JavaScript and
+    // Go, in the same file or another, and a Go call no other package.
+    let calls = |from: &str, to: &str| {
+        let target = a.registry.node_of(to).unwrap();
+        a.snap
+            .neighbors(a.registry.node_of(from).unwrap())
+            .any(|e| e.target == target)
+    };
+    assert!(
+        calls("p/util.py#again", "p/util.py#open"),
+        "`self.open()` is"
+    );
+    assert!(
+        !calls("p/util.py#main", "p/util.py#open"),
+        "a method is no bare call's"
+    );
+    for placeholder in ["sorted from =python", "helper from =go:ga"] {
+        assert!(a.registry.node_of(placeholder).is_some(), "{placeholder}");
+    }
+    assert!(!links("sorted from =python", "q/b.py#sorted"));
+    assert!(!links("helper from =go:ga", "gb/b.go#helper"));
+    assert!(
+        links("local from =go:ga", "ga/h.go#local"),
+        "its own package"
+    );
+    assert!(
+        links("open from =python.", "p/util.py#open"),
+        "a call through a value still reaches the method"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -8424,10 +8466,12 @@ fn demo_imports() {
             "in/bases/bare_base.py#bare_name",
             false,
         ),
+        // A bare call never reaches a method, so the function is the one
+        // candidate left.
         (
             "in/bases/bare_kid.py#go_bare",
             "in/bases/bare_other.py#bare_name",
-            false,
+            true,
         ),
         (
             "in/bases/chain_kid.java#go_chain",

@@ -95,6 +95,8 @@ pub struct ClassFacts {
     methods: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// The files naming each base the tree does not hold.
     named_by: BTreeMap<String, BTreeSet<String>>,
+    /// Methods no call without a receiver reaches, by `file#name`.
+    members: BTreeSet<String>,
 }
 
 impl ClassFacts {
@@ -111,6 +113,7 @@ impl ClassFacts {
         self.contracts.retain(|k| !k.starts_with(&prefix));
         self.mixins.retain(|k| !k.starts_with(&prefix));
         self.extensions.retain(|k| !k.starts_with(&prefix));
+        self.members.retain(|k| !k.starts_with(&prefix));
     }
 }
 
@@ -329,6 +332,11 @@ impl SymbolRegistry {
     /// Whether `symbol` extends a type rather than defining it.
     pub fn is_extension(&self, symbol: &str) -> bool {
         self.classes.extensions.contains(symbol)
+    }
+
+    /// Whether `symbol` is a method a call without a receiver cannot reach.
+    pub fn is_member(&self, symbol: &str) -> bool {
+        self.classes.members.contains(symbol)
     }
 
     /// Whether the class `symbol` is an interface or a protocol.
@@ -640,10 +648,23 @@ pub(crate) fn family(lang: Lang) -> Lang {
     }
 }
 
-/// The target of a bare name called from `lang`: `=` and its family, so a
-/// name called from two families is two placeholders.
-pub(crate) fn family_scope(lang: Lang) -> String {
-    format!("={:?}", family(lang)).to_lowercase()
+/// The target of a bare name called from `file` in `lang`: `=` and its
+/// family, so a name called from two families is two placeholders. Where a
+/// call without a receiver reaches no method, one through a value is its own
+/// placeholder (`=family.`), and Go adds the package directory to the other:
+/// a bare call does not leave its package.
+pub(crate) fn family_scope(lang: Lang, file: &str, through_value: bool) -> String {
+    let family = format!("={:?}", family(lang)).to_lowercase();
+    match lang {
+        _ if through_value && receiverless(lang) => format!("{family}."),
+        Lang::Go => format!("{family}:{}", file.rsplit_once('/').map_or("", |(d, _)| d)),
+        _ => family,
+    }
+}
+
+/// Languages where a call without a receiver never reaches a method.
+pub(crate) fn receiverless(lang: Lang) -> bool {
+    matches!(family(lang), Lang::Python | Lang::JavaScript | Lang::Go)
 }
 
 /// Bare name -> the one symbol defining it; `None` marks a name defined more
@@ -1003,6 +1024,9 @@ fn prepare_facts(
     }
 
     registry.classes.forget(&file);
+    for name in &facts.members {
+        registry.classes.members.insert(qualify(&file, name));
+    }
 
     // What the file's imports say its names refer to: `alias.f()` and a bare
     // imported `f()`, each mapped to the file or package that defines them.
@@ -1284,7 +1308,16 @@ fn prepare_facts(
             });
         let unknown_receiver = *has_receiver && imported.is_none() && !path_call;
         // `super.run()` in `run` never means this `run`.
-        let target = if !*has_receiver && !names_base && defined_here.contains(callee.as_str()) {
+        // `open()` beside a class method `open` is no call of it; `self.open()`
+        // is, though the scanner reports no receiver for `self.` and `this.`.
+        let through_self = matches!(module, Some("self" | "this" | "cls" | "super"));
+        let method_only =
+            !through_self && lang.is_some_and(receiverless) && registry.is_member(&local);
+        let target = if !*has_receiver
+            && !names_base
+            && !method_only
+            && defined_here.contains(callee.as_str())
+        {
             registry.get_or_mint(&local)
         } else if let Some(scoped) = imported {
             let node = registry.get_or_mint(&scoped);
@@ -1318,9 +1351,10 @@ fn prepare_facts(
                 (Some(dirs), _) => {
                     registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
                 }
-                (None, Some(lang)) => {
-                    registry.get_or_mint(&crate::imports::scoped(callee, &family_scope(lang)))
-                }
+                (None, Some(lang)) => registry.get_or_mint(&crate::imports::scoped(
+                    callee,
+                    &family_scope(lang, &file, *has_receiver || through_self),
+                )),
                 (None, None) => registry.get_or_mint(callee),
             };
             if let Some(lang) = Lang::from_path(path) {
