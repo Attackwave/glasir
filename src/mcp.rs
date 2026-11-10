@@ -451,7 +451,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
-                    "following": {"type": "integer", "description": "Also return the next N definitions in the file (default 0, at most 50)"},
+                    "following": {"type": "integer", "maximum": 50, "description": "Also return the next N definitions in the file (default 0, at most 50)"},
                     "max_lines": {"type": "integer", "minimum": 1, "description": "Cut the source after this many lines; `truncated_at_line` says where it went on"},
                 },
                 "required": ["symbol"]
@@ -493,8 +493,8 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Symbol name, substring, or a plain-language question"},
-                    "max_nodes": {"type": "integer", "minimum": 1, "description": "Result cap (default 40)"},
-                    "max_hops": {"type": "integer", "description": "Expansion depth (default 3)"}
+                    "max_nodes": {"type": "integer", "minimum": 1, "maximum": MAX_NODES_CEILING, "description": "Result cap (default 40)"},
+                    "max_hops": {"type": "integer", "maximum": MAX_HOPS_CEILING, "description": "Expansion depth (default 3)"}
                 },
                 "required": ["query"]
             },
@@ -530,9 +530,9 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many subsystems (default 12)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 60, "description": "How many subsystems (default 12)"},
                     "offset": {"type": "integer", "description": "Skip this many, largest first: the `next_offset` of a previous answer"},
-                    "entry_points": {"type": "integer", "description": "Entry points per subsystem (default 3)"}
+                    "entry_points": {"type": "integer", "maximum": 10, "description": "Entry points per subsystem (default 3)"}
                 },
                 "required": []
             },
@@ -620,13 +620,13 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "Symbol name or qualified path#name"},
-                    "depth": {"type": "integer", "description": "How many hops back to follow (default 3)"},
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 10, "description": "How many hops back to follow (default 3)"},
                     "min_confidence": {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Weakest edge kind to follow (default ambiguous)"
                     },
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many dependents to name (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_CEILING, "description": "How many dependents to name (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many, nearest first: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -674,8 +674,8 @@ fn tool_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "max_len": {"type": "integer", "description": "Longest cycle to report, in files (default 5)"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many cycles to return (default 20)"},
+                    "max_len": {"type": "integer", "minimum": 2, "maximum": 12, "description": "Longest cycle to report, in files (default 5)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many cycles to return (default 20)"},
                     "min_confidence": {
                         "type": "string",
                         "enum": ["extracted", "inferred", "ambiguous"],
@@ -770,7 +770,7 @@ fn tool_list() -> Value {
                     "symbol": {"type": "string", "description": "Qualified `path#name`, or a name that resolves uniquely"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to count (default ambiguous)"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_CEILING, "description": "How many callers, undecided callers (at most 20) and files under `named_elsewhere` to list (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 },
                 "required": ["symbol"]
@@ -820,8 +820,8 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "rev": {"type": "string", "description": "Revision to compare against HEAD; omit for uncommitted changes"},
-                    "depth": {"type": "integer", "description": "Backwards hops (default 3, max 10)"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many dependents and changed symbols to list (default 200, max 1000)"},
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Backwards hops (default 3)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_CEILING, "description": "How many dependents and changed symbols to list (default 200)"},
                     "offset": {"type": "integer", "description": "Skip this many dependents, nearest first: the `next_offset` of a previous answer"}
                 }
             },
@@ -886,8 +886,8 @@ fn tool_list() -> Value {
                 "properties": {
                     "symbol": {"type": "string", "description": "Qualified `path#name`; omit to use the git diff"},
                     "rev": {"type": "string", "description": "Revision to compare against HEAD when no symbol is given; omit for uncommitted changes"},
-                    "depth": {"type": "integer", "description": "Backwards hops (default 12, max 30)"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many tests to list (default 50); `count` and `files` cover all"},
+                    "depth": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Backwards hops (default 12)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_CEILING, "description": "How many tests to list (default 50); `count` and `files` cover all"},
                     "offset": {"type": "integer", "description": "Where the list starts (default 0)"},
                     "min_confidence": {"type": "string", "enum": ["extracted", "inferred", "ambiguous"],
                         "description": "Lowest provenance tier to follow (default ambiguous)"}
@@ -932,8 +932,8 @@ fn tool_list() -> Value {
                 "properties": {
                     "file": {"type": "string", "description": "Path relative to the tree"},
                     "symbol": {"type": "string", "description": "Alternatively a symbol; its file is used"},
-                    "commits": {"type": "integer", "description": "How many recent commits to read (default 500)"},
-                    "top": {"type": "integer", "description": "How many coupled files to return (default 10)"}
+                    "commits": {"type": "integer", "minimum": 10, "maximum": 5000, "description": "How many recent commits to read (default 500)"},
+                    "top": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many coupled files to return (default 10)"}
                 }
             },
             "outputSchema": {
@@ -1005,7 +1005,7 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Only definitions under this path prefix"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many to name (default 50)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_CEILING, "description": "How many to name (default 50)"},
                     "offset": {"type": "integer", "description": "Skip this many: the `next_offset` of a previous answer"}
                 }
             },
@@ -1034,8 +1034,8 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "The definition, `path#name` or a unique name"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "How many changes to return (default 10)"},
-                    "commits": {"type": "integer", "description": "How many recent commits of the file to read (default 200)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many changes to return (default 10)"},
+                    "commits": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "How many recent commits of the file to read (default 200)"},
                     "body_lines": {"type": "integer", "description": "Lines of each commit body to return (default 6, 0 for the subject only)"}
                 },
                 "required": ["symbol"]
@@ -1292,12 +1292,8 @@ using one of these.",
     }
 
     let cfg = Physics {
-        max_nodes: (args["max_nodes"]
-            .as_u64()
-            .unwrap_or(DEFAULT_MAX_NODES as u64) as usize)
-            .min(MAX_NODES_CEILING),
-        max_hops: (args["max_hops"].as_u64().unwrap_or(DEFAULT_MAX_HOPS as u64) as usize)
-            .min(MAX_HOPS_CEILING),
+        max_nodes: bounded("query_graph", args, "max_nodes", DEFAULT_MAX_NODES),
+        max_hops: bounded("query_graph", args, "max_hops", DEFAULT_MAX_HOPS),
         ..served.physics
     };
     let kept = physics::expand(served.snap, &seeds, served.now, &cfg, Some(served.defined));
@@ -1749,14 +1745,14 @@ placed in a subsystem\n\n",
 ///    direct caller almost certainly breaks, a fourth-hop one probably does not.
 fn impact(served: &Served, args: &Value) -> Result<Value, String> {
     let symbol = args["symbol"].as_str().ok_or("symbol must be a string")?;
-    let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
+    let depth = bounded("impact", args, "depth", 3);
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let node = served.resolve_one(symbol)?;
     let mut levels = reverse_levels(served, &[node], depth, floor);
     if levels.is_empty() {
         levels = reverse_levels(served, &with_members(served, node), depth, floor);
     }
-    let (offset, limit) = page(args, 200);
+    let (offset, limit) = page("impact", args, 200);
     let reached: Vec<NodeId> = levels.iter().flatten().map(|&(n, _)| n).collect();
     let elsewhere = served.unconnected_mentions(node, &reached);
     let (untraced, untraced_total, library) = served.untraced(node, &reached);
@@ -1846,13 +1842,34 @@ fn page_levels(
 }
 
 /// `offset` and `limit` of a paged list; the limit is clamped like every other.
-fn page(args: &Value, default: usize) -> (usize, usize) {
+fn page(tool: &str, args: &Value, default: usize) -> (usize, usize) {
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-    let limit = args["limit"]
+    (offset, bounded(tool, args, "limit", default))
+}
+
+/// The largest page any paged tool hands out.
+const PAGE_CEILING: usize = 1000;
+
+/// An integer argument held to the `minimum` and `maximum` its tool's input
+/// schema declares, so the advertised bounds are the applied ones.
+fn bounded(tool: &str, args: &Value, key: &str, default: usize) -> usize {
+    let schema = &input_properties(tool)[key];
+    let least = schema["minimum"].as_u64().unwrap_or(0);
+    let most = schema["maximum"].as_u64().unwrap_or(u64::MAX);
+    args[key]
         .as_u64()
         .unwrap_or(default as u64)
-        .clamp(1, 1000) as usize;
-    (offset, limit)
+        .clamp(least, most) as usize
+}
+
+/// A tool's `inputSchema.properties`, or null for an unknown tool.
+fn input_properties(tool: &str) -> &'static Value {
+    static TOOLS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let tools = TOOLS.get_or_init(tool_list);
+    tools
+        .as_array()
+        .and_then(|ts| ts.iter().find(|t| t["name"] == tool))
+        .map_or(&Value::Null, |t| &t["inputSchema"]["properties"])
 }
 
 fn next_offset(value: &mut Value, offset: usize, limit: usize, total: usize) {
@@ -1885,7 +1902,7 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
     // at its strongest confidence.
     callers.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     callers.dedup_by_key(|&mut (n, _)| n);
-    let (offset, limit) = page(args, 200);
+    let (offset, limit) = page("find_callers", args, 200);
     let reached: Vec<NodeId> = reverse_levels(served, &[node], 2, floor)
         .iter()
         .flatten()
@@ -2057,13 +2074,13 @@ does not cover are not ruled out.\n{}",
 /// nothing" and "not indexed" are different answers, and only one of them means
 /// nothing depends on it.
 fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
-    let depth = args["depth"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
+    let depth = bounded("detect_changes", args, "depth", 3);
     let diff = changed_symbols(served, args["rev"].as_str().unwrap_or(""))?;
     let seeds: Vec<NodeId> = diff.touched.iter().map(|&(_, n)| n).collect();
     let levels = reverse_levels(served, &seeds, depth, Confidence::Ambiguous);
     let dependents: usize = levels.iter().map(Vec::len).sum::<usize>() + diff.dangling.len();
     let risk = assess(served, &diff, dependents);
-    let (offset, limit) = page(args, 200);
+    let (offset, limit) = page("detect_changes", args, 200);
     let reached: usize = levels.iter().map(Vec::len).sum();
     let hops = page_levels(&levels, offset, limit);
     let changed: Vec<&str> = diff
@@ -2225,7 +2242,7 @@ fn has_test_attribute(text: &str, start: usize) -> bool {
 /// "untested" here while `affected_tests` named the test.
 fn reaches_test(served: &Served, node: NodeId) -> bool {
     let mut texts = std::collections::HashMap::new();
-    reverse_levels(served, &[node], TEST_DEPTH as usize, Confidence::Ambiguous)
+    reverse_levels(served, &[node], TEST_DEPTH, Confidence::Ambiguous)
         .iter()
         .flatten()
         .any(|&(n, _)| served.defined.contains(&n) && is_test_node(served, n, &mut texts))
@@ -3277,13 +3294,13 @@ pub fn runs_as_test(symbol: &str) -> bool {
 /// Hops a test may sit from what it covers. A test reaches code through
 /// placeholders and helpers, each a hop, so the blast-radius default of 3
 /// misses most of them.
-const TEST_DEPTH: u64 = 12;
+const TEST_DEPTH: usize = 12;
 
 /// Which tests reach a symbol or a diff: the answer to "what do I run before
 /// I commit this". `impact` lists every dependent, and an agent then has to
 /// guess which of them are tests.
 fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
-    let depth = args["depth"].as_u64().unwrap_or(TEST_DEPTH).clamp(1, 30) as usize;
+    let depth = bounded("affected_tests", args, "depth", TEST_DEPTH);
     let floor = parse_confidence(args["min_confidence"].as_str().unwrap_or("ambiguous"))?;
     let mut single = None;
     let (target, seeds, unknown) = match args["symbol"].as_str() {
@@ -3340,7 +3357,7 @@ fn affected_tests(served: &Served, args: &Value) -> Result<Value, String> {
             .collect()
     });
 
-    let (offset, limit) = page(args, 50);
+    let (offset, limit) = page("affected_tests", args, 50);
     let commands = served
         .root
         .map(|root| rust_test_commands(root, &files))
@@ -3503,8 +3520,8 @@ fn co_changes(served: &Served, args: &Value) -> Result<Value, String> {
         }
         (None, None) => return Err("pass `file` or `symbol`".into()),
     };
-    let window = args["commits"].as_u64().unwrap_or(500).clamp(10, 5000) as usize;
-    let top = args["top"].as_u64().unwrap_or(10).clamp(1, 100) as usize;
+    let window = bounded("co_changes", args, "commits", 500);
+    let top = bounded("co_changes", args, "top", 10);
 
     let commits = crate::history::commits(root, window)?;
     let (own, pairs) = crate::history::coupled(&commits, &file);
@@ -3631,8 +3648,8 @@ fn change_history(served: &Served, args: &Value) -> Result<Value, String> {
     let (file, def) = name
         .split_once('#')
         .ok_or(format!("{name} is not defined in a file"))?;
-    let window = args["commits"].as_u64().unwrap_or(200).clamp(1, 5000) as usize;
-    let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 200) as usize;
+    let window = bounded("change_history", args, "commits", 200);
+    let limit = bounded("change_history", args, "limit", 10);
     // A commit body can be pages of release notes; its first lines say why.
     let keep = args["body_lines"].as_u64().unwrap_or(6) as usize;
     let (all, read) = crate::commits::changes(root, file, def, window)?;
@@ -3775,7 +3792,7 @@ fn find_unused(served: &Served, args: &Value) -> Result<Value, String> {
         .filter(|f| f.starts_with(scope))
         .collect();
     let mut not_compiled: Vec<String> = Vec::new();
-    let (offset, limit) = page(args, 50);
+    let (offset, limit) = page("find_unused", args, 50);
     let reverse = served.snap.reverse();
 
     let called_bare: std::collections::HashSet<&str> = served
@@ -4601,9 +4618,9 @@ fn cargo_package(root: &std::path::Path, file: &str) -> Option<(String, String)>
 }
 
 fn overview(served: &Served, args: &Value) -> Result<Value, String> {
-    let limit = args["limit"].as_u64().unwrap_or(12).clamp(1, 60) as usize;
+    let limit = bounded("overview", args, "limit", 12);
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-    let per = args["entry_points"].as_u64().unwrap_or(3).clamp(0, 10) as usize;
+    let per = bounded("overview", args, "entry_points", 3);
 
     // One pass to group, as `subsystem_names` does and for the same measured
     // reason: `members(cid)` per community is O(communities x nodes), which
@@ -5006,8 +5023,8 @@ impl Served<'_> {
 }
 
 fn cycles(served: &Served, args: &Value) -> Result<Value, String> {
-    let max_len = args["max_len"].as_u64().unwrap_or(5).clamp(2, 12) as usize;
-    let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 200) as usize;
+    let max_len = bounded("cycles", args, "max_len", 5);
+    let limit = bounded("cycles", args, "limit", 20);
     // Default to compiler-resolved edges when the tree has any, and fall back
     // to syntactic ones when it does not: a tree with no index would otherwise
     // report "no cycles" for want of a single edge strong enough to walk.
@@ -5170,7 +5187,7 @@ fn get_code_snippet(served: &Served, args: &Value) -> Result<Value, String> {
         .ok_or_else(|| format!("no source range recorded for {name}"))?;
     // `following`: on through the next definitions, each the first to start
     // at or after the end of the one before, so nested ones are not counted.
-    let following = args["following"].as_u64().unwrap_or(0).min(50) as usize;
+    let following = bounded("get_code_snippet", args, "following", 0);
     let mut through: Option<(String, u32)> = None;
     if following > 0 {
         let f = facts
@@ -5557,12 +5574,8 @@ const KNOWN_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", LEGACY_VERSION];
 /// its declared `minimum`. Read with `as_u64`, each of those fell back to the
 /// default without a word.
 fn argument_problem(tool: &str, args: &Value) -> Option<String> {
-    static TOOLS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    let tools = TOOLS.get_or_init(tool_list);
-    let properties =
-        tools.as_array()?.iter().find(|t| t["name"] == tool)?["inputSchema"]["properties"]
-            .as_object()?;
-    properties
+    input_properties(tool)
+        .as_object()?
         .iter()
         .filter(|(_, schema)| schema["type"] == "integer")
         .find_map(|(key, schema)| {

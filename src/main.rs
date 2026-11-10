@@ -6833,6 +6833,8 @@ fn demo_mcp() {
         ("query_graph", json!({"query": "audit", "max_nodes": 2.5})),
         ("query_graph", json!({"query": "audit", "max_nodes": 0})),
         ("overview", json!({"limit": "3"})),
+        ("co_changes", json!({"file": "src/pay.rs", "commits": 5})),
+        ("cycles", json!({"max_len": 1})),
     ] {
         let reply = call(json!({
             "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -6840,6 +6842,12 @@ fn demo_mcp() {
         }))
         .unwrap();
         assert_eq!(reply["result"]["isError"], true, "{tool} {args}");
+        assert!(
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("whole number of at least")),
+            "{tool} {args}: {reply}"
+        );
     }
 
     // Every tool advertises the schema its structured answer conforms to, or a
@@ -6847,6 +6855,30 @@ fn demo_mcp() {
     let listed = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 15);
+    // A bound a tool applies is the one its schema declares: every count but
+    // a position or a cut says how high it goes.
+    for t in tools {
+        for (key, p) in t["inputSchema"]["properties"].as_object().unwrap() {
+            if p["type"] == "integer"
+                && !["offset", "max_lines", "body_lines"].contains(&key.as_str())
+            {
+                assert!(
+                    p["maximum"].is_u64(),
+                    "{}.{key} declares no maximum",
+                    t["name"]
+                );
+            }
+        }
+    }
+    let wide = call(json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": {"name": "overview", "arguments": {"limit": 1_000_000u64, "entry_points": 1_000u64}}
+    }))
+    .unwrap();
+    assert_ne!(
+        wide["result"]["isError"], true,
+        "a count above its maximum is held to it: {wide}"
+    );
     for t in tools {
         assert!(
             t["outputSchema"]["type"] == "object",

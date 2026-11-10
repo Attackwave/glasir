@@ -302,7 +302,9 @@ stable, so pages add up to the whole answer. In `find_callers`, `limit` also cap
 `undecided_callers` and `named_elsewhere` (`named_elsewhere_total` keeps the
 full count); in `detect_changes` it caps `changed_symbols`
 (`changed_symbols_total` keeps the count), and the risk level always judges
-the whole change.
+the whole change. Every count declares its `minimum` and `maximum` in the
+tool's input schema: a value below the minimum is refused, one above the
+maximum is held to it.
 
 **"Nothing calls this" is checked against the source.** The graph records
 calls; a type in a signature, a constant read or a handler wired up in a
