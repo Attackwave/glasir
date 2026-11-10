@@ -820,7 +820,9 @@ fn tool_list() -> Value {
                 "type": "object",
                 "properties": {
                     "rev": {"type": "string", "description": "Revision to compare against HEAD; omit for uncommitted changes"},
-                    "depth": {"type": "integer", "description": "Backwards hops (default 3, max 10)"}
+                    "depth": {"type": "integer", "description": "Backwards hops (default 3, max 10)"},
+                    "limit": {"type": "integer", "minimum": 1, "description": "How many dependents and changed symbols to list (default 200, max 1000)"},
+                    "offset": {"type": "integer", "description": "Skip this many dependents, nearest first: the `next_offset` of a previous answer"}
                 }
             },
             "outputSchema": {
@@ -848,10 +850,13 @@ fn tool_list() -> Value {
                         "required": ["level", "untested", "evaluated", "missed_partners"]
                     },
                     "changed_files": {"type": "integer"},
-                    "changed_symbols": {"type": "array", "items": {"type": "string"}},
+                    "changed_symbols": {"type": "array", "items": {"type": "string"}, "description": "The first `limit` of them"},
+                    "changed_symbols_total": {"type": "integer"},
                     "files_without_known_symbols": {"type": "array", "items": {"type": "string"}},
                     "removed_symbols": {"type": "array", "items": {"type": "string"}, "description": "Definitions the base had and the change removed or renamed"},
                     "dependents": {"type": "integer"},
+                    "within": {"type": "integer", "description": "Hops that reached something"},
+                    "next_offset": {"type": "integer", "description": "Present when more dependents remain"},
                     "hops": {"type": "array", "items": {
                         "type": "object",
                         "properties": {
@@ -861,8 +866,8 @@ fn tool_list() -> Value {
                         "required": ["hop", "symbols"]
                     }}
                 },
-                "required": ["risk", "changed_files", "changed_symbols",
-                             "files_without_known_symbols", "dependents", "hops"]
+                "required": ["risk", "changed_files", "changed_symbols", "changed_symbols_total",
+                             "files_without_known_symbols", "dependents", "within", "hops"]
             }
         },
         {
@@ -1758,18 +1763,7 @@ fn impact(served: &Served, args: &Value) -> Result<Value, String> {
 
     let total: usize = levels.iter().map(|l| l.len()).sum();
     let within = levels.len();
-    // Nearest first across the page boundary.
-    let mut levels_page: Vec<(usize, Vec<(NodeId, Confidence)>)> = Vec::new();
-    let flat = levels
-        .iter()
-        .enumerate()
-        .flat_map(|(i, level)| level.iter().map(move |&e| (i + 1, e)));
-    for (hop, entry) in flat.skip(offset).take(limit) {
-        match levels_page.last_mut() {
-            Some((h, v)) if *h == hop => v.push(entry),
-            _ => levels_page.push((hop, vec![entry])),
-        }
-    }
+    let levels_page = page_levels(&levels, offset, limit);
     let mut value = json!({
         "symbol": served.name(node),
         "dependents": total,
@@ -1829,6 +1823,26 @@ fn with_members(served: &Served, node: NodeId) -> Vec<NodeId> {
         }
     }
     seeds
+}
+
+/// One page of hop levels, nearest first across the page boundary.
+fn page_levels(
+    levels: &[Vec<(NodeId, Confidence)>],
+    offset: usize,
+    limit: usize,
+) -> Vec<(usize, Vec<(NodeId, Confidence)>)> {
+    let mut out: Vec<(usize, Vec<(NodeId, Confidence)>)> = Vec::new();
+    let flat = levels
+        .iter()
+        .enumerate()
+        .flat_map(|(i, level)| level.iter().map(move |&e| (i + 1, e)));
+    for (hop, entry) in flat.skip(offset).take(limit) {
+        match out.last_mut() {
+            Some((h, v)) if *h == hop => v.push(entry),
+            _ => out.push((hop, vec![entry])),
+        }
+    }
+    out
 }
 
 /// `offset` and `limit` of a paged list; the limit is clamped like every other.
@@ -2049,26 +2063,38 @@ fn detect_changes(served: &Served, args: &Value) -> Result<Value, String> {
     let levels = reverse_levels(served, &seeds, depth, Confidence::Ambiguous);
     let dependents: usize = levels.iter().map(Vec::len).sum::<usize>() + diff.dangling.len();
     let risk = assess(served, &diff, dependents);
+    let (offset, limit) = page(args, 200);
+    let reached: usize = levels.iter().map(Vec::len).sum();
+    let hops = page_levels(&levels, offset, limit);
+    let changed: Vec<&str> = diff
+        .touched
+        .iter()
+        .take(limit)
+        .map(|(s, _)| s.as_str())
+        .collect();
 
-    Ok(json!({
+    let mut value = json!({
         "risk": risk,
         "changed_files": diff.files.len(),
-        "changed_symbols": diff.touched.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+        "changed_symbols": changed,
+        "changed_symbols_total": diff.touched.len(),
         // Named rather than counted: a file the graph does not carry is the
         // case where "nothing depends on this" is a wrong answer, so the
         // caller has to see which files those are.
         "files_without_known_symbols": diff.unknown,
         "removed_symbols": diff.removed,
         "dependents": dependents,
-        "hops": levels
+        "within": levels.len(),
+        "hops": hops
             .iter()
-            .enumerate()
-            .map(|(i, level)| json!({
-                "hop": i + 1,
+            .map(|(hop, level)| json!({
+                "hop": hop,
                 "symbols": level.iter().map(|&(n, _)| served.name(n)).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
-    }))
+    });
+    next_offset(&mut value, offset, limit, reached);
+    Ok(value)
 }
 
 /// How often a file must change with another, and in what share of its own
@@ -3133,10 +3159,8 @@ fn render_detect_changes(v: &Value) -> String {
     let unknown = v["files_without_known_symbols"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
-    let mut out = format!(
-        "{files} file(s) changed, {} symbol(s) in them\n",
-        syms.len()
-    );
+    let syms_total = v["changed_symbols_total"].as_u64().unwrap_or(0) as usize;
+    let mut out = format!("{files} file(s) changed, {syms_total} symbol(s) in them\n");
     out.push_str(&render_risk(&v["risk"]));
     let removed = v["removed_symbols"]
         .as_array()
@@ -3164,10 +3188,10 @@ since the last analysis is not in it yet:\n",
     for s in syms.iter().take(CHANGE_LIST_LIMIT) {
         out.push_str(&format!("  {}\n", s.as_str().unwrap_or("")));
     }
-    if syms.len() > CHANGE_LIST_LIMIT {
+    if syms_total > CHANGE_LIST_LIMIT {
         out.push_str(&format!(
-            "  … and {} more (all of them in structuredContent)\n",
-            syms.len() - CHANGE_LIST_LIMIT
+            "  … and {} more (`changed_symbols` lists the first `limit`)\n",
+            syms_total - CHANGE_LIST_LIMIT
         ));
     }
     let total = v["dependents"].as_u64().unwrap_or(0);
@@ -3189,6 +3213,11 @@ since the last analysis is not in it yet:\n",
         if ss.len() > CHANGE_LIST_LIMIT {
             out.push_str(&format!("  … and {} more\n", ss.len() - CHANGE_LIST_LIMIT));
         }
+    }
+    if let Some(next) = v["next_offset"].as_u64() {
+        out.push_str(&format!(
+            "\n… more dependents: call again with `offset: {next}`\n"
+        ));
     }
     out
 }

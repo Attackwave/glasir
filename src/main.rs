@@ -2941,22 +2941,22 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
             })
             .unwrap_or_default()
     };
-    let list = |out: &mut String, items: &[String]| {
+    // `total` may exceed `items`: a paged list carries its full count beside it.
+    let list = |out: &mut String, items: &[String], total: usize| {
         for item in items.iter().take(REVIEW_LIST_LIMIT) {
             out.push_str(&format!("- `{item}`\n"));
         }
-        if items.len() > REVIEW_LIST_LIMIT {
-            out.push_str(&format!(
-                "- … and {} more\n",
-                items.len() - REVIEW_LIST_LIMIT
-            ));
+        let shown = items.len().min(REVIEW_LIST_LIMIT);
+        if total > shown {
+            out.push_str(&format!("- … and {} more\n", total - shown));
         }
     };
     let level = dc["risk"]["level"].as_str().unwrap_or("low").to_string();
     let files = dc["changed_files"].as_u64().unwrap_or(0);
     let symbols = strs(&dc["changed_symbols"]);
+    let symbols_total = dc["changed_symbols_total"].as_u64().unwrap_or(0);
     let dependents = dc["dependents"].as_u64().unwrap_or(0);
-    let hops = dc["hops"].as_array().map_or(0, Vec::len);
+    let hops = dc["within"].as_u64().unwrap_or(0);
     let unknown = strs(&dc["files_without_known_symbols"]);
     let untested = strs(&dc["risk"]["untested"]);
 
@@ -2970,8 +2970,7 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
         return (out, level);
     }
     out.push_str(&format!(
-        "{files} file(s) changed, {} symbol(s) in them, {dependents} dependent(s) within {hops} hop(s).\n",
-        symbols.len()
+        "{files} file(s) changed, {symbols_total} symbol(s) in them, {dependents} dependent(s) within {hops} hop(s).\n"
     ));
 
     let partners = dc["risk"]["missed_partners"]
@@ -3001,7 +3000,7 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
 
     if !symbols.is_empty() {
         out.push_str("\n### Changed symbols\n");
-        list(&mut out, &symbols);
+        list(&mut out, &symbols, symbols_total as usize);
     }
     if dependents > 0 {
         out.push_str("\n### Dependents, nearest first\n");
@@ -3030,11 +3029,11 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
     if tests.is_empty() {
         out.push_str("No test in the graph reaches this change.\n");
     } else {
-        list(&mut out, &tests);
+        list(&mut out, &tests, tests.len());
     }
     if !unknown.is_empty() {
         out.push_str("\n### Files the graph does not cover\n");
-        list(&mut out, &unknown);
+        list(&mut out, &unknown, unknown.len());
     }
     (out, level)
 }
@@ -9907,6 +9906,28 @@ fn demo_change_tools() {
         json!(["src/report.rs#render"]),
         "{text}"
     );
+    // Paged like `impact`: one changed symbol of several, the counts and the
+    // risk still taken from everything; past the one dependent, an empty page.
+    let listed = |v: &serde_json::Value| {
+        v["hops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["symbols"].as_array().unwrap().len())
+            .sum::<usize>()
+    };
+    assert_eq!(listed(&v), 1, "{text}");
+    assert!(v["changed_symbols_total"].as_u64().unwrap() >= 2, "{text}");
+    let (p, ptext) = call("detect_changes", json!({"limit": 1}));
+    assert_eq!(listed(&p), 1, "{ptext}");
+    assert_eq!(p["changed_symbols"].as_array().unwrap().len(), 1, "{ptext}");
+    for key in ["changed_symbols_total", "dependents", "within", "risk"] {
+        assert_eq!(p[key], v[key], "{key}: {ptext}");
+    }
+    assert!(p.get("next_offset").is_none(), "{ptext}");
+    let (p, ptext) = call("detect_changes", json!({"limit": 1, "offset": 1}));
+    assert_eq!(listed(&p), 0, "{ptext}");
+    assert_eq!(p["dependents"], v["dependents"], "{ptext}");
     let missed = v["risk"]["missed_partners"].as_array().unwrap();
     assert_eq!(missed.len(), 1, "{text}");
     assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
