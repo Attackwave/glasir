@@ -391,7 +391,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         //
         // A bare name is one placeholder per language family (`=family`), so
         // a call from Swift and one from a script never share an edge; within
-        // a family, C calls C++. A definition in a file of no language (a
+        // a family, C calls C++, and Swift reaches Objective-C. A definition in a file of no language (a
         // Markdown heading) is no call target.
         //
         // In Python, JavaScript and Go a call without a receiver reaches no
@@ -416,8 +416,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
             d != placeholder
                 && reachable(d)
                 && lang_of(&file_of, d).is_some_and(|l| {
-                    let family = crate::ingest::family(l);
-                    want.is_empty() || want.iter().any(|&w| crate::ingest::family(w) == family)
+                    want.is_empty() || want.iter().any(|&w| crate::ingest::reaches(w, l))
                 })
         }) {
             // Assembly has no namespaces: a label is global to the unit the

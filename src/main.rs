@@ -2941,22 +2941,22 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
             })
             .unwrap_or_default()
     };
-    let list = |out: &mut String, items: &[String]| {
+    // `total` may exceed `items`: a paged list carries its full count beside it.
+    let list = |out: &mut String, items: &[String], total: usize| {
         for item in items.iter().take(REVIEW_LIST_LIMIT) {
             out.push_str(&format!("- `{item}`\n"));
         }
-        if items.len() > REVIEW_LIST_LIMIT {
-            out.push_str(&format!(
-                "- … and {} more\n",
-                items.len() - REVIEW_LIST_LIMIT
-            ));
+        let shown = items.len().min(REVIEW_LIST_LIMIT);
+        if total > shown {
+            out.push_str(&format!("- … and {} more\n", total - shown));
         }
     };
     let level = dc["risk"]["level"].as_str().unwrap_or("low").to_string();
     let files = dc["changed_files"].as_u64().unwrap_or(0);
     let symbols = strs(&dc["changed_symbols"]);
+    let symbols_total = dc["changed_symbols_total"].as_u64().unwrap_or(0);
     let dependents = dc["dependents"].as_u64().unwrap_or(0);
-    let hops = dc["hops"].as_array().map_or(0, Vec::len);
+    let hops = dc["within"].as_u64().unwrap_or(0);
     let unknown = strs(&dc["files_without_known_symbols"]);
     let untested = strs(&dc["risk"]["untested"]);
 
@@ -2970,8 +2970,7 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
         return (out, level);
     }
     out.push_str(&format!(
-        "{files} file(s) changed, {} symbol(s) in them, {dependents} dependent(s) within {hops} hop(s).\n",
-        symbols.len()
+        "{files} file(s) changed, {symbols_total} symbol(s) in them, {dependents} dependent(s) within {hops} hop(s).\n"
     ));
 
     let partners = dc["risk"]["missed_partners"]
@@ -3001,7 +3000,7 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
 
     if !symbols.is_empty() {
         out.push_str("\n### Changed symbols\n");
-        list(&mut out, &symbols);
+        list(&mut out, &symbols, symbols_total as usize);
     }
     if dependents > 0 {
         out.push_str("\n### Dependents, nearest first\n");
@@ -3030,11 +3029,11 @@ fn review_markdown(dc: &serde_json::Value, at: &serde_json::Value) -> (String, S
     if tests.is_empty() {
         out.push_str("No test in the graph reaches this change.\n");
     } else {
-        list(&mut out, &tests);
+        list(&mut out, &tests, tests.len());
     }
     if !unknown.is_empty() {
         out.push_str("\n### Files the graph does not cover\n");
-        list(&mut out, &unknown);
+        list(&mut out, &unknown, unknown.len());
     }
     (out, level)
 }
@@ -5811,6 +5810,14 @@ fn demo_resolve() {
         ("page.js", "function caller() { set(); }\n"),
         ("lib.cpp", "void cpp_only() {}\n"),
         ("main.c", "void c_caller(void) { cpp_only(); }\n"),
+        (
+            "bridge.mm",
+            "@implementation ObjcOnly\n- (void)ping {}\n@end\n",
+        ),
+        (
+            "use.swift",
+            "func swift_caller() { let o = ObjcOnly(); cpp_only() }\n",
+        ),
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
             "p/util.py",
@@ -5849,6 +5856,15 @@ fn demo_resolve() {
     assert!(
         links("cpp_only from =c", "lib.cpp#cpp_only"),
         "C reaches a C++ definition"
+    );
+    assert!(
+        links("ObjcOnly from =swift", "bridge.mm#ObjcOnly"),
+        "Swift reaches an Objective-C definition"
+    );
+    assert!(
+        a.registry.node_of("cpp_only from =swift").is_some()
+            && !links("cpp_only from =swift", "lib.cpp#cpp_only"),
+        "Swift does not reach C++"
     );
     // A call without a receiver reaches no method in Python, JavaScript and
     // Go, in the same file or another, and a Go call no other package.
@@ -6834,6 +6850,8 @@ fn demo_mcp() {
         ("query_graph", json!({"query": "audit", "max_nodes": 2.5})),
         ("query_graph", json!({"query": "audit", "max_nodes": 0})),
         ("overview", json!({"limit": "3"})),
+        ("co_changes", json!({"file": "src/pay.rs", "commits": 5})),
+        ("cycles", json!({"max_len": 1})),
     ] {
         let reply = call(json!({
             "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -6841,6 +6859,12 @@ fn demo_mcp() {
         }))
         .unwrap();
         assert_eq!(reply["result"]["isError"], true, "{tool} {args}");
+        assert!(
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("whole number of at least")),
+            "{tool} {args}: {reply}"
+        );
     }
 
     // Every tool advertises the schema its structured answer conforms to, or a
@@ -6848,6 +6872,30 @@ fn demo_mcp() {
     let listed = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 15);
+    // A bound a tool applies is the one its schema declares: every count but
+    // a position or a cut says how high it goes.
+    for t in tools {
+        for (key, p) in t["inputSchema"]["properties"].as_object().unwrap() {
+            if p["type"] == "integer"
+                && !["offset", "max_lines", "body_lines"].contains(&key.as_str())
+            {
+                assert!(
+                    p["maximum"].is_u64(),
+                    "{}.{key} declares no maximum",
+                    t["name"]
+                );
+            }
+        }
+    }
+    let wide = call(json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": {"name": "overview", "arguments": {"limit": 1_000_000u64, "entry_points": 1_000u64}}
+    }))
+    .unwrap();
+    assert_ne!(
+        wide["result"]["isError"], true,
+        "a count above its maximum is held to it: {wide}"
+    );
     for t in tools {
         assert!(
             t["outputSchema"]["type"] == "object",
@@ -9907,6 +9955,28 @@ fn demo_change_tools() {
         json!(["src/report.rs#render"]),
         "{text}"
     );
+    // Paged like `impact`: one changed symbol of several, the counts and the
+    // risk still taken from everything; past the one dependent, an empty page.
+    let listed = |v: &serde_json::Value| {
+        v["hops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["symbols"].as_array().unwrap().len())
+            .sum::<usize>()
+    };
+    assert_eq!(listed(&v), 1, "{text}");
+    assert!(v["changed_symbols_total"].as_u64().unwrap() >= 2, "{text}");
+    let (p, ptext) = call("detect_changes", json!({"limit": 1}));
+    assert_eq!(listed(&p), 1, "{ptext}");
+    assert_eq!(p["changed_symbols"].as_array().unwrap().len(), 1, "{ptext}");
+    for key in ["changed_symbols_total", "dependents", "within", "risk"] {
+        assert_eq!(p[key], v[key], "{key}: {ptext}");
+    }
+    assert!(p.get("next_offset").is_none(), "{ptext}");
+    let (p, ptext) = call("detect_changes", json!({"limit": 1, "offset": 1}));
+    assert_eq!(listed(&p), 0, "{ptext}");
+    assert_eq!(p["dependents"], v["dependents"], "{ptext}");
     let missed = v["risk"]["missed_partners"].as_array().unwrap();
     assert_eq!(missed.len(), 1, "{text}");
     assert_eq!(missed[0]["partner"], "src/charge.rs", "{text}");
@@ -11445,6 +11515,22 @@ fn demo_snippet() {
     assert_eq!(
         partial["result"]["structuredContent"]["resolved_from"],
         "alph"
+    );
+    // `shortest_path` names both ends, so each says it on its own.
+    let path = mcp::handle_for_test(
+        &served,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "shortest_path", "arguments": {"from": "alph", "to": "src/a.rs#alpha"}}}),
+    )
+    .unwrap();
+    let sc = &path["result"]["structuredContent"];
+    assert_eq!(sc["from_asked"], "alph", "{path}");
+    assert!(sc.get("to_asked").is_none(), "{path}");
+    assert!(
+        path["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("\"alph\" names no symbol exactly")),
+        "{path}"
     );
 
     // A name matching two symbols is refused with its candidates, exactly as

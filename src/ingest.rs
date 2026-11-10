@@ -648,6 +648,13 @@ pub(crate) fn family(lang: Lang) -> Lang {
     }
 }
 
+/// Whether a bare call from `caller` may link a definition in `def`: one
+/// family, or Swift reaching Objective-C classes and functions. Not Swift to
+/// C or C++: its own `Int` and `Double` named functions there.
+pub(crate) fn reaches(caller: Lang, def: Lang) -> bool {
+    family(caller) == family(def) || (caller == Lang::Swift && def == Lang::ObjC)
+}
+
 /// The target of a bare name called from `file` in `lang`: `=` and its
 /// family, so a name called from two families is two placeholders. Where a
 /// call without a receiver reaches no method, one through a value is its own

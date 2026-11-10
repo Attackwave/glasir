@@ -295,12 +295,16 @@ One is for joining trees:
 
 Every tool declares itself read-only, idempotent and closed-world
 (`readOnlyHint`, `openWorldHint: false`), so a client in a planning or
-read-only mode may call all of them. The four that list without bound —
-`impact`, `find_callers`, `find_unused` and `overview` — take `limit` and
-`offset` and return `next_offset` while more remain; the order is stable, so
-pages add up to the whole answer. In `find_callers`, `limit` also caps
+read-only mode may call all of them. The five that list without bound —
+`impact`, `find_callers`, `find_unused`, `overview` and `detect_changes` — take
+`limit` and `offset` and return `next_offset` while more remain; the order is
+stable, so pages add up to the whole answer. In `find_callers`, `limit` also caps
 `undecided_callers` and `named_elsewhere` (`named_elsewhere_total` keeps the
-full count).
+full count); in `detect_changes` it caps `changed_symbols`
+(`changed_symbols_total` keeps the count), and the risk level always judges
+the whole change. Every count declares its `minimum` and `maximum` in the
+tool's input schema: a value below the minimum is refused, one above the
+maximum is held to it.
 
 **"Nothing calls this" is checked against the source.** The graph records
 calls; a type in a signature, a constant read or a handler wired up in a
