@@ -1073,11 +1073,18 @@ fn prepare_facts(
     let mut bases: Vec<(&str, u32)> = Vec::new();
     let mut packages: HashMap<&str, &str> = HashMap::new();
     let mut open_packages: Vec<&str> = Vec::new();
+    // Go packages imported with `.`: their names are called bare.
+    let mut dot_dirs: Vec<String> = Vec::new();
     let mut mixed: Vec<(u32, u32)> = Vec::new();
     let mut receivers: HashMap<u32, (&String, &String)> = HashMap::new();
     if let Some(lang) = lang {
         for import in &facts.imports {
             match import {
+                crate::imports::Import::Module { alias, spec } if alias == "." => {
+                    if let Some(t) = crate::imports::resolve(lang, &file, spec, root) {
+                        dot_dirs.push(t.trim_end_matches('/').to_string());
+                    }
+                }
                 crate::imports::Import::Module { alias, spec } => {
                     if let Some(t) = crate::imports::resolve(lang, &file, spec, root) {
                         modules.entry(alias).or_insert(t);
@@ -1388,10 +1395,18 @@ fn prepare_facts(
                 (Some(dirs), _) => {
                     registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
                 }
-                (None, Some(lang)) => registry.get_or_mint(&crate::imports::scoped(
-                    callee,
-                    &family_scope(lang, &file, *has_receiver || through_self),
-                )),
+                (None, Some(lang)) => {
+                    let through = *has_receiver || through_self;
+                    let mut scope = family_scope(lang, &file, through);
+                    // A Go call reaches its own package and those it dot-imports.
+                    if lang == Lang::Go && !through {
+                        for dir in &dot_dirs {
+                            scope.push('|');
+                            scope.push_str(dir);
+                        }
+                    }
+                    registry.get_or_mint(&crate::imports::scoped(callee, &scope))
+                }
                 (None, None) => registry.get_or_mint(callee),
             };
             if let Some(lang) = lang {

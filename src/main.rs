@@ -5851,6 +5851,12 @@ fn demo_resolve() {
         ),
         ("ga/h.go", "package ga\n\nfunc local() {}\n"),
         ("gb/b.go", "package gb\n\nfunc helper() {}\n"),
+        ("go.mod", "module example.com/m\n"),
+        (
+            "gc/c.go",
+            "package gc\n\nimport . \"example.com/m/gd\"\n\nfunc Run() { Dotted() }\n",
+        ),
+        ("gd/d.go", "package gd\n\nfunc Dotted() {}\n"),
     ] {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -5931,6 +5937,10 @@ fn demo_resolve() {
     assert!(
         links("local from =go:ga", "ga/h.go#local"),
         "its own package"
+    );
+    assert!(
+        links("Dotted from =go:gc|gd", "gd/d.go#Dotted"),
+        "and a package it imports with `.`"
     );
     assert!(
         links("open from =python.", "p/util.py#open"),
