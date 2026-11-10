@@ -493,27 +493,26 @@ impl SymbolRegistry {
     /// names defined twice are most of them. Run once the batch's definitions
     /// are all known. A Markdown section is not a definition.
     pub fn prune_refs(&mut self) {
-        // A name in another family is a coincidence, not a use.
+        // A name in a language the user's cannot reach is a coincidence, not a use.
         let file_lang = &self.file_lang;
-        let family = |file: &str| {
+        let lang = |file: &str| {
             use crate::parse_ast::LangExt;
             file_lang
                 .get(file)
                 .copied()
                 .or_else(|| Lang::from_path(Path::new(file)))
-                .map(family)
         };
         let mut defs: HashMap<&str, (u32, Option<Lang>)> = HashMap::new();
         for key in self.by_name.keys() {
             if let Some((file, name)) = key.split_once('#')
                 && !crate::docs::is_markdown(Path::new(file))
             {
-                let entry = defs.entry(name).or_insert((0, family(file)));
+                let entry = defs.entry(name).or_insert((0, lang(file)));
                 entry.0 += 1;
             }
         }
         for (file, refs) in self.refs.iter_mut() {
-            let own = family(file);
+            let own = lang(file);
             for (_, name) in refs.iter_mut() {
                 // An import naming a file that does not define the name — a
                 // re-export — decides nothing; the plain rule applies.
@@ -526,7 +525,11 @@ impl SymbolRegistry {
             }
             refs.retain(|(_, name)| match crate::imports::unscope(name) {
                 Some(_) => true,
-                None => defs.get(name.as_str()) == Some(&(1, own)),
+                None => match defs.get(name.as_str()) {
+                    Some(&(1, Some(def))) => own.is_some_and(|o| reaches(o, def)),
+                    Some(&(1, None)) => own.is_none(),
+                    _ => false,
+                },
             });
         }
         self.refs.retain(|_, refs| !refs.is_empty());
