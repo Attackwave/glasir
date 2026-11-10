@@ -741,7 +741,9 @@ fn define_macro_arguments(
         .map(|(path, src, mut facts)| {
             if let (Some(f), Some(text)) = (facts.as_mut(), src.as_deref())
                 && !f.macro_calls.is_empty()
-                && let Some(lang) = parse_ast::Lang::from_path(&path)
+                && let Some(lang) = f
+                    .lang_by_content
+                    .or_else(|| parse_ast::Lang::from_path(&path))
             {
                 parse_ast::apply_defining_macros(f, lang, text, definers);
             }
@@ -860,6 +862,9 @@ fn analyse(root: &std::path::Path) -> std::io::Result<Analysed> {
             }
             for (file, definers) in stored.definers {
                 registry.set_definers(&file, definers);
+            }
+            for (file, lang) in stored.file_langs {
+                registry.set_file_lang(&file, Some(lang));
             }
             registry.set_classes(stored.classes);
             let g = std::sync::Arc::new(graph::Graph::new(stored.csr));
@@ -1004,6 +1009,13 @@ fn store_snapshot(
         .collect();
     definers.sort();
     stored.definers = definers;
+    let mut file_langs: Vec<(String, parse_ast::Lang)> = reg
+        .file_langs()
+        .iter()
+        .map(|(f, &l)| (f.clone(), l))
+        .collect();
+    file_langs.sort_by(|a, b| a.0.cmp(&b.0));
+    stored.file_langs = file_langs;
     stored.classes = reg.classes().clone();
     let contract_path = root.join(".glasir/contracts.json");
     if contract_path.exists() {
@@ -1131,7 +1143,12 @@ fn refresh_files(
     for (path, facts) in parsed.iter_mut() {
         if let Some(facts) = facts
             && !facts.macro_calls.is_empty()
-            && let (Some(lang), Some(src)) = (parse_ast::Lang::from_path(path), read_source(path))
+            && let (Some(lang), Some(src)) = (
+                facts
+                    .lang_by_content
+                    .or_else(|| parse_ast::Lang::from_path(path)),
+                read_source(path),
+            )
         {
             parse_ast::apply_defining_macros(facts, lang, &src, &definers);
         }
@@ -5815,8 +5832,13 @@ fn demo_resolve() {
             "@implementation ObjcOnly\n- (void)ping {}\n@end\n",
         ),
         (
+            "legacy.m",
+            "#import <Foundation/Foundation.h>\n@implementation Legacy\n- (void)ping {}\n@end\n",
+        ),
+        ("model.m", "function y = model(x)\n  y = x + 1;\nend\n"),
+        (
             "use.swift",
-            "func swift_caller() { let o = ObjcOnly(); cpp_only() }\n",
+            "func swift_caller() { let o = ObjcOnly(); let l = Legacy(); cpp_only() }\n",
         ),
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
@@ -5865,6 +5887,25 @@ fn demo_resolve() {
         a.registry.node_of("cpp_only from =swift").is_some()
             && !links("cpp_only from =swift", "lib.cpp#cpp_only"),
         "Swift does not reach C++"
+    );
+    // `.m` is Objective-C when its head says so, Matlab otherwise; the
+    // language read from the content outlives a reload of the snapshot.
+    assert!(
+        links("Legacy from =swift", "legacy.m#Legacy"),
+        "an Objective-C `.m` file is read as Objective-C"
+    );
+    assert!(
+        a.registry.node_of("model.m#model").is_some(),
+        "Matlab stays Matlab"
+    );
+    let again = analyse(&dir).unwrap();
+    assert_eq!(
+        again.registry.lang_of("legacy.m"),
+        Some(parse_ast::Lang::ObjC)
+    );
+    assert_eq!(
+        again.registry.lang_of("model.m"),
+        Some(parse_ast::Lang::Matlab)
     );
     // A call without a receiver reaches no method in Python, JavaScript and
     // Go, in the same file or another, and a Go call no other package.
@@ -15967,8 +16008,9 @@ fn demo_extension_collision() {
         ("a.v", "Definition mynat := nat.", false),
         ("a.v", "From basic Require Import foo.", false),
         ("a.v", "module counter(input clk); endmodule", true),
-        ("a.m", "#import \"AppDelegate.h\"\n@interface A @end", false),
-        ("a.m", "@import AppKit;\nint main() { return 0; }", false),
+        // Objective-C is scanned too: those `.m` files are read as it.
+        ("a.m", "#import \"AppDelegate.h\"\n@interface A @end", true),
+        ("a.m", "@import AppKit;\nint main() { return 0; }", true),
         ("a.m", "function y = double_it(x)\n  y = 2 * x;\nend", true),
         ("a.d", "provider julia {\n  probe gc__begin();\n};", false),
         ("a.d", "void charge() { notify(); }", true),
@@ -16002,10 +16044,17 @@ fn demo_extension_collision() {
     for (name, src, want) in cases {
         let path = std::path::Path::new(name);
         let lang = parse_ast::Lang::from_path(path).expect(name);
-        let got = parse_ast::parse_file(path, src, lang).is_some();
+        let facts = parse_ast::parse_file(path, src, lang);
+        let got = facts.is_some();
         assert_eq!(
             got, want,
             "{name}: {src:?} — expected parse: {want}, got: {got}"
+        );
+        let objc = name == "a.m" && src.contains('@');
+        assert_eq!(
+            facts.and_then(|f| f.lang_by_content),
+            objc.then_some(parse_ast::Lang::ObjC),
+            "{name}: {src:?}"
         );
     }
     // The head is cut at 4,096 bytes, and a multi-byte character straddling

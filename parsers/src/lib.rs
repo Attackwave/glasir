@@ -38,7 +38,7 @@ pub enum LanguageCategory {
     Documents,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Language {
     // 1. Mainstream & Backend
     Rust,
