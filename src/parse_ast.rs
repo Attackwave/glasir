@@ -95,6 +95,8 @@ pub struct FileFacts {
     /// Names every definition of which is a method: no call without a
     /// receiver reaches it. See `receiver_only`.
     pub members: Vec<String>,
+    /// The language the content says, where it overrules the extension.
+    pub lang_by_content: Option<Lang>,
 }
 
 /// A language we can extract from.
@@ -236,17 +238,6 @@ const AMBIGUOUS: &[(&str, &[&str])] = &[
             "Coercion ",
         ],
     ),
-    // Objective-C; Matlab has no preprocessor and no `@interface`.
-    (
-        "m",
-        &[
-            "#import",
-            "@import",
-            "@interface",
-            "@implementation",
-            "#include",
-        ],
-    ),
     // DTrace, and a Make dependency file, neither of which is the language D.
     (
         "d",
@@ -295,6 +286,45 @@ const MUST_IDENTIFY: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Extensions shared with a language this scans, read as that language when
+/// the head carries its markers. Objective-C; Matlab has no preprocessor and
+/// no `@interface`.
+const BY_CONTENT: &[(&str, Lang, &[&str])] = &[(
+    "m",
+    Lang::ObjC,
+    &[
+        "#import",
+        "@import",
+        "@interface",
+        "@implementation",
+        "#include",
+    ],
+)];
+
+/// The language a file's head says it is, where that overrules its extension.
+pub fn by_content(path: &Path, src: &str) -> Option<Lang> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    let (_, lang, markers) = BY_CONTENT.iter().find(|(e, _, _)| *e == ext)?;
+    let head = head(src);
+    markers.iter().any(|m| head.contains(m)).then_some(*lang)
+}
+
+/// The first 4 KiB of `src`, cut on a character boundary.
+fn head(src: &str) -> &str {
+    // **`get`, never an index.** A 4,096-byte cut lands inside a character
+    // whenever one straddles it, and measuring found that at once: a Latin-1
+    // resource file decoded into a string whose 4,095th byte opens a `¢`.
+    // Same class as the eleven crashes recorded before, and
+    // the reason every slice site here goes through a checked accessor.
+    src.get(..src.len().min(4096)).unwrap_or_else(|| {
+        let mut end = src.len().min(4096);
+        while end > 0 && !src.is_char_boundary(end) {
+            end -= 1;
+        }
+        &src[..end]
+    })
+}
+
 /// Whether the extension table's guess is contradicted by the file itself.
 ///
 /// Only the head is read: a marker that identifies the file appears at the top
@@ -304,18 +334,7 @@ fn misidentified(path: &Path, src: &str) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
-    // **`get`, never an index.** A 4,096-byte cut lands inside a character
-    // whenever one straddles it, and measuring found that at once: a Latin-1
-    // resource file decoded into a string whose 4,095th byte opens a `¢`.
-    // Same class as the eleven crashes recorded before, and
-    // the reason every slice site here goes through a checked accessor.
-    let head = src.get(..src.len().min(4096)).unwrap_or_else(|| {
-        let mut end = src.len().min(4096);
-        while end > 0 && !src.is_char_boundary(end) {
-            end -= 1;
-        }
-        &src[..end]
-    });
+    let head = head(src);
     if let Some((_, markers)) = MUST_IDENTIFY.iter().find(|(e, _)| *e == ext) {
         // Nothing that reads like the language: treat it as one of the other
         // formats sharing the extension and parse nothing.
@@ -328,6 +347,11 @@ fn misidentified(path: &Path, src: &str) -> bool {
 }
 
 pub fn parse_file(path: &Path, src: &str, lang: Lang) -> Option<FileFacts> {
+    if let Some(other) = by_content(path, src) {
+        let mut facts = parse(src, other)?;
+        facts.lang_by_content = Some(other);
+        return Some(facts);
+    }
     if misidentified(path, src) {
         return None;
     }
@@ -366,6 +390,7 @@ pub fn parse(src: &str, lang: Lang) -> Option<FileFacts> {
         call_owners: f.call_owners,
         imports,
         members,
+        lang_by_content: None,
         refs,
         http,
         file_refs: Vec::new(),

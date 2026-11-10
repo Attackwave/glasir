@@ -33,9 +33,12 @@ pub struct Link {
 }
 
 /// The language a definition's file is written in.
-fn lang_of(file_of: &HashMap<NodeId, &str>, node: NodeId) -> Option<crate::parse_ast::Lang> {
-    use crate::parse_ast::LangExt;
-    crate::parse_ast::Lang::from_path(std::path::Path::new(file_of.get(&node)?))
+fn lang_of(
+    registry: &SymbolRegistry,
+    file_of: &HashMap<NodeId, &str>,
+    node: NodeId,
+) -> Option<crate::parse_ast::Lang> {
+    registry.lang_of(file_of.get(&node)?)
 }
 
 /// Files whose definitions should not be considered. Test files define names
@@ -277,7 +280,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
                 .flatten()
                 .copied()
                 .filter(|d| *d != placeholder)
-                .filter(|&d| lang_of(&file_of, d) == Some(crate::parse_ast::Lang::Rust))
+                .filter(|&d| lang_of(registry, &file_of, d) == Some(crate::parse_ast::Lang::Rust))
                 .collect();
             let found: Vec<NodeId> = defs
                 .iter()
@@ -415,7 +418,7 @@ pub fn resolve(registry: &SymbolRegistry) -> Vec<Link> {
         if let Some(&definition) = defs.iter().find(|&&d| {
             d != placeholder
                 && reachable(d)
-                && lang_of(&file_of, d).is_some_and(|l| {
+                && lang_of(registry, &file_of, d).is_some_and(|l| {
                     want.is_empty() || want.iter().any(|&w| crate::ingest::reaches(w, l))
                 })
         }) {

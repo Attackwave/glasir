@@ -158,6 +158,8 @@ pub struct SymbolRegistry {
     /// Per file, the macros it defines whose invocations define their first
     /// argument. Kept so a partial re-parse knows the whole tree's set.
     definers: HashMap<String, Vec<String>>,
+    /// Per file, the language its content overrules its extension with.
+    file_lang: HashMap<String, Lang>,
     /// What resolving through classes needs, stored with the graph.
     classes: ClassFacts,
     base_arrived: BTreeSet<String>,
@@ -363,6 +365,7 @@ impl SymbolRegistry {
             docs: HashMap::new(),
             spans: HashMap::new(),
             placeholder_lang: HashMap::new(),
+            file_lang: HashMap::new(),
             crate_scopes: HashMap::new(),
             refs: HashMap::new(),
             http: HashMap::new(),
@@ -456,6 +459,26 @@ impl SymbolRegistry {
         &self.definers
     }
 
+    pub fn set_file_lang(&mut self, file: &str, lang: Option<Lang>) {
+        match lang {
+            Some(l) => self.file_lang.insert(file.to_owned(), l),
+            None => self.file_lang.remove(file),
+        };
+    }
+
+    pub fn file_langs(&self) -> &HashMap<String, Lang> {
+        &self.file_lang
+    }
+
+    /// A file's language: what its content said when parsed, else its path.
+    pub fn lang_of(&self, file: &str) -> Option<Lang> {
+        use crate::parse_ast::LangExt;
+        self.file_lang
+            .get(file)
+            .copied()
+            .or_else(|| Lang::from_path(Path::new(file)))
+    }
+
     /// Every argument-defining macro in the tree, leaving out `except`.
     pub fn definer_set(&self, except: &HashSet<String>) -> HashSet<String> {
         self.definers
@@ -471,9 +494,14 @@ impl SymbolRegistry {
     /// are all known. A Markdown section is not a definition.
     pub fn prune_refs(&mut self) {
         // A name in another family is a coincidence, not a use.
+        let file_lang = &self.file_lang;
         let family = |file: &str| {
             use crate::parse_ast::LangExt;
-            Lang::from_path(Path::new(file)).map(family)
+            file_lang
+                .get(file)
+                .copied()
+                .or_else(|| Lang::from_path(Path::new(file)))
+                .map(family)
         };
         let mut defs: HashMap<&str, (u32, Option<Lang>)> = HashMap::new();
         for key in self.by_name.keys() {
@@ -574,6 +602,7 @@ impl SymbolRegistry {
         self.http.remove(file);
         self.dispatch.remove(file);
         self.definers.remove(file);
+        self.file_lang.remove(file);
         self.classes.forget(file);
         for n in gone {
             self.docs.remove(&n);
@@ -897,6 +926,7 @@ pub fn ingest_file(
         let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
         let mut definers = registry.definer_set(&HashSet::from([rel.to_string()]));
         definers.extend(facts.macro_definers.iter().cloned());
+        let lang = facts.lang_by_content.unwrap_or(lang);
         parse_ast::apply_defining_macros(&mut facts, lang, source, &definers);
     }
     Some(apply_facts(graph, arena, registry, path, root, facts, now))
@@ -1037,7 +1067,7 @@ fn prepare_facts(
 
     // What the file's imports say its names refer to: `alias.f()` and a bare
     // imported `f()`, each mapped to the file or package that defines them.
-    let lang = Lang::from_path(path);
+    let lang = facts.lang_by_content.or_else(|| Lang::from_path(path));
     let mut modules: HashMap<&str, String> = HashMap::new();
     let mut names: HashMap<&str, (String, &str)> = HashMap::new();
     let mut bases: Vec<(&str, u32)> = Vec::new();
@@ -1354,7 +1384,7 @@ fn prepare_facts(
                         .clone()
                 })
                 .flatten();
-            let node = match (scope, Lang::from_path(path)) {
+            let node = match (scope, lang) {
                 (Some(dirs), _) => {
                     registry.get_or_mint(&crate::imports::scoped(callee, &format!("~{dirs}")))
                 }
@@ -1364,7 +1394,7 @@ fn prepare_facts(
                 )),
                 (None, None) => registry.get_or_mint(callee),
             };
-            if let Some(lang) = Lang::from_path(path) {
+            if let Some(lang) = lang {
                 registry.note_placeholder_lang(node, lang);
             }
             node
@@ -1453,6 +1483,7 @@ fn prepare_facts(
     refs.dedup();
     registry.set_refs(&file, refs);
     registry.set_definers(&file, facts.macro_definers.clone());
+    registry.set_file_lang(&file, facts.lang_by_content);
 
     // Handlers are kept as symbols: one passed by name may live in another
     // file, and only the served tree knows which.

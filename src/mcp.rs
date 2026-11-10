@@ -1597,10 +1597,9 @@ fn explain_node(served: &Served, args: &Value) -> Result<Value, String> {
     // Only definitions in the node's language: a lockfile entry or a macro
     // of another language is no alternative to a function.
     let lang = |n: NodeId| {
-        use crate::parse_ast::LangExt;
         let name = served.name(n);
         let file = name.split_once('#').map_or(name.as_str(), |(f, _)| f);
-        crate::parse_ast::Lang::from_path(std::path::Path::new(file))
+        served.registry.lang_of(file)
     };
     let own = lang(node);
     let mut similar = served.embeddings.nearest(node, 64);
@@ -1933,10 +1932,9 @@ fn find_callers(served: &Served, args: &Value) -> Result<Value, String> {
             .as_deref()
             .is_some_and(|d| d == "." || name.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
     };
-    let family = full.split_once('#').and_then(|(file, _)| {
-        use crate::parse_ast::LangExt;
-        crate::parse_ast::Lang::from_path(std::path::Path::new(file))
-    });
+    let family = full
+        .split_once('#')
+        .and_then(|(file, _)| served.registry.lang_of(file));
     let file = full.split_once('#').map_or("", |(f, _)| f);
     let placeholders: Vec<NodeId> = bare
         .into_iter()
