@@ -5845,7 +5845,7 @@ fn demo_resolve() {
         ("model.m", "function y = model(x)\n  y = x + 1;\nend\n"),
         (
             "use.swift",
-            "func swift_caller() { let o = ObjcOnly(); let l = Legacy(); cpp_only() }\n",
+            "func swift_caller() { let o = ObjcOnly(); let l = Legacy(); cpp_only() }\nfunc typed(_ o: Legacy) {}\n",
         ),
         ("q/b.py", "class B:\n    def sorted(self):\n        pass\n"),
         (
@@ -5910,6 +5910,16 @@ fn demo_resolve() {
     assert!(
         a.registry.node_of("model.m#model").is_some(),
         "Matlab stays Matlab"
+    );
+    // A Swift type naming an Objective-C class is a use, as a call is.
+    let typed = a.registry.node_of("use.swift#typed").unwrap();
+    assert!(
+        a.registry
+            .refs()
+            .get("use.swift")
+            .is_some_and(|r| r.contains(&(typed, "Legacy".to_string()))),
+        "a Swift type naming an Objective-C class is kept: {:?}",
+        a.registry.refs().get("use.swift")
     );
     let again = analyse(&dir).unwrap();
     assert_eq!(
