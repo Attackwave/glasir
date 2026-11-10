@@ -8,6 +8,7 @@
 //!
 //! Unix only: elsewhere `serve` keeps one server per client.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
